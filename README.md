@@ -49,10 +49,10 @@ Pre-built beta packages are available on the **[GitHub Releases](../../releases)
 
 | Platform | Package | How to install |
 | --- | --- | --- |
-| **Windows (x86_64)** | `krono-<tag>-windows-x86_64.zip` | Extract the archive and run `krono-desktop.exe`. |
+| **Windows (x86_64)** | `krono-<tag>-windows-x86_64-setup.exe` *(or `.zip`)* | Run the installer (no admin required) or extract the portable `.zip`. |
 | **macOS (Apple Silicon — M1–M4)** | `krono-<tag>-macos-arm64.dmg` | Open the `.dmg` and drag **Krono.app** to **Applications**. |
 | **macOS (Intel, 10.13+)** | `krono-<tag>-macos-x86_64.dmg` | Open the `.dmg` and drag **Krono.app** to **Applications**. |
-| **Linux (x86_64)** | `krono-<tag>-linux-x86_64.tar.gz` | Extract and run `./install.sh` (or launch `./krono-desktop` directly). |
+| **Linux (x86_64)** | `krono-<tag>-linux-x86_64.AppImage` *(or `.tar.gz`)* | `chmod +x` and run the AppImage directly, or extract `.tar.gz` and run `./install.sh`. |
 
 > **macOS Beta Note:** Beta builds use ad-hoc signing (`codesign -s -`). If macOS Gatekeeper blocks the first launch, run once in Terminal:
 > ```sh

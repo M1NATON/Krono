@@ -3,6 +3,7 @@ use crate::config::{
 };
 use crate::i18n::{strings, Lang};
 use crate::storage::vault::AssetAuditEntry;
+use crate::sync::updater::{AvailableUpdate, CURRENT_APP_VERSION};
 use crate::ui::components::{
     hairline_h, icon_button, keycap_badge, paint_badge_dot, primary_button, secondary_button,
     segmented_control, shortcut_label, styled_text_input, toggle_switch,
@@ -19,6 +20,14 @@ use eframe::egui::{
     self, pos2, vec2, Align, CursorIcon, Layout, Margin, Rect, Rounding, Sense, Stroke, Ui,
 };
 use std::path::Path;
+
+#[derive(Clone, Copy)]
+pub struct UpdateUiState<'a> {
+    pub checking: bool,
+    pub installing: bool,
+    pub available: Option<&'a AvailableUpdate>,
+    pub status_msg: Option<&'a str>,
+}
 
 #[allow(clippy::too_many_arguments)]
 pub fn render_settings_view(
@@ -42,6 +51,7 @@ pub fn render_settings_view(
     asset_audit_only_unused: &mut bool,
     vault_dir: &Path,
     image_cache: &mut ImageTextureCache,
+    update_ui: UpdateUiState<'_>,
 ) -> Vec<UiAction> {
     let lang = cfg.language;
     let s = strings(lang);
@@ -94,6 +104,7 @@ pub fn render_settings_view(
                     asset_audit_only_unused,
                     vault_dir,
                     image_cache,
+                    update_ui,
                     &mut actions,
                 );
             } else {
@@ -237,6 +248,7 @@ pub fn render_settings_view(
                             asset_audit_only_unused,
                             vault_dir,
                             image_cache,
+                            update_ui,
                             &mut actions,
                         );
                     });
@@ -270,6 +282,7 @@ fn render_tab_scroll(
     asset_audit_only_unused: &mut bool,
     vault_dir: &Path,
     image_cache: &mut ImageTextureCache,
+    update_ui: UpdateUiState<'_>,
     actions: &mut Vec<UiAction>,
 ) {
     let lang = cfg.language;
@@ -1121,6 +1134,157 @@ fn render_tab_scroll(
                                     }
                                 });
                         }
+                    });
+
+                    ui.add_space(16.0);
+                    settings_card(ui, p, |ui| {
+                        ui.horizontal(|ui| {
+                            let (ir, _) = ui.allocate_exact_size(vec2(16.0, 18.0), Sense::hover());
+                            draw_icon(ui.painter(), ir, Icon::Sparkles, p.accent);
+                            ui.label(
+                                egui::RichText::new(s.update_section_title)
+                                    .font(font_medium(13.5))
+                                    .color(p.text_primary),
+                            );
+                            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                                ui.add_enabled_ui(
+                                    !update_ui.checking && !update_ui.installing,
+                                    |ui| {
+                                        let check_lbl = if update_ui.checking {
+                                            s.update_checking
+                                        } else {
+                                            s.update_check_btn
+                                        };
+                                        if secondary_button(
+                                            ui,
+                                            p,
+                                            Some(Icon::RotateCcw),
+                                            check_lbl,
+                                        )
+                                        .clicked()
+                                        {
+                                            actions.push(UiAction::CheckForUpdates);
+                                        }
+                                    },
+                                );
+                            });
+                        });
+
+                        ui.add_space(6.0);
+                        ui.horizontal_wrapped(|ui| {
+                            ui.spacing_mut().item_spacing.x = 8.0;
+                            ui.label(
+                                egui::RichText::new(format!(
+                                    "{}: v{}",
+                                    s.update_current_ver, CURRENT_APP_VERSION
+                                ))
+                                .font(font_mono(12.0))
+                                .color(p.text_secondary),
+                            );
+                            if let Some(msg) = update_ui.status_msg {
+                                ui.label(
+                                    egui::RichText::new(format!("· {}", msg))
+                                        .font(font_body(12.0))
+                                        .color(p.text_muted),
+                                );
+                            }
+                        });
+
+                        if let Some(upd) = update_ui.available {
+                            ui.add_space(10.0);
+                            egui::Frame::none()
+                                .fill(p.accent_soft)
+                                .stroke(Stroke::new(1.0_f32, p.accent))
+                                .rounding(Rounding::same(8.0))
+                                .inner_margin(Margin::symmetric(12.0, 10.0))
+                                .show(ui, |ui| {
+                                    ui.set_width(ui.available_width());
+                                    ui.horizontal(|ui| {
+                                        ui.vertical(|ui| {
+                                            ui.label(
+                                                egui::RichText::new(format!(
+                                                    "{}: {}",
+                                                    s.update_available_badge, upd.tag_name
+                                                ))
+                                                .font(font_semibold(13.0))
+                                                .color(p.accent),
+                                            );
+                                            ui.label(
+                                                egui::RichText::new(&upd.asset_name)
+                                                    .font(font_mono(11.5))
+                                                    .color(p.text_secondary),
+                                            );
+                                        });
+                                        ui.with_layout(
+                                            Layout::right_to_left(Align::Center),
+                                            |ui| {
+                                                ui.add_enabled_ui(!update_ui.installing, |ui| {
+                                                    let inst_lbl = if update_ui.installing {
+                                                        s.update_installing
+                                                    } else {
+                                                        s.update_install_btn
+                                                    };
+                                                    if primary_button(
+                                                        ui,
+                                                        p,
+                                                        Some(Icon::Sparkles),
+                                                        inst_lbl,
+                                                        false,
+                                                    )
+                                                    .clicked()
+                                                    {
+                                                        actions.push(UiAction::InstallUpdate);
+                                                    }
+                                                });
+                                            },
+                                        );
+                                    });
+                                });
+                        }
+
+                        ui.add_space(12.0);
+                        hairline_h(ui, p);
+                        ui.add_space(12.0);
+
+                        setting_row(
+                            ui,
+                            p,
+                            s.update_auto_check,
+                            s.update_auto_check_desc,
+                            56.0,
+                            |ui| {
+                                if toggle_switch(
+                                    ui,
+                                    p,
+                                    "sw_auto_check_updates",
+                                    &mut cfg.auto_check_updates,
+                                ) {
+                                    actions.push(UiAction::ConfigChanged);
+                                }
+                            },
+                        );
+
+                        ui.add_space(12.0);
+                        hairline_h(ui, p);
+                        ui.add_space(12.0);
+
+                        setting_row(
+                            ui,
+                            p,
+                            s.update_prerelease,
+                            s.update_prerelease_desc,
+                            56.0,
+                            |ui| {
+                                if toggle_switch(
+                                    ui,
+                                    p,
+                                    "sw_include_prerelease_updates",
+                                    &mut cfg.include_prerelease_updates,
+                                ) {
+                                    actions.push(UiAction::ConfigChanged);
+                                }
+                            },
+                        );
                     });
                 }
 

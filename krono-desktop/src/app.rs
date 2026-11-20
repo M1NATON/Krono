@@ -15,7 +15,10 @@ use crate::storage::{
     },
     watcher::VaultWatcher,
 };
-use crate::sync::worker::{SyncEvent, SyncWorker};
+use crate::sync::{
+    updater::{AvailableUpdate, UpdateApplyOutcome, UpdateEvent, UpdateWorker},
+    worker::{SyncEvent, SyncWorker},
+};
 use crate::ui::{
     board_view::render_board_view,
     canvas_view::{render_canvas_view, CanvasEditorState},
@@ -35,7 +38,7 @@ use crate::ui::{
     markdown_preview::{hash_str, toggle_markdown_task},
     mobile_nav::{render_mobile_bottom_bar, render_mobile_notes_list},
     motion::{anim_bool_eased, anim_since, ease_in_out_cubic},
-    settings_view::render_settings_view,
+    settings_view::{render_settings_view, UpdateUiState},
     sidebar::{render_sidebar, render_sidebar_drawer},
     table_view::render_table_view,
     theme::{apply_palette, setup_fonts, ThemePalette},
@@ -199,6 +202,11 @@ pub struct KronoApp {
     pub(crate) asset_audit: Vec<AssetAuditEntry>,
     pub(crate) asset_audit_only_unused: bool,
 
+    // In-app GitHub Releases auto-updater
+    update_worker: UpdateWorker,
+    pub(crate) available_update: Option<AvailableUpdate>,
+    pub(crate) update_status_msg: Option<String>,
+
     #[cfg(debug_assertions)]
     pub(crate) shot_runner: Option<ShotRunner>,
 }
@@ -240,6 +248,7 @@ impl KronoApp {
 
         let watcher = VaultWatcher::spawn(config.vault_dir.clone(), cc.egui_ctx.clone());
         let mut sync_worker = SyncWorker::new();
+        let mut update_worker = UpdateWorker::new();
 
         if config.auto_sync_on_start && config.is_github_configured() {
             if let Ok(base) = index.load_sync_state() {
@@ -253,6 +262,15 @@ impl KronoApp {
                     cc.egui_ctx.clone(),
                 );
             }
+        }
+
+        if !is_shot_mode && config.auto_check_updates {
+            update_worker.start_check(
+                config.include_prerelease_updates,
+                true,
+                config.language,
+                cc.egui_ctx.clone(),
+            );
         }
 
         let vault_draft = config.vault_dir.to_string_lossy().to_string();
@@ -355,6 +373,9 @@ impl KronoApp {
             vault_map: VaultMapState::default(),
             asset_audit: Vec::new(),
             asset_audit_only_unused: false,
+            update_worker,
+            available_update: None,
+            update_status_msg: None,
             #[cfg(debug_assertions)]
             shot_runner,
         };
@@ -2703,6 +2724,56 @@ impl KronoApp {
                 }
             }
         }
+
+        for ev in self.update_worker.poll() {
+            let s = strings(self.config.language);
+            match ev {
+                UpdateEvent::CheckFinished {
+                    update: Ok(Some(upd)),
+                    silent: _,
+                } => {
+                    let msg = format!("{}: {}", s.update_available_badge, upd.tag_name);
+                    self.update_status_msg = None;
+                    self.available_update = Some(upd);
+                    self.push_toast(msg, ToastKind::Info);
+                }
+                UpdateEvent::CheckFinished {
+                    update: Ok(None),
+                    silent,
+                } => {
+                    self.available_update = None;
+                    self.update_status_msg = Some(s.update_up_to_date.to_string());
+                    if !silent {
+                        self.push_toast(s.update_up_to_date, ToastKind::Success);
+                    }
+                }
+                UpdateEvent::CheckFinished {
+                    update: Err(err),
+                    silent,
+                } => {
+                    self.update_status_msg = Some(err.clone());
+                    if !silent {
+                        self.push_toast(err, ToastKind::Error);
+                    }
+                }
+                UpdateEvent::InstallFinished(Ok(outcome)) => match outcome {
+                    UpdateApplyOutcome::LaunchedInstallerExitApp(msg)
+                    | UpdateApplyOutcome::ReplacedAppImageExitApp(msg) => {
+                        self.push_toast(msg, ToastKind::Success);
+                        self.flush_unsaved_documents();
+                        ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                    }
+                    UpdateApplyOutcome::OpenedPackage(msg) => {
+                        self.update_status_msg = Some(msg.clone());
+                        self.push_toast(msg, ToastKind::Success);
+                    }
+                },
+                UpdateEvent::InstallFinished(Err(err)) => {
+                    self.update_status_msg = Some(err.clone());
+                    self.push_toast(err, ToastKind::Error);
+                }
+            }
+        }
     }
 
     fn handle_actions(&mut self, ctx: &egui::Context, actions: Vec<UiAction>) {
@@ -3145,6 +3216,25 @@ impl KronoApp {
                 }
                 UiAction::EmbeddedBoard(eb) => {
                     self.handle_embedded_board_action(eb);
+                }
+                UiAction::CheckForUpdates => {
+                    self.update_status_msg = None;
+                    self.update_worker.start_check(
+                        self.config.include_prerelease_updates,
+                        false,
+                        self.config.language,
+                        ctx.clone(),
+                    );
+                }
+                UiAction::InstallUpdate => {
+                    if let Some(upd) = self.available_update.clone() {
+                        self.flush_unsaved_documents();
+                        self.update_worker.start_install(
+                            upd,
+                            self.config.language,
+                            ctx.clone(),
+                        );
+                    }
                 }
             }
         }
@@ -3871,6 +3961,12 @@ impl eframe::App for KronoApp {
                         &mut self.asset_audit_only_unused,
                         &vault_dir_snap,
                         &mut self.image_cache,
+                        UpdateUiState {
+                            checking: self.update_worker.is_checking(),
+                            installing: self.update_worker.is_installing(),
+                            available: self.available_update.as_ref(),
+                            status_msg: self.update_status_msg.as_deref(),
+                        },
                     ));
                     if self.settings_tab != prev_tab {
                         self.settings_tab_anim_at = Some(Instant::now());

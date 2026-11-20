@@ -297,6 +297,8 @@ pub enum UiAction {
     OpenImageLightbox(String),
     CreateLinkedBoardForCurrentNote,
     EmbeddedBoard(embedded_board::EmbeddedBoardAction),
+    CheckForUpdates,
+    InstallUpdate,
 }
 
 #[cfg(test)]

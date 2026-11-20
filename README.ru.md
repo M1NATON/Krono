@@ -47,12 +47,12 @@
 
 Готовые сборки бета-версии доступны на странице **[GitHub Releases](../../releases)**:
 
-| Система | Архив / образ | Установка |
+| Система | Пакет | Установка |
 | --- | --- | --- |
-| **Windows (x86_64)** | `krono-<tag>-windows-x86_64.zip` | Распакуйте архив и запустите `krono-desktop.exe`. |
+| **Windows (x86_64)** | `krono-<tag>-windows-x86_64-setup.exe` *(или `.zip`)* | Запустите установщик (права админа не требуются) или распакуйте портативный `.zip`. |
 | **macOS (Apple Silicon — M1–M4)** | `krono-<tag>-macos-arm64.dmg` | Откройте `.dmg` и перетащите **Krono.app** в **Программы (Applications)**. |
 | **macOS (Intel, 10.13+)** | `krono-<tag>-macos-x86_64.dmg` | Откройте `.dmg` и перетащите **Krono.app** в **Программы (Applications)**. |
-| **Linux (x86_64)** | `krono-<tag>-linux-x86_64.tar.gz` | Распакуйте и выполните `./install.sh` (или запускайте `./krono-desktop` напрямую). |
+| **Linux (x86_64)** | `krono-<tag>-linux-x86_64.AppImage` *(или `.tar.gz`)* | Сделайте `chmod +x` и запускайте AppImage напрямую, либо распакуйте `.tar.gz` и выполните `./install.sh`. |
 
 > **Заметка для macOS (бета):** бета-сборки подписаны локальной ad-hoc подписью (`codesign -s -`). Если macOS Gatekeeper заблокирует первый запуск, выполните один раз в Терминале:
 > ```sh

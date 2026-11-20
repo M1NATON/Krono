@@ -94,29 +94,61 @@ jobs:
       - name: Build release binary
         run: cargo build --release --locked --target "${{ matrix.target }}" -p krono-desktop
 
-      - name: Package Windows ZIP
+      - name: Package Windows Installer (.exe) & Portable ZIP
         if: matrix.platform == 'windows'
         shell: pwsh
         run: |
-          & .\packaging\windows\package.ps1 `
-            -BinaryPath "target\${{ matrix.target }}\release\krono-desktop.exe" `
-            -Version "${{ steps.meta.outputs.tag }}" `
-            -OutDir "dist"
+          $tag = "${{ steps.meta.outputs.tag }}"
+          $cleanVer = $tag.TrimStart("v")
+          $bin = (Resolve-Path "target\${{ matrix.target }}\release\krono-desktop.exe").Path
+          New-Item -ItemType Directory -Force -Path "dist" | Out-Null
+          $outDir = (Resolve-Path "dist").Path
 
-      - name: Package Linux tar.gz
+          & .\packaging\windows\package.ps1 `
+            -BinaryPath $bin `
+            -Version $tag `
+            -OutDir $outDir
+
+          $iscc = Get-Command iscc -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Source
+          if (-not $iscc) {
+            foreach ($cand in @(
+              "C:\Program Files (x86)\Inno Setup 6\ISCC.exe",
+              "C:\Program Files\Inno Setup 6\ISCC.exe"
+            )) {
+              if (Test-Path $cand) { $iscc = $cand; break }
+            }
+          }
+          if (-not $iscc) {
+            choco install innosetup -y --no-progress
+            $iscc = "C:\Program Files (x86)\Inno Setup 6\ISCC.exe"
+          }
+          & $iscc `
+            "/DMyAppVersion=$cleanVer" `
+            "/DBinaryPath=$bin" `
+            "/DOutputDirPath=$outDir" `
+            "/DOutputFileBase=krono-$tag-windows-x86_64-setup" `
+            "packaging\windows\krono.iss"
+
+      - name: Package Linux AppImage & tar.gz
         if: matrix.platform == 'linux'
         shell: bash
         run: |
           TAG="${{ steps.meta.outputs.tag }}"
+          BIN="target/${{ matrix.target }}/release/krono-desktop"
+
+          bash packaging/linux/make-appimage.sh \
+            "$BIN" \
+            "dist/krono-${TAG}-linux-x86_64.AppImage"
+
           STAGE="dist/krono-${TAG}-linux-x86_64"
           mkdir -p "$STAGE"
-          cp "target/${{ matrix.target }}/release/krono-desktop" "${STAGE}/krono-desktop"
+          cp "$BIN" "${STAGE}/krono-desktop"
           chmod +x "${STAGE}/krono-desktop"
           cp packaging/linux/krono.desktop "${STAGE}/krono.desktop"
           cp packaging/icons/krono.png "${STAGE}/krono.png"
           cp packaging/linux/install.sh "${STAGE}/install.sh"
           chmod +x "${STAGE}/install.sh"
-          cp README.md LICENSE CHANGELOG.md "${STAGE}/"
+          cp README.md README.ru.md LICENSE CHANGELOG.md "${STAGE}/"
           tar -C dist -czf "dist/krono-${TAG}-linux-x86_64.tar.gz" "krono-${TAG}-linux-x86_64"
           rm -rf "$STAGE"
 
@@ -136,7 +168,9 @@ jobs:
         with:
           name: dist-${{ matrix.target }}
           path: |
+            dist/*.exe
             dist/*.zip
+            dist/*.AppImage
             dist/*.tar.gz
             dist/*.dmg
           if-no-files-found: error
@@ -154,13 +188,11 @@ jobs:
           path: release-assets
           merge-multiple: true
 
-      - name: Generate SHA256 checksums and detect prerelease
+      - name: Detect prerelease tag
         id: prep
         shell: bash
         run: |
-          cd release-assets
-          sha256sum * > SHA256SUMS.txt
-          ls -la
+          ls -la release-assets
           if [[ "${GITHUB_REF_NAME}" == *-* ]]; then
             echo "prerelease=true" >> "$GITHUB_OUTPUT"
           else
@@ -174,18 +206,19 @@ jobs:
           prerelease: ${{ steps.prep.outputs.prerelease }}
           generate_release_notes: true
           body: |
-            ### Downloads
-            - **Windows (x86_64)**: `krono-${{ github.ref_name }}-windows-x86_64.zip` — extract and run `krono-desktop.exe`.
-            - **macOS (Apple Silicon — M1/M2/M3/M4)**: `krono-${{ github.ref_name }}-macos-arm64.dmg` — drag **Krono.app** to **Applications**.
-            - **macOS (Intel)**: `krono-${{ github.ref_name }}-macos-x86_64.dmg` — drag **Krono.app** to **Applications**.
-            - **Linux (x86_64)**: `krono-${{ github.ref_name }}-linux-x86_64.tar.gz` — extract and run `./install.sh` (or launch `./krono-desktop` directly).
+            ### Downloads / Скачивание
+            - **Windows (x86_64 Installer)**: `krono-${{ github.ref_name }}-windows-x86_64-setup.exe` — run the installer (also available as portable `.zip`).
+            - **macOS (Apple Silicon — M1–M4)**: `krono-${{ github.ref_name }}-macos-arm64.dmg` — drag **Krono.app** to **Applications**.
+            - **macOS (Intel, 10.13+)**: `krono-${{ github.ref_name }}-macos-x86_64.dmg` — drag **Krono.app** to **Applications**.
+            - **Linux (x86_64 AppImage)**: `krono-${{ github.ref_name }}-linux-x86_64.AppImage` — `chmod +x` and run directly (also available as `.tar.gz` with `./install.sh`).
 
             > **macOS Beta Note:** These beta builds use ad-hoc signing (`codesign -s -`). If macOS Gatekeeper blocks the first launch, run:
             > ```sh
             > xattr -cr /Applications/Krono.app
             > ```
           files: |
+            release-assets/*.exe
             release-assets/*.zip
+            release-assets/*.AppImage
             release-assets/*.tar.gz
             release-assets/*.dmg
-            release-assets/SHA256SUMS.txt

@@ -442,6 +442,20 @@ pub struct Strings {
     pub assets_used_badge: &'static str,
     pub assets_unused_badge: &'static str,
     pub assets_empty: &'static str,
+
+    // App Auto-Updater
+    pub update_section_title: &'static str,
+    pub update_current_ver: &'static str,
+    pub update_check_btn: &'static str,
+    pub update_checking: &'static str,
+    pub update_installing: &'static str,
+    pub update_install_btn: &'static str,
+    pub update_up_to_date: &'static str,
+    pub update_available_badge: &'static str,
+    pub update_auto_check: &'static str,
+    pub update_auto_check_desc: &'static str,
+    pub update_prerelease: &'static str,
+    pub update_prerelease_desc: &'static str,
 }
 
 pub static RU: Strings = Strings {
@@ -859,6 +873,19 @@ pub static RU: Strings = Strings {
     assets_used_badge: "Ссылок",
     assets_unused_badge: "Не используется",
     assets_empty: "Вложений в assets/ пока нет",
+
+    update_section_title: "Обновления приложения",
+    update_current_ver: "Текущая версия",
+    update_check_btn: "Проверить обновления",
+    update_checking: "Проверка…",
+    update_installing: "Скачивание и установка…",
+    update_install_btn: "Скачать и установить",
+    update_up_to_date: "Установлена актуальная версия",
+    update_available_badge: "Доступно обновление",
+    update_auto_check: "Проверять обновления при запуске",
+    update_auto_check_desc: "Тихая проверка новых релизов на GitHub при старте Krono.",
+    update_prerelease: "Получать бета-версии (Pre-release)",
+    update_prerelease_desc: "Включать тестовые сборки (beta / rc) при поиске обновлений.",
 };
 
 pub static EN: Strings = Strings {
@@ -1276,6 +1303,19 @@ pub static EN: Strings = Strings {
     assets_used_badge: "Refs",
     assets_unused_badge: "Unused",
     assets_empty: "No images or attachments in assets/",
+
+    update_section_title: "Application Updates",
+    update_current_ver: "Current version",
+    update_check_btn: "Check for updates",
+    update_checking: "Checking…",
+    update_installing: "Downloading & installing…",
+    update_install_btn: "Download & install",
+    update_up_to_date: "You are on the latest version",
+    update_available_badge: "Update available",
+    update_auto_check: "Check for updates on startup",
+    update_auto_check_desc: "Silently check GitHub Releases when Krono starts.",
+    update_prerelease: "Include beta versions (Pre-release)",
+    update_prerelease_desc: "Include beta / rc builds when checking for updates.",
 };
 
 pub fn strings(lang: Lang) -> &'static Strings {

@@ -28,18 +28,18 @@ jobs:
             os: ubuntu-latest
             target: x86_64-unknown-linux-gnu
           - name: macOS (Apple Silicon)
-            os: macos-14
+            os: macos-15
             target: aarch64-apple-darwin
             macos_target: "11.0"
           - name: macOS (Intel)
-            os: macos-14
+            os: macos-15
             target: x86_64-apple-darwin
             macos_target: "10.15"
             cross_macos: true
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Install Linux graphics & windowing dev libraries
         if: runner.os == 'Linux'

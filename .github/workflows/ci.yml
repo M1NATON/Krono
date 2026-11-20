@@ -1,0 +1,88 @@
+name: CI
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build-and-test:
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Windows (x86_64)
+            os: windows-latest
+            target: x86_64-pc-windows-msvc
+          - name: Linux (x86_64)
+            os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+          - name: macOS (Apple Silicon)
+            os: macos-14
+            target: aarch64-apple-darwin
+            macos_target: "11.0"
+          - name: macOS (Intel)
+            os: macos-14
+            target: x86_64-apple-darwin
+            macos_target: "10.15"
+            cross_macos: true
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Linux graphics & windowing dev libraries
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            pkg-config \
+            libxkbcommon-dev \
+            libwayland-dev \
+            libx11-dev \
+            libxi-dev \
+            libxcursor-dev \
+            libxrandr-dev \
+            libxinerama-dev \
+            libgl1-mesa-dev \
+            libegl1-mesa-dev
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Cache Cargo artifacts
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+
+      - name: Configure macOS deployment target
+        if: runner.os == 'macOS'
+        run: echo "MACOSX_DEPLOYMENT_TARGET=${{ matrix.macos_target }}" >> "$GITHUB_ENV"
+
+      - name: Run workspace tests
+        shell: bash
+        run: |
+          if [[ "${{ matrix.cross_macos }}" == "true" ]]; then
+            if arch -x86_64 /usr/bin/true >/dev/null 2>&1; then
+              cargo test --workspace --locked --target "${{ matrix.target }}"
+            else
+              cargo test --workspace --locked --no-run --target "${{ matrix.target }}"
+            fi
+          else
+            cargo test --workspace --locked --target "${{ matrix.target }}"
+          fi
+
+      - name: Build release binary
+        run: cargo build --release --locked --target "${{ matrix.target }}" -p krono-desktop

@@ -1,0 +1,16 @@
+[workspace]
+members = ["krono-core", "krono-desktop"]
+resolver = "2"
+
+[workspace.package]
+version = "0.2.0"
+edition = "2021"
+license = "MIT"
+authors = ["Krono Contributors"]
+description = "Local-first Markdown knowledge workspace with Kanban boards, Canvas, Graph view, and GitHub sync"
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+strip = "symbols"

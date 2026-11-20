@@ -1,0 +1,30 @@
+# Build outputs
+/target/
+/target_verify_tmp/
+/dist/
+**/*.rs.bk
+
+# Local user/dev vault, databases & crash/screenshot artifacts
+/krono_vault/
+.krono/
+*.db
+*.db-wal
+*.db-shm
+*.bmp
+*.log
+
+# Local tooling / assistant metadata
+/.tgrep/
+/graphify-out/
+.graphifyignore
+GEMINI.md
+implementation_plan.md
+
+# OS / IDE files
+.DS_Store
+Thumbs.db
+Desktop.ini
+.vscode/
+.idea/
+*.swp
+*.swo

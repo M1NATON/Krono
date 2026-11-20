@@ -1,0 +1,14 @@
+[Desktop Entry]
+Type=Application
+Name=Krono
+GenericName=Knowledge Workspace
+GenericName[ru]=База знаний и заметок
+Comment=Local-first Markdown workspace, Kanban boards, Canvas, Knowledge Graph & GitHub Sync
+Comment[ru]=Локальные заметки в Markdown, таблицы, канбан-доски, Canvas, граф и синхронизация с GitHub
+Exec=krono-desktop
+Icon=krono
+Terminal=false
+Categories=Office;Utility;TextEditor;
+Keywords=markdown;notes;knowledge;diary;kanban;wiki;
+StartupNotify=true
+StartupWMClass=krono-desktop

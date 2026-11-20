@@ -51,7 +51,7 @@ Pre-built beta packages are available on the **[GitHub Releases](../../releases)
 | --- | --- | --- |
 | **Windows (x86_64)** | `krono-<tag>-windows-x86_64.zip` | Extract the archive and run `krono-desktop.exe`. |
 | **macOS (Apple Silicon — M1–M4)** | `krono-<tag>-macos-arm64.dmg` | Open the `.dmg` and drag **Krono.app** to **Applications**. |
-| **macOS (Intel)** | `krono-<tag>-macos-x86_64.dmg` | Open the `.dmg` and drag **Krono.app** to **Applications**. |
+| **macOS (Intel, 10.13+)** | `krono-<tag>-macos-x86_64.dmg` | Open the `.dmg` and drag **Krono.app** to **Applications**. |
 | **Linux (x86_64)** | `krono-<tag>-linux-x86_64.tar.gz` | Extract and run `./install.sh` (or launch `./krono-desktop` directly). |
 
 > **macOS Beta Note:** Beta builds use ad-hoc signing (`codesign -s -`). If macOS Gatekeeper blocks the first launch, run once in Terminal:
@@ -102,7 +102,7 @@ cargo build --release --locked -p krono-desktop
 ### Cross-Compile macOS Intel on Apple Silicon
 ```sh
 rustup target add x86_64-apple-darwin
-MACOSX_DEPLOYMENT_TARGET=10.15 cargo build --release --locked --target x86_64-apple-darwin -p krono-desktop
+MACOSX_DEPLOYMENT_TARGET=10.13 cargo build --release --locked --target x86_64-apple-darwin -p krono-desktop
 ```
 
 ---

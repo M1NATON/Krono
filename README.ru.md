@@ -51,7 +51,7 @@
 | --- | --- | --- |
 | **Windows (x86_64)** | `krono-<tag>-windows-x86_64.zip` | Распакуйте архив и запустите `krono-desktop.exe`. |
 | **macOS (Apple Silicon — M1–M4)** | `krono-<tag>-macos-arm64.dmg` | Откройте `.dmg` и перетащите **Krono.app** в **Программы (Applications)**. |
-| **macOS (Intel)** | `krono-<tag>-macos-x86_64.dmg` | Откройте `.dmg` и перетащите **Krono.app** в **Программы (Applications)**. |
+| **macOS (Intel, 10.13+)** | `krono-<tag>-macos-x86_64.dmg` | Откройте `.dmg` и перетащите **Krono.app** в **Программы (Applications)**. |
 | **Linux (x86_64)** | `krono-<tag>-linux-x86_64.tar.gz` | Распакуйте и выполните `./install.sh` (или запускайте `./krono-desktop` напрямую). |
 
 > **Заметка для macOS (бета):** бета-сборки подписаны локальной ad-hoc подписью (`codesign -s -`). Если macOS Gatekeeper заблокирует первый запуск, выполните один раз в Терминале:
@@ -102,7 +102,7 @@ cargo build --release --locked -p krono-desktop
 ### Кросс-сборка macOS Intel на Apple Silicon
 ```sh
 rustup target add x86_64-apple-darwin
-MACOSX_DEPLOYMENT_TARGET=10.15 cargo build --release --locked --target x86_64-apple-darwin -p krono-desktop
+MACOSX_DEPLOYMENT_TARGET=10.13 cargo build --release --locked --target x86_64-apple-darwin -p krono-desktop
 ```
 
 ---

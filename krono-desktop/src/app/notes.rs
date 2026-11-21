@@ -97,6 +97,50 @@ impl KronoApp {
     pub(crate) fn open_note(&mut self, rel_path: &str) {
         self.flush_unsaved_documents();
         let switched = self.selected_path.as_deref() != Some(rel_path);
+        if krono_core::path::is_encrypted_note(rel_path) {
+            if let Some(pw) = self.vault_crypto.master_password().map(str::to_string) {
+                match self.read_decrypted_note(rel_path, &pw) {
+                    Ok((doc, modified, _)) => {
+                        self.vault_crypto.locked_note_path = None;
+                        self.selected_path = Some(rel_path.to_string());
+                        self.current_doc = doc;
+                        self.current_modified = modified;
+                        self.dirty = false;
+                        self.external_conflict_open_note = false;
+                        self.focus_title_next = false;
+                        self.focus_body_next = false;
+                        self.last_edit_at = None;
+                        self.adding_tag = false;
+                        self.new_tag_input.clear();
+                        self.expand_parents(rel_path);
+                        self.refresh_document_derivations();
+                        if switched {
+                            self.note_anim_at = Some(Instant::now());
+                        }
+                        self.refresh_embedded_boards();
+                        self.record_nav(NavTarget::Note(rel_path.to_string()));
+                        return;
+                    }
+                    Err(_) => {
+                        self.vault_crypto.locked_note_path = Some(rel_path.to_string());
+                        self.selected_path = Some(rel_path.to_string());
+                        self.current_doc = krono_core::note::NoteDocument::default();
+                        self.dirty = false;
+                        self.open_unlock_modal(rel_path);
+                        return;
+                    }
+                }
+            } else {
+                self.vault_crypto.locked_note_path = Some(rel_path.to_string());
+                self.selected_path = Some(rel_path.to_string());
+                self.current_doc = krono_core::note::NoteDocument::default();
+                self.dirty = false;
+                self.refresh_document_derivations();
+                self.open_unlock_modal(rel_path);
+                return;
+            }
+        }
+        self.vault_crypto.locked_note_path = None;
         match read_note(&self.config.vault_dir, rel_path) {
             Ok((doc, modified, _)) => {
                 self.selected_path = Some(rel_path.to_string());
@@ -161,6 +205,28 @@ impl KronoApp {
         }
         self.current_doc.frontmatter.tags =
             normalize_tags(self.current_doc.frontmatter.tags.clone());
+
+        if krono_core::path::is_encrypted_note(&rel_path) {
+            let Some(pw) = self.vault_crypto.master_password().map(str::to_string) else {
+                return;
+            };
+            let doc_clone = self.current_doc.clone();
+            match self.save_encrypted_note_doc(&rel_path, &doc_clone, &pw) {
+                Ok((modified, _)) => {
+                    self.current_modified = modified;
+                    self.dirty = false;
+                    self.external_conflict_open_note = false;
+                    self.last_edit_at = None;
+                    self.reload_index_caches();
+                    self.refresh_document_derivations();
+                    self.last_local_save_at = Some(Instant::now());
+                }
+                Err(e) => {
+                    self.push_toast(e, ToastKind::Error);
+                }
+            }
+            return;
+        }
 
         self.watcher.mark_internal_change();
         match save_note(&self.config.vault_dir, &rel_path, &self.current_doc) {

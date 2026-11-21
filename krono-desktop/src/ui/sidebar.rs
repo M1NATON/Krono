@@ -6,7 +6,7 @@ use crate::ui::components::{
     section_heading, shortcut_label, sidebar_row, tag_chip,
 };
 use crate::ui::icons::{draw_icon, draw_sync_icon, Icon};
-use crate::ui::motion::{anim_bool_eased, anim_value_smooth, lerp_color, with_alpha};
+use crate::ui::motion::{anim_bool_eased, lerp_color, with_alpha};
 use crate::ui::theme::{font_body, font_medium, font_mono, font_semibold, ThemePalette};
 use crate::ui::{
     CalendarUiState, CreateItemKind, PagesKindFilter, PagesSortOrder, PagesTreeUiState,
@@ -59,8 +59,10 @@ impl<'a> TreeEntry<'a> {
 
     fn icon(self, in_pinned: bool) -> Icon {
         match self {
-            Self::Note(_) => {
-                if in_pinned {
+            Self::Note(n) => {
+                if n.is_encrypted() {
+                    Icon::Lock
+                } else if in_pinned {
                     Icon::Pin
                 } else {
                     Icon::Document
@@ -362,18 +364,12 @@ fn render_sidebar_contents(
 ) {
     let s = strings(lang);
 
-    // 1. Quiet Header: Krono mark + Title + New Item Modal (+) + Collapse
-    ui.horizontal(|ui| {
-        let (logo_rect, _) = ui.allocate_exact_size(vec2(20.0, 20.0), Sense::hover());
-        draw_icon(ui.painter(), logo_rect, Icon::Logo, p.text_primary);
-        ui.add_space(4.0);
-        ui.label(
-            egui::RichText::new(s.app_name)
-                .font(font_semibold(15.0))
-                .color(p.text_primary),
-        );
-        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            ui.spacing_mut().item_spacing.x = 2.0;
+    // 1. Quiet Header (skip duplicate brand header when custom_titlebar is enabled)
+    if modules.custom_titlebar {
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = 6.0;
+            let search_w = (ui.available_width() - 28.0).max(60.0);
+            render_search_trigger_with_width(ctx, ui, p, lang, true, Some(search_w), actions);
             if icon_button(
                 ui,
                 p,
@@ -385,301 +381,360 @@ fn render_sidebar_contents(
             {
                 actions.push(UiAction::ToggleSidebar);
             }
-            if icon_button(ui, p, Icon::Plus, s.tooltip_new_note, false).clicked() {
-                actions.push(UiAction::OpenCreateModal(None));
+        });
+    } else {
+        ui.horizontal(|ui| {
+            let (logo_rect, _) = ui.allocate_exact_size(vec2(20.0, 20.0), Sense::hover());
+            draw_icon(ui.painter(), logo_rect, Icon::Logo, p.text_primary);
+            ui.add_space(4.0);
+            ui.label(
+                egui::RichText::new(s.app_name)
+                    .font(font_semibold(15.0))
+                    .color(p.text_primary),
+            );
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                ui.spacing_mut().item_spacing.x = 2.0;
+                if icon_button(
+                    ui,
+                    p,
+                    Icon::SidebarToggle,
+                    s.tooltip_collapse_sidebar,
+                    false,
+                )
+                .clicked()
+                {
+                    actions.push(UiAction::ToggleSidebar);
+                }
+                if icon_button(ui, p, Icon::Plus, s.tooltip_new_note, false).clicked() {
+                    actions.push(UiAction::OpenCreateModal(None));
+                }
+            });
+        });
+        ui.add_space(8.0);
+        render_search_trigger(ctx, ui, p, lang, true, actions);
+    }
+
+    ui.add_space(8.0);
+
+    // 2. Compact Single-Row Horizontal Icon Navigation (~34px)
+    ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = 3.0;
+        let nav_icon_btn = |ui: &mut Ui, icon: Icon, tip: &str, active: bool, badge: bool| -> egui::Response {
+            let (rect, resp) = ui.allocate_exact_size(vec2(28.0, 28.0), Sense::click());
+            let hov = anim_bool_eased(ctx, resp.id.with("hov"), resp.hovered(), 0.10);
+            if active {
+                ui.painter().rect_filled(rect, Rounding::same(6.0), p.accent_soft);
+                ui.painter().rect_stroke(rect, Rounding::same(6.0), Stroke::new(1.0_f32, with_alpha(p.accent, 0.55)));
+            } else if hov > 0.01 {
+                ui.painter().rect_filled(rect, Rounding::same(6.0), with_alpha(p.bg_hover, hov));
             }
+            let col = if active {
+                p.accent_text
+            } else {
+                lerp_color(p.text_muted, p.text_primary, hov)
+            };
+            draw_icon(
+                ui.painter(),
+                Rect::from_center_size(rect.center(), vec2(15.0, 15.0)),
+                icon,
+                col,
+            );
+            if badge {
+                paint_badge_dot(ui.painter(), pos2(rect.right() - 5.0, rect.top() + 5.0), p.accent);
+            }
+            resp.on_hover_cursor(CursorIcon::PointingHand).on_hover_text(tip)
+        };
+
+        let notes_active = matches!(view_mode, ViewMode::Editor | ViewMode::Collection | ViewMode::Canvas);
+        if nav_icon_btn(ui, Icon::Notes, s.nav_notes, notes_active, false).clicked() {
+            if !notes_active {
+                actions.push(UiAction::ReturnToNotesTab);
+            } else {
+                actions.push(UiAction::SetViewMode(ViewMode::Editor));
+            }
+        }
+        if modules.nav_tasks {
+            if nav_icon_btn(ui, Icon::Task, s.nav_tasks, view_mode == ViewMode::Tasks, due_tasks_badge > 0).clicked() {
+                actions.push(UiAction::SetViewMode(ViewMode::Tasks));
+            }
+        }
+        if nav_icon_btn(ui, Icon::CalendarDays, s.sb_nav_diary_today, false, false).clicked() {
+            actions.push(UiAction::OpenTodayNote);
+        }
+        if modules.nav_graph {
+            if nav_icon_btn(ui, Icon::Graph, s.nav_graph, view_mode == ViewMode::Graph, false).clicked() {
+                actions.push(UiAction::SetViewMode(ViewMode::Graph));
+            }
+        }
+        if modules.nav_overview {
+            if nav_icon_btn(ui, Icon::LayoutGrid, s.nav_overview, view_mode == ViewMode::Overview, false).clicked() {
+                actions.push(UiAction::SetViewMode(ViewMode::Overview));
+            }
+        }
+
+        if modules.show_block && (modules.show_media_library || modules.show_english) {
+            let (sep_r, _) = ui.allocate_exact_size(vec2(5.0, 22.0), Sense::hover());
+            ui.painter().line_segment(
+                [pos2(sep_r.center().x, sep_r.top() + 3.0), pos2(sep_r.center().x, sep_r.bottom() - 3.0)],
+                Stroke::new(1.0_f32, p.border_hairline),
+            );
+            if modules.show_media_library {
+                if nav_icon_btn(ui, Icon::Image, s.sb_module_media, false, false).clicked() {
+                    actions.push(UiAction::OpenSidebarModule(SidebarModule::MediaLibrary));
+                }
+            }
+            if modules.show_english {
+                if nav_icon_btn(ui, Icon::Globe, s.sb_module_english, false, false).clicked() {
+                    actions.push(UiAction::OpenSidebarModule(SidebarModule::English));
+                }
+            }
+        }
+
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            let cfg_pop = ui.make_persistent_id("sb_modules_cfg_pop");
+            let cfg_btn = icon_button(ui, p, Icon::Settings, s.sb_modules_title, false);
+            if cfg_btn.clicked() {
+                ui.memory_mut(|m| m.toggle_popup(cfg_pop));
+            }
+            egui::popup_below_widget(
+                ui,
+                cfg_pop,
+                &cfg_btn,
+                egui::PopupCloseBehavior::CloseOnClickOutside,
+                |ui| {
+                    ui.set_min_width(205.0);
+                    let mut next = modules.clone();
+                    let mut changed = false;
+                    if ui.checkbox(&mut next.show_media_library, s.sb_module_media).changed() {
+                        changed = true;
+                    }
+                    if ui.checkbox(&mut next.show_english, s.sb_module_english).changed() {
+                        changed = true;
+                    }
+                    if next.show_english {
+                        ui.add_space(4.0);
+                        ui.label(
+                            egui::RichText::new(s.settings_study_lang_label)
+                                .font(font_body(11.0))
+                                .color(p.text_muted),
+                        );
+                        ui.horizontal_wrapped(|ui| {
+                            ui.spacing_mut().item_spacing = vec2(4.0, 4.0);
+                            for (id, ru, en) in crate::config::STUDY_LANGUAGE_PRESETS {
+                                let lbl = if lang == Lang::Ru { *ru } else { *en };
+                                let active = next.study_language.eq_ignore_ascii_case(id)
+                                    || next.study_language.eq_ignore_ascii_case(ru);
+                                if ui.selectable_label(active, lbl).clicked() {
+                                    next.study_language = (*id).to_string();
+                                    changed = true;
+                                }
+                            }
+                        });
+                        let r = ui.add(
+                            egui::TextEdit::singleline(&mut next.study_language)
+                                .hint_text(s.settings_study_lang_hint)
+                                .desired_width(185.0),
+                        );
+                        if r.changed() {
+                            changed = true;
+                        }
+                    }
+                    if changed {
+                        next.show_block = true;
+                        actions.push(UiAction::SetSidebarModules(next));
+                    }
+                },
+            );
         });
     });
 
-    ui.add_space(10.0);
-
-    // 2. Flat, Calm Search Trigger (`Ctrl/Cmd+K`)
-    render_search_trigger(ctx, ui, p, lang, true, actions);
-
-    ui.add_space(12.0);
-
-    // 3. Gliding View Switcher
-    {
-        struct NavSlot {
-            mode: ViewMode,
-            icon: Icon,
-            label: &'static str,
-            rect: Rect,
-            resp: egui::Response,
-            active: bool,
-        }
-        let nav_w = ui.available_width().max(80.0);
-        let mut slots = Vec::with_capacity(5);
-        let mut active_rect: Option<Rect> = None;
-        ui.spacing_mut().item_spacing.y = 2.0;
-
-        for (mode, icon, label, visible) in [
-            (ViewMode::Editor, Icon::Notes, s.nav_notes, true),
-            (ViewMode::Tasks, Icon::Task, s.nav_tasks, modules.nav_tasks),
-            (ViewMode::Table, Icon::Table, s.nav_table, modules.nav_table),
-            (ViewMode::Board, Icon::Board, s.nav_board, modules.nav_board),
-            (ViewMode::Graph, Icon::Graph, s.nav_graph, modules.nav_graph),
-            (ViewMode::Overview, Icon::LayoutGrid, s.nav_overview, modules.nav_overview),
-        ] {
-            if !visible {
-                continue;
-            }
-            let (rect, resp) = ui.allocate_exact_size(vec2(nav_w, 28.0), Sense::click());
-            let active = view_mode == mode
-                || (mode == ViewMode::Editor
-                    && matches!(view_mode, ViewMode::Collection | ViewMode::Canvas));
-            if active {
-                active_rect = Some(rect);
-            }
-            slots.push(NavSlot {
-                mode,
-                icon,
-                label,
-                rect,
-                resp,
-                active,
-            });
-        }
-        ui.spacing_mut().item_spacing.y = 6.0;
-
-        if let Some(target) = active_rect {
-            let pill_y = anim_value_smooth(
-                ctx,
-                egui::Id::new("sb_nav_pill_y"),
-                target.top(),
-                0.16,
-            );
-            let pill_r = Rect::from_min_size(pos2(target.left(), pill_y), target.size());
-            ui.painter()
-                .rect_filled(pill_r, Rounding::same(6.0), p.bg_selected);
-            let bar_r = Rect::from_center_size(
-                pos2(pill_r.left() + 3.0, pill_r.center().y),
-                vec2(2.5, 14.0),
-            );
-            ui.painter()
-                .rect_filled(bar_r, Rounding::same(1.5), p.accent);
-        }
-
-        for slot in slots {
-            let hov = anim_bool_eased(
-                ctx,
-                ui.make_persistent_id(("nav_view", slot.label)),
-                slot.resp.hovered(),
-                0.10,
-            );
-            if !slot.active && hov > 0.01 {
-                ui.painter().rect_filled(
-                    slot.rect,
-                    Rounding::same(6.0),
-                    with_alpha(p.bg_hover, hov),
-                );
-            }
-            let icon_col = if slot.active {
-                p.text_primary
-            } else {
-                lerp_color(p.text_muted, p.text_secondary, hov)
-            };
-            let text_col = if slot.active {
-                p.text_primary
-            } else {
-                lerp_color(p.text_secondary, p.text_primary, hov)
-            };
-            let ir = Rect::from_center_size(
-                pos2(slot.rect.left() + 16.0, slot.rect.center().y),
-                vec2(14.0, 14.0),
-            );
-            draw_icon(ui.painter(), ir, slot.icon, icon_col);
-            let g = ui.painter().layout_no_wrap(
-                slot.label.to_string(),
-                if slot.active {
-                    font_medium(13.0)
-                } else {
-                    font_body(13.0)
-                },
-                text_col,
-            );
-            ui.painter().galley(
-                pos2(slot.rect.left() + 30.0, slot.rect.center().y - g.size().y * 0.5),
-                g,
-                text_col,
-            );
-            if slot.mode == ViewMode::Tasks && due_tasks_badge > 0 {
-                let badge = due_tasks_badge.to_string();
-                let bg = ui.painter().layout_no_wrap(badge, font_mono(10.5), p.accent_text);
-                let bw = (bg.size().x + 10.0).max(18.0);
-                let br = Rect::from_center_size(
-                    pos2(slot.rect.right() - bw * 0.5 - 6.0, slot.rect.center().y),
-                    vec2(bw, 17.0),
-                );
-                ui.painter().rect_filled(br, Rounding::same(8.5), p.accent_soft);
-                ui.painter().galley(
-                    pos2(br.center().x - bg.size().x * 0.5, br.center().y - bg.size().y * 0.5),
-                    bg,
-                    p.accent_text,
-                );
-            }
-            if slot.resp.on_hover_cursor(CursorIcon::PointingHand).clicked() {
-                if slot.mode == ViewMode::Editor && !slot.active {
-                    actions.push(UiAction::ReturnToNotesTab);
-                } else {
-                    actions.push(UiAction::SetViewMode(slot.mode));
-                }
-            }
-        }
-    }
-
-    ui.add_space(10.0);
+    ui.add_space(6.0);
     hairline_h(ui, p);
-    ui.add_space(10.0);
+    ui.add_space(6.0);
 
-    // 3b. Configurable Quick Modules (Media Library / English)
-    if modules.show_block {
-        ui.horizontal(|ui| {
-            ui.label(
-                egui::RichText::new(s.sb_modules_title)
-                    .font(font_medium(11.0))
-                    .color(p.text_muted),
-            );
+    render_diary_calendar(
+        ctx,
+        ui,
+        p,
+        lang,
+        cal.open,
+        cal.year,
+        cal.month,
+        cal.today,
+        selected_path,
+        cal.daily_dates,
+        false,
+        actions,
+    );
+
+    ui.add_space(6.0);
+    hairline_h(ui, p);
+    ui.add_space(6.0);
+
+    // 3. Sticky Tree Header (`Файлы | Теги`) ABOVE ScrollArea
+    ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = 4.0;
+        for (tab, lbl) in [
+            (crate::ui::SidebarTreeTab::Files, s.sb_tab_files),
+            (crate::ui::SidebarTreeTab::Tags, s.sb_tab_tags),
+        ] {
+            let active = *pages_ui.tree_tab == tab;
+            let fg = if active { p.text_primary } else { p.text_muted };
+            let g = ui.painter().layout_no_wrap(lbl.to_string(), font_medium(12.0), fg);
+            let (r, resp) = ui.allocate_exact_size(vec2(g.size().x + 14.0, 22.0), Sense::click());
+            if active {
+                ui.painter().rect_filled(r, Rounding::same(6.0), p.bg_selected);
+            } else if resp.hovered() {
+                ui.painter().rect_filled(r, Rounding::same(6.0), p.bg_hover);
+            }
+            ui.painter().galley(pos2(r.center().x - g.size().x * 0.5, r.center().y - g.size().y * 0.5), g, fg);
+            if resp.on_hover_cursor(CursorIcon::PointingHand).clicked() {
+                *pages_ui.tree_tab = tab;
+            }
+        }
+
+        if *pages_ui.tree_tab == crate::ui::SidebarTreeTab::Files {
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                let cfg_pop = ui.make_persistent_id("sb_modules_cfg_pop");
-                let cfg_btn = icon_button(ui, p, Icon::Settings, s.sb_modules_title, false);
-                if cfg_btn.clicked() {
-                    ui.memory_mut(|m| m.toggle_popup(cfg_pop));
+                ui.spacing_mut().item_spacing.x = 3.0;
+                let filter_active = *pages_ui.filter_open || *pages_ui.filter != PagesKindFilter::All;
+                let (fr, fresp) = ui.allocate_exact_size(vec2(20.0, 20.0), Sense::click());
+                if filter_active || fresp.hovered() {
+                    ui.painter().rect_filled(
+                        fr,
+                        Rounding::same(5.0),
+                        if *pages_ui.filter != PagesKindFilter::All { p.accent_soft } else { p.bg_hover },
+                    );
                 }
-                egui::popup_below_widget(
-                    ui,
-                    cfg_pop,
-                    &cfg_btn,
-                    egui::PopupCloseBehavior::CloseOnClickOutside,
-                    |ui| {
-                        ui.set_min_width(205.0);
-                        let mut next = modules.clone();
-                        let mut changed = false;
-                        if ui.checkbox(&mut next.show_media_library, s.sb_module_media).changed() {
-                            changed = true;
-                        }
-                        if ui.checkbox(&mut next.show_english, s.sb_module_english).changed() {
-                            changed = true;
-                        }
-                        if next.show_english {
-                            ui.add_space(4.0);
-                            ui.label(
-                                egui::RichText::new(s.settings_study_lang_label)
-                                    .font(font_body(11.0))
-                                    .color(p.text_muted),
-                            );
-                            ui.horizontal_wrapped(|ui| {
-                                ui.spacing_mut().item_spacing = vec2(4.0, 4.0);
-                                for (id, ru, en) in crate::config::STUDY_LANGUAGE_PRESETS {
-                                    let lbl = if lang == Lang::Ru { *ru } else { *en };
-                                    let active = next.study_language.eq_ignore_ascii_case(id)
-                                        || next.study_language.eq_ignore_ascii_case(ru);
-                                    if ui.selectable_label(active, lbl).clicked() {
-                                        next.study_language = (*id).to_string();
-                                        changed = true;
-                                    }
-                                }
-                            });
-                            let r = ui.add(
-                                egui::TextEdit::singleline(&mut next.study_language)
-                                    .hint_text(s.settings_study_lang_hint)
-                                    .desired_width(185.0),
-                            );
-                            if r.changed() {
-                                changed = true;
-                            }
-                        }
-                        ui.separator();
-                        if ui.button(s.sb_modules_hide).clicked() {
-                            next.show_block = false;
-                            changed = true;
-                            ui.memory_mut(|m| m.close_popup());
-                        }
-                        if changed {
-                            actions.push(UiAction::SetSidebarModules(next));
-                        }
-                    },
+                draw_icon(
+                    ui.painter(),
+                    Rect::from_center_size(fr.center(), vec2(12.0, 12.0)),
+                    Icon::Filter,
+                    if filter_active { p.accent_text } else { p.text_muted },
                 );
-            });
-        });
-        ui.add_space(4.0);
-        if modules.show_media_library {
-            if sidebar_row(ui, p, "sb_mod_media", Icon::Image, s.sb_module_media, None, false, 0.0)
-                .clicked()
-            {
-                actions.push(UiAction::OpenSidebarModule(SidebarModule::MediaLibrary));
-            }
-        }
-        if modules.show_english {
-            let disp_lang = crate::config::STUDY_LANGUAGE_PRESETS
-                .iter()
-                .find(|(id, ru, en)| {
-                    modules.study_language.eq_ignore_ascii_case(id)
-                        || modules.study_language.eq_ignore_ascii_case(ru)
-                        || modules.study_language.eq_ignore_ascii_case(en)
-                })
-                .map(|(_, ru, en)| if lang == Lang::Ru { *ru } else { *en })
-                .unwrap_or_else(|| {
-                    let t = modules.study_language.trim();
-                    if t.is_empty() { "English" } else { t }
-                });
-            let lang_label = format!("{}: {}", s.sb_module_english, disp_lang);
-            if sidebar_row(ui, p, "sb_mod_english", Icon::Globe, &lang_label, None, false, 0.0)
-                .clicked()
-            {
-                actions.push(UiAction::OpenSidebarModule(SidebarModule::English));
-            }
-        }
-        ui.add_space(10.0);
-        hairline_h(ui, p);
-        ui.add_space(10.0);
-    }
+                if fresp
+                    .on_hover_cursor(CursorIcon::PointingHand)
+                    .on_hover_text(s.pages_filter_tooltip)
+                    .clicked()
+                {
+                    *pages_ui.filter_open = !*pages_ui.filter_open;
+                }
 
-    // 4. Diary Calendar + Pages Tree + Tag Cloud
-    let scroll_h = (ui.available_height() - 48.0).max(80.0);
+                let sort_lbl = match *pages_ui.sort {
+                    PagesSortOrder::NameAsc => s.sort_az_short,
+                    PagesSortOrder::ModifiedDesc => s.sort_recent_short,
+                    PagesSortOrder::NameDesc => s.sort_za_short,
+                };
+                let sort_fg = if *pages_ui.sort != PagesSortOrder::NameAsc { p.accent_text } else { p.text_muted };
+                let sg = ui.painter().layout_no_wrap(sort_lbl.to_string(), font_mono(10.0), sort_fg);
+                let (sr, sresp) = ui.allocate_exact_size(vec2(sg.size().x + 20.0, 19.0), Sense::click());
+                if sresp.hovered() || *pages_ui.sort != PagesSortOrder::NameAsc {
+                    ui.painter().rect_filled(
+                        sr,
+                        Rounding::same(5.0),
+                        if *pages_ui.sort != PagesSortOrder::NameAsc { p.accent_soft } else { p.bg_hover },
+                    );
+                }
+                draw_icon(
+                    ui.painter(),
+                    Rect::from_center_size(pos2(sr.left() + 8.0, sr.center().y), vec2(10.5, 10.5)),
+                    Icon::Sort,
+                    sort_fg,
+                );
+                ui.painter().galley(pos2(sr.left() + 15.0, sr.center().y - sg.size().y * 0.5), sg, sort_fg);
+                if sresp
+                    .on_hover_cursor(CursorIcon::PointingHand)
+                    .on_hover_text(s.pages_sort_tooltip)
+                    .clicked()
+                {
+                    *pages_ui.sort = match *pages_ui.sort {
+                        PagesSortOrder::NameAsc => PagesSortOrder::ModifiedDesc,
+                        PagesSortOrder::ModifiedDesc => PagesSortOrder::NameDesc,
+                        PagesSortOrder::NameDesc => PagesSortOrder::NameAsc,
+                    };
+                }
+
+                if !expanded_folders.is_empty() {
+                    let (cr, cresp) = ui.allocate_exact_size(vec2(18.0, 18.0), Sense::click());
+                    if cresp.hovered() {
+                        ui.painter().rect_filled(cr, Rounding::same(4.0), p.bg_hover);
+                    }
+                    let cc = cr.center();
+                    let col = if cresp.hovered() { p.text_primary } else { p.text_muted };
+                    ui.painter().line_segment([pos2(cc.x - 3.5, cc.y - 3.5), pos2(cc.x, cc.y - 0.8)], Stroke::new(1.3_f32, col));
+                    ui.painter().line_segment([pos2(cc.x + 3.5, cc.y - 3.5), pos2(cc.x, cc.y - 0.8)], Stroke::new(1.3_f32, col));
+                    ui.painter().line_segment([pos2(cc.x - 3.5, cc.y + 3.5), pos2(cc.x, cc.y + 0.8)], Stroke::new(1.3_f32, col));
+                    ui.painter().line_segment([pos2(cc.x + 3.5, cc.y + 3.5), pos2(cc.x, cc.y + 0.8)], Stroke::new(1.3_f32, col));
+                    let col_tip = if lang == Lang::Ru { "Свернуть все папки" } else { "Collapse all folders" };
+                    if cresp.on_hover_cursor(CursorIcon::PointingHand).on_hover_text(col_tip).clicked() {
+                        actions.push(UiAction::CollapseAllFolders);
+                    }
+                }
+
+                let (pr, presp) = ui.allocate_exact_size(vec2(18.0, 18.0), Sense::click());
+                if presp.hovered() {
+                    ui.painter().rect_filled(pr, Rounding::same(4.0), p.bg_hover);
+                }
+                draw_icon(
+                    ui.painter(),
+                    Rect::from_center_size(pr.center(), vec2(12.0, 12.0)),
+                    Icon::Plus,
+                    if presp.hovered() { p.accent_text } else { p.text_secondary },
+                );
+                if presp
+                    .on_hover_cursor(CursorIcon::PointingHand)
+                    .on_hover_text(s.action_new_note)
+                    .clicked()
+                {
+                    actions.push(UiAction::OpenCreateModal(Some(CreateItemKind::Note)));
+                }
+            });
+        }
+    });
+
+    if *pages_ui.tree_tab == crate::ui::SidebarTreeTab::Files
+        && (*pages_ui.filter_open || *pages_ui.filter != PagesKindFilter::All)
+    {
+        ui.add_space(4.0);
+        if ui.checkbox(pages_ui.show_system_folders, s.sb_show_system_folders).changed() {
+            actions.push(UiAction::ConfigChanged);
+        }
+    }
+    ui.add_space(4.0);
+
+    // 4. Dense File Tree or Tags Tab (~85% height)
+    let scroll_h = (ui.available_height() - 42.0).max(80.0);
     egui::ScrollArea::vertical()
         .id_salt("sidebar_tree_scroll")
-        .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysHidden)
+        .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::VisibleWhenNeeded)
         .max_height(scroll_h)
         .show(ui, |ui| {
-            render_diary_calendar(
-                ctx,
-                ui,
-                p,
-                lang,
-                cal.open,
-                cal.year,
-                cal.month,
-                cal.today,
-                selected_path,
-                cal.daily_dates,
-                false,
-                actions,
-            );
-            ui.add_space(10.0);
-            hairline_h(ui, p);
-            ui.add_space(10.0);
-            render_pages_and_tags_tree(
-                ui,
-                p,
-                lang,
-                notes,
-                collections,
-                vault_folders,
-                tag_counts,
-                selected_path,
-                selected_collection_path,
-                selected_canvas_path,
-                active_tag,
-                expanded_folders,
-                pinned_folders,
-                folder_order,
-                view_mode,
-                true,
-                false,
-                pages_ui,
-                actions,
-            );
+            if *pages_ui.tree_tab == crate::ui::SidebarTreeTab::Tags {
+                render_tags_tab_list(ui, p, lang, tag_counts, active_tag, actions);
+            } else {
+                render_pages_and_tags_tree_inner(
+                    ui,
+                    p,
+                    lang,
+                    notes,
+                    collections,
+                    vault_folders,
+                    tag_counts,
+                    selected_path,
+                    selected_collection_path,
+                    selected_canvas_path,
+                    active_tag,
+                    expanded_folders,
+                    pinned_folders,
+                    folder_order,
+                    view_mode,
+                    false,
+                    false,
+                    false,
+                    Some(&modules),
+                    pages_ui,
+                    actions,
+                );
+            }
         });
 
     // 5. Pinned Footer (Sync + Language + Theme + Settings)
@@ -826,8 +881,20 @@ pub(crate) fn render_search_trigger(
     show_shortcut: bool,
     actions: &mut Vec<UiAction>,
 ) {
+    render_search_trigger_with_width(ctx, ui, p, lang, show_shortcut, None, actions);
+}
+
+fn render_search_trigger_with_width(
+    ctx: &egui::Context,
+    ui: &mut Ui,
+    p: &ThemePalette,
+    lang: Lang,
+    show_shortcut: bool,
+    desired_w: Option<f32>,
+    actions: &mut Vec<UiAction>,
+) {
     let s = strings(lang);
-    let search_w = ui.available_width().max(60.0);
+    let search_w = desired_w.unwrap_or_else(|| ui.available_width()).max(60.0);
     let row_h = if show_shortcut { 30.0 } else { 34.0 };
     let (srect, sresp) = ui.allocate_exact_size(vec2(search_w, row_h), Sense::click());
     let s_hov = anim_bool_eased(ctx, sresp.id.with("hov"), sresp.hovered(), 0.11);
@@ -895,6 +962,73 @@ fn entry_matches_filter(entry: TreeEntry<'_>, filter: PagesKindFilter) -> bool {
     }
 }
 
+fn is_system_root_folder(_top_seg: &str, _modules: &SidebarModulesState) -> bool {
+    false
+}
+
+fn render_tags_tab_list(
+    ui: &mut Ui,
+    p: &ThemePalette,
+    lang: Lang,
+    tag_counts: &[(String, usize)],
+    active_tag: Option<&str>,
+    actions: &mut Vec<UiAction>,
+) {
+    let s = strings(lang);
+    if tag_counts.is_empty() {
+        ui.label(
+            egui::RichText::new("—")
+                .font(font_body(12.0))
+                .color(p.text_muted),
+        );
+        return;
+    }
+    if active_tag.is_some() {
+        ui.horizontal(|ui| {
+            let resp = ui.add(
+                egui::Label::new(
+                    egui::RichText::new(s.all_tags_clear)
+                        .font(font_medium(11.5))
+                        .color(p.accent_text),
+                )
+                .sense(Sense::click()),
+            );
+            if resp.on_hover_cursor(CursorIcon::PointingHand).clicked() {
+                actions.push(UiAction::SetTagFilter(None));
+            }
+        });
+        ui.add_space(6.0);
+    }
+    ui.horizontal_wrapped(|ui| {
+        ui.spacing_mut().item_spacing = vec2(5.0, 5.0);
+        for (tag, _count) in tag_counts {
+            let selected = active_tag.is_some_and(|at| at.eq_ignore_ascii_case(tag));
+            let (resp, _) = tag_chip(ui, p, tag, false);
+            if selected {
+                ui.painter().rect_stroke(
+                    resp.rect,
+                    Rounding::same(5.0),
+                    Stroke::new(1.5_f32, p.accent),
+                );
+            }
+            if resp.clicked() {
+                if selected {
+                    actions.push(UiAction::SetTagFilter(None));
+                } else {
+                    actions.push(UiAction::SetTagFilter(Some(tag.clone())));
+                }
+            }
+            let tag_ctx = tag.clone();
+            resp.context_menu(|ui| {
+                if context_menu_row(ui, p, Icon::Sparkles, s.tag_rename_ctx, false).clicked() {
+                    actions.push(UiAction::OpenTagRename(Some(tag_ctx)));
+                    ui.close_menu();
+                }
+            });
+        }
+    });
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn render_pages_and_tags_tree(
     ui: &mut Ui,
@@ -914,6 +1048,55 @@ pub(crate) fn render_pages_and_tags_tree(
     view_mode: ViewMode,
     show_tags_cloud: bool,
     compact_touch: bool,
+    pages_ui: &mut PagesTreeUiState<'_>,
+    actions: &mut Vec<UiAction>,
+) {
+    render_pages_and_tags_tree_inner(
+        ui,
+        p,
+        lang,
+        notes,
+        collections,
+        vault_folders,
+        tag_counts,
+        selected_path,
+        selected_collection_path,
+        selected_canvas_path,
+        active_tag,
+        expanded_folders,
+        pinned_folders,
+        folder_order,
+        view_mode,
+        show_tags_cloud,
+        compact_touch,
+        true,
+        None,
+        pages_ui,
+        actions,
+    );
+}
+
+#[allow(clippy::too_many_arguments)]
+fn render_pages_and_tags_tree_inner(
+    ui: &mut Ui,
+    p: &ThemePalette,
+    lang: Lang,
+    notes: &[NoteMeta],
+    collections: &[CollectionMeta],
+    vault_folders: &[String],
+    tag_counts: &[(String, usize)],
+    selected_path: Option<&str>,
+    selected_collection_path: Option<&str>,
+    selected_canvas_path: Option<&str>,
+    active_tag: Option<&str>,
+    expanded_folders: &HashSet<String>,
+    pinned_folders: &[String],
+    folder_order: &[String],
+    view_mode: ViewMode,
+    show_tags_cloud: bool,
+    compact_touch: bool,
+    show_inline_header: bool,
+    modules: Option<&SidebarModulesState>,
     pages_ui: &mut PagesTreeUiState<'_>,
     actions: &mut Vec<UiAction>,
 ) {
@@ -977,10 +1160,18 @@ pub(crate) fn render_pages_and_tags_tree(
     let mut tables_n = 0usize;
     let mut canvases_n = 0usize;
     let mut filtered_count = 0usize;
+    let hide_system = !*pages_ui.show_system_folders && active_tag.is_none();
     for note in notes {
         if let Some(tag_filter) = active_tag {
             if !note.tags.iter().any(|t| t.eq_ignore_ascii_case(tag_filter)) {
                 continue;
+            }
+        }
+        if hide_system {
+            if let (Some(m), Some((top, _))) = (modules, note.path.split_once('/')) {
+                if is_system_root_folder(top, m) {
+                    continue;
+                }
             }
         }
         notes_n += 1;
@@ -994,6 +1185,13 @@ pub(crate) fn render_pages_and_tags_tree(
     }
     if active_tag.is_none() {
         for col in collections {
+            if hide_system {
+                if let (Some(m), Some((top, _))) = (modules, col.path.split_once('/')) {
+                    if is_system_root_folder(top, m) {
+                        continue;
+                    }
+                }
+            }
             match col.kind {
                 VaultFileKind::Board => boards_n += 1,
                 VaultFileKind::Table => tables_n += 1,
@@ -1010,6 +1208,10 @@ pub(crate) fn render_pages_and_tags_tree(
         }
         if *pages_ui.filter == PagesKindFilter::All {
             for folder in vault_folders {
+                let top = folder.split('/').next().unwrap_or(folder.as_str());
+                if hide_system && modules.is_some_and(|m| is_system_root_folder(top, m)) {
+                    continue;
+                }
                 ensure_folder_path(&mut root, folder);
             }
         }
@@ -1020,156 +1222,157 @@ pub(crate) fn render_pages_and_tags_tree(
         s.stat_notes_count, s.stat_boards_count, s.stat_tables_count, s.stat_canvases_count,
     );
 
-    ui.horizontal(|ui| {
-        section_heading(ui, p, s.pages_section);
-        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            ui.spacing_mut().item_spacing.x = 4.0;
-            ui.add_space(4.0);
+    if show_inline_header {
+        ui.horizontal(|ui| {
+            section_heading(ui, p, s.pages_section);
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                ui.spacing_mut().item_spacing.x = 4.0;
+                ui.add_space(4.0);
 
-            let filter_active = *pages_ui.filter_open || *pages_ui.filter != PagesKindFilter::All;
-            let (fr, fresp) = ui.allocate_exact_size(vec2(20.0, 20.0), Sense::click());
-            if filter_active || fresp.hovered() {
-                ui.painter().rect_filled(
-                    fr,
-                    Rounding::same(5.0),
-                    if *pages_ui.filter != PagesKindFilter::All {
-                        p.accent_soft
-                    } else {
-                        p.bg_hover
-                    },
-                );
-            }
-            draw_icon(
-                ui.painter(),
-                Rect::from_center_size(fr.center(), vec2(12.0, 12.0)),
-                Icon::Filter,
-                if filter_active { p.accent_text } else { p.text_muted },
-            );
-            if fresp
-                .on_hover_cursor(CursorIcon::PointingHand)
-                .on_hover_text(s.pages_filter_tooltip)
-                .clicked()
-            {
-                *pages_ui.filter_open = !*pages_ui.filter_open;
-            }
-
-            let sort_lbl = match *pages_ui.sort {
-                PagesSortOrder::NameAsc => s.sort_az_short,
-                PagesSortOrder::ModifiedDesc => s.sort_recent_short,
-                PagesSortOrder::NameDesc => s.sort_za_short,
-            };
-            let sort_fg = if *pages_ui.sort != PagesSortOrder::NameAsc {
-                p.accent_text
-            } else {
-                p.text_muted
-            };
-            let sg = ui
-                .painter()
-                .layout_no_wrap(sort_lbl.to_string(), font_mono(10.0), sort_fg);
-            let (sr, sresp) = ui.allocate_exact_size(vec2(sg.size().x + 22.0, 19.0), Sense::click());
-            if sresp.hovered() || *pages_ui.sort != PagesSortOrder::NameAsc {
-                ui.painter().rect_filled(
-                    sr,
-                    Rounding::same(5.0),
-                    if *pages_ui.sort != PagesSortOrder::NameAsc {
-                        p.accent_soft
-                    } else {
-                        p.bg_hover
-                    },
-                );
-            }
-            draw_icon(
-                ui.painter(),
-                Rect::from_center_size(pos2(sr.left() + 9.0, sr.center().y), vec2(11.0, 11.0)),
-                Icon::Sort,
-                sort_fg,
-            );
-            ui.painter().galley(
-                pos2(sr.left() + 17.0, sr.center().y - sg.size().y * 0.5),
-                sg,
-                sort_fg,
-            );
-            if sresp
-                .on_hover_cursor(CursorIcon::PointingHand)
-                .on_hover_text(s.pages_sort_tooltip)
-                .clicked()
-            {
-                *pages_ui.sort = match *pages_ui.sort {
-                    PagesSortOrder::NameAsc => PagesSortOrder::ModifiedDesc,
-                    PagesSortOrder::ModifiedDesc => PagesSortOrder::NameDesc,
-                    PagesSortOrder::NameDesc => PagesSortOrder::NameAsc,
-                };
-            }
-
-            if !expanded_folders.is_empty() {
-                let (cr, cresp) = ui.allocate_exact_size(vec2(18.0, 18.0), Sense::click());
-                if cresp.hovered() {
-                    ui.painter()
-                        .rect_filled(cr, Rounding::same(4.0), p.bg_hover);
+                let filter_active = *pages_ui.filter_open || *pages_ui.filter != PagesKindFilter::All;
+                let (fr, fresp) = ui.allocate_exact_size(vec2(20.0, 20.0), Sense::click());
+                if filter_active || fresp.hovered() {
+                    ui.painter().rect_filled(
+                        fr,
+                        Rounding::same(5.0),
+                        if *pages_ui.filter != PagesKindFilter::All {
+                            p.accent_soft
+                        } else {
+                            p.bg_hover
+                        },
+                    );
                 }
-                let cc = cr.center();
-                let col = if cresp.hovered() {
-                    p.text_primary
+                draw_icon(
+                    ui.painter(),
+                    Rect::from_center_size(fr.center(), vec2(12.0, 12.0)),
+                    Icon::Filter,
+                    if filter_active { p.accent_text } else { p.text_muted },
+                );
+                if fresp
+                    .on_hover_cursor(CursorIcon::PointingHand)
+                    .on_hover_text(s.pages_filter_tooltip)
+                    .clicked()
+                {
+                    *pages_ui.filter_open = !*pages_ui.filter_open;
+                }
+
+                let sort_lbl = match *pages_ui.sort {
+                    PagesSortOrder::NameAsc => s.sort_az_short,
+                    PagesSortOrder::ModifiedDesc => s.sort_recent_short,
+                    PagesSortOrder::NameDesc => s.sort_za_short,
+                };
+                let sort_fg = if *pages_ui.sort != PagesSortOrder::NameAsc {
+                    p.accent_text
                 } else {
                     p.text_muted
                 };
-                // Two inward chevrons ("collapse all")
-                ui.painter().line_segment(
-                    [pos2(cc.x - 3.5, cc.y - 3.5), pos2(cc.x, cc.y - 0.8)],
-                    Stroke::new(1.3_f32, col),
+                let sg = ui
+                    .painter()
+                    .layout_no_wrap(sort_lbl.to_string(), font_mono(10.0), sort_fg);
+                let (sr, sresp) = ui.allocate_exact_size(vec2(sg.size().x + 22.0, 19.0), Sense::click());
+                if sresp.hovered() || *pages_ui.sort != PagesSortOrder::NameAsc {
+                    ui.painter().rect_filled(
+                        sr,
+                        Rounding::same(5.0),
+                        if *pages_ui.sort != PagesSortOrder::NameAsc {
+                            p.accent_soft
+                        } else {
+                            p.bg_hover
+                        },
+                    );
+                }
+                draw_icon(
+                    ui.painter(),
+                    Rect::from_center_size(pos2(sr.left() + 9.0, sr.center().y), vec2(11.0, 11.0)),
+                    Icon::Sort,
+                    sort_fg,
                 );
-                ui.painter().line_segment(
-                    [pos2(cc.x + 3.5, cc.y - 3.5), pos2(cc.x, cc.y - 0.8)],
-                    Stroke::new(1.3_f32, col),
+                ui.painter().galley(
+                    pos2(sr.left() + 17.0, sr.center().y - sg.size().y * 0.5),
+                    sg,
+                    sort_fg,
                 );
-                ui.painter().line_segment(
-                    [pos2(cc.x - 3.5, cc.y + 3.5), pos2(cc.x, cc.y + 0.8)],
-                    Stroke::new(1.3_f32, col),
-                );
-                ui.painter().line_segment(
-                    [pos2(cc.x + 3.5, cc.y + 3.5), pos2(cc.x, cc.y + 0.8)],
-                    Stroke::new(1.3_f32, col),
-                );
-                let col_tip = if lang == Lang::Ru {
-                    "Свернуть все папки"
-                } else {
-                    "Collapse all folders"
-                };
-                if cresp
+                if sresp
                     .on_hover_cursor(CursorIcon::PointingHand)
-                    .on_hover_text(col_tip)
+                    .on_hover_text(s.pages_sort_tooltip)
                     .clicked()
                 {
-                    actions.push(UiAction::CollapseAllFolders);
+                    *pages_ui.sort = match *pages_ui.sort {
+                        PagesSortOrder::NameAsc => PagesSortOrder::ModifiedDesc,
+                        PagesSortOrder::ModifiedDesc => PagesSortOrder::NameDesc,
+                        PagesSortOrder::NameDesc => PagesSortOrder::NameAsc,
+                    };
                 }
-            }
 
-            ui.label(
-                egui::RichText::new(filtered_count.to_string())
-                    .font(font_mono(11.0))
-                    .color(p.text_muted),
-            )
-            .on_hover_text(&counts_breakdown);
+                if !expanded_folders.is_empty() {
+                    let (cr, cresp) = ui.allocate_exact_size(vec2(18.0, 18.0), Sense::click());
+                    if cresp.hovered() {
+                        ui.painter()
+                            .rect_filled(cr, Rounding::same(4.0), p.bg_hover);
+                    }
+                    let cc = cr.center();
+                    let col = if cresp.hovered() {
+                        p.text_primary
+                    } else {
+                        p.text_muted
+                    };
+                    ui.painter().line_segment(
+                        [pos2(cc.x - 3.5, cc.y - 3.5), pos2(cc.x, cc.y - 0.8)],
+                        Stroke::new(1.3_f32, col),
+                    );
+                    ui.painter().line_segment(
+                        [pos2(cc.x + 3.5, cc.y - 3.5), pos2(cc.x, cc.y - 0.8)],
+                        Stroke::new(1.3_f32, col),
+                    );
+                    ui.painter().line_segment(
+                        [pos2(cc.x - 3.5, cc.y + 3.5), pos2(cc.x, cc.y + 0.8)],
+                        Stroke::new(1.3_f32, col),
+                    );
+                    ui.painter().line_segment(
+                        [pos2(cc.x + 3.5, cc.y + 3.5), pos2(cc.x, cc.y + 0.8)],
+                        Stroke::new(1.3_f32, col),
+                    );
+                    let col_tip = if lang == Lang::Ru {
+                        "Свернуть все папки"
+                    } else {
+                        "Collapse all folders"
+                    };
+                    if cresp
+                        .on_hover_cursor(CursorIcon::PointingHand)
+                        .on_hover_text(col_tip)
+                        .clicked()
+                    {
+                        actions.push(UiAction::CollapseAllFolders);
+                    }
+                }
 
-            let (pr, presp) = ui.allocate_exact_size(vec2(18.0, 18.0), Sense::click());
-            if presp.hovered() {
-                ui.painter().rect_filled(pr, Rounding::same(4.0), p.bg_hover);
-            }
-            draw_icon(
-                ui.painter(),
-                Rect::from_center_size(pr.center(), vec2(12.0, 12.0)),
-                Icon::Plus,
-                if presp.hovered() { p.accent_text } else { p.text_secondary },
-            );
-            if presp
-                .on_hover_cursor(CursorIcon::PointingHand)
-                .on_hover_text(s.action_new_note)
-                .clicked()
-            {
-                actions.push(UiAction::OpenCreateModal(Some(CreateItemKind::Note)));
-            }
+                ui.label(
+                    egui::RichText::new(filtered_count.to_string())
+                        .font(font_mono(11.0))
+                        .color(p.text_muted),
+                )
+                .on_hover_text(&counts_breakdown);
+
+                let (pr, presp) = ui.allocate_exact_size(vec2(18.0, 18.0), Sense::click());
+                if presp.hovered() {
+                    ui.painter().rect_filled(pr, Rounding::same(4.0), p.bg_hover);
+                }
+                draw_icon(
+                    ui.painter(),
+                    Rect::from_center_size(pr.center(), vec2(12.0, 12.0)),
+                    Icon::Plus,
+                    if presp.hovered() { p.accent_text } else { p.text_secondary },
+                );
+                if presp
+                    .on_hover_cursor(CursorIcon::PointingHand)
+                    .on_hover_text(s.action_new_note)
+                    .clicked()
+                {
+                    actions.push(UiAction::OpenCreateModal(Some(CreateItemKind::Note)));
+                }
+            });
         });
-    });
+    }
 
     if *pages_ui.filter_open || *pages_ui.filter != PagesKindFilter::All {
         ui.add_space(4.0);
@@ -1215,6 +1418,27 @@ pub(crate) fn render_pages_and_tags_tree(
     }
     ui.add_space(4.0);
 
+    let item_drag_id = egui::Id::new("krono_item_drag");
+    let mut item_drag = ui
+        .ctx()
+        .data(|d| d.get_temp::<ItemDragState>(item_drag_id));
+    let ptr_pos = ui
+        .ctx()
+        .pointer_interact_pos()
+        .or_else(|| ui.ctx().pointer_hover_pos());
+    let primary_down = ui.input(|i| i.pointer.primary_down());
+    if let Some(st) = item_drag.as_mut() {
+        if primary_down {
+            if let Some(pos) = ptr_pos {
+                if !st.active && (pos - st.start_pos).length() >= 5.0 {
+                    st.active = true;
+                }
+            }
+        }
+    }
+    let active_item_drag = item_drag.as_ref().filter(|st| st.active).cloned();
+    let mut drop_target: Option<String> = None;
+
     render_folder_node(
         ui,
         p,
@@ -1231,8 +1455,126 @@ pub(crate) fn render_pages_and_tags_tree(
         folder_order,
         *pages_ui.sort,
         compact_touch,
+        active_item_drag.as_ref(),
+        &mut drop_target,
         actions,
     );
+
+    if let Some(st) = item_drag {
+        if st.active && st.path.contains('/') {
+            let root_w = ui.available_width().max(80.0);
+            let (root_rect, _) = ui.allocate_exact_size(vec2(root_w, 26.0), Sense::hover());
+            let root_hovered = ptr_pos.is_some_and(|pos| root_rect.contains(pos));
+            if root_hovered {
+                drop_target = Some(String::new());
+            }
+            ui.painter().rect_filled(
+                root_rect,
+                Rounding::same(6.0),
+                if root_hovered {
+                    with_alpha(p.accent, 0.16)
+                } else {
+                    with_alpha(p.bg_elevated, 0.65)
+                },
+            );
+            ui.painter().rect_stroke(
+                root_rect,
+                Rounding::same(6.0),
+                Stroke::new(
+                    if root_hovered { 1.4_f32 } else { 1.0_f32 },
+                    if root_hovered {
+                        p.accent
+                    } else {
+                        p.border_hairline
+                    },
+                ),
+            );
+            let root_lbl = if lang == Lang::Ru {
+                "В корень хранилища"
+            } else {
+                "Move to vault root"
+            };
+            let rg = ui.painter().layout_no_wrap(
+                root_lbl.to_string(),
+                font_medium(11.5),
+                if root_hovered {
+                    p.accent_text
+                } else {
+                    p.text_muted
+                },
+            );
+            ui.painter().galley(
+                pos2(
+                    root_rect.center().x - rg.size().x * 0.5,
+                    root_rect.center().y - rg.size().y * 0.5,
+                ),
+                rg,
+                if root_hovered {
+                    p.accent_text
+                } else {
+                    p.text_muted
+                },
+            );
+        }
+        if primary_down {
+            if st.active {
+                ui.ctx().set_cursor_icon(CursorIcon::Grabbing);
+                ui.ctx().request_repaint();
+                if let Some(pos) = ptr_pos {
+                    let gp = ui.ctx().layer_painter(egui::LayerId::new(
+                        egui::Order::Tooltip,
+                        egui::Id::new("krono_item_drag_ghost"),
+                    ));
+                    let gg = ui.ctx().fonts(|f| {
+                        f.layout_no_wrap(st.label.clone(), font_medium(12.0), p.text_primary)
+                    });
+                    let ghost_w = (gg.size().x + 36.0).clamp(100.0, 220.0);
+                    let ghost_r =
+                        Rect::from_min_size(pos + vec2(10.0, -12.0), vec2(ghost_w, 26.0));
+                    gp.rect_filled(
+                        ghost_r.translate(vec2(0.0, 3.0)),
+                        Rounding::same(7.0),
+                        Color32::from_rgba_unmultiplied(0, 0, 0, 55),
+                    );
+                    gp.rect_filled(ghost_r, Rounding::same(6.0), p.bg_elevated);
+                    gp.rect_stroke(
+                        ghost_r,
+                        Rounding::same(6.0),
+                        Stroke::new(1.2_f32, p.accent),
+                    );
+                    draw_icon(
+                        &gp,
+                        Rect::from_center_size(
+                            pos2(ghost_r.left() + 14.0, ghost_r.center().y),
+                            vec2(13.0, 13.0),
+                        ),
+                        st.icon,
+                        p.accent_text,
+                    );
+                    gp.galley(
+                        pos2(
+                            ghost_r.left() + 26.0,
+                            ghost_r.center().y - gg.size().y * 0.5,
+                        ),
+                        gg,
+                        p.text_primary,
+                    );
+                }
+            }
+            ui.ctx().data_mut(|d| d.insert_temp(item_drag_id, st));
+        } else {
+            if st.active {
+                if let Some(target_folder) = drop_target {
+                    actions.push(UiAction::MoveItemToFolder {
+                        path: st.path,
+                        target_folder,
+                    });
+                }
+            }
+            ui.ctx()
+                .data_mut(|d| d.remove::<ItemDragState>(item_drag_id));
+        }
+    }
 
     if show_tags_cloud && !tag_counts.is_empty() {
         ui.add_space(16.0);
@@ -1288,6 +1630,15 @@ pub(crate) fn render_pages_and_tags_tree(
 }
 
 #[derive(Clone, Debug)]
+struct ItemDragState {
+    path: String,
+    label: String,
+    icon: Icon,
+    start_pos: egui::Pos2,
+    active: bool,
+}
+
+#[derive(Clone, Debug)]
 struct FolderDragState {
     parent_prefix: String,
     folder_path: String,
@@ -1318,11 +1669,13 @@ fn render_folder_node(
     folder_order: &[String],
     pages_sort: PagesSortOrder,
     compact_touch: bool,
+    active_item_drag: Option<&ItemDragState>,
+    drop_target: &mut Option<String>,
     actions: &mut Vec<UiAction>,
 ) {
     let s = strings(lang);
     let indent = (depth as f32) * 14.0;
-    let folder_h = if compact_touch { 34.0 } else { 27.0 };
+    let folder_h = if compact_touch { 34.0 } else { 25.0 };
     let is_diary_root_lvl = prefix.eq_ignore_ascii_case("daily");
     let is_diary_boards_lvl = prefix.eq_ignore_ascii_case("daily/boards")
         || prefix.starts_with("daily/boards/");
@@ -1556,6 +1909,31 @@ fn render_folder_node(
                 );
             }
         }
+        if !is_daily_inner {
+            if let Some(drag) = active_item_drag {
+                let src_parent = drag.path.rsplit_once('/').map(|(d, _)| d).unwrap_or("");
+                if src_parent != folder_path {
+                    let hovered_drop = ui
+                        .ctx()
+                        .pointer_interact_pos()
+                        .or_else(|| ui.ctx().pointer_hover_pos())
+                        .is_some_and(|pos| rect.contains(pos));
+                    if hovered_drop {
+                        *drop_target = Some(folder_path.clone());
+                        ui.painter().rect_filled(
+                            rect,
+                            Rounding::same(6.0),
+                            with_alpha(p.accent, 0.16),
+                        );
+                        ui.painter().rect_stroke(
+                            rect,
+                            Rounding::same(6.0),
+                            Stroke::new(1.5_f32, p.accent),
+                        );
+                    }
+                }
+            }
+        }
         let resp = resp.on_hover_cursor(if is_dragging_this {
             CursorIcon::Grabbing
         } else {
@@ -1645,6 +2023,8 @@ fn render_folder_node(
                         folder_order,
                         pages_sort,
                         compact_touch,
+                        active_item_drag,
+                        drop_target,
                         actions,
                     );
                 });
@@ -1698,6 +2078,8 @@ fn render_folder_node(
                         folder_order,
                         pages_sort,
                         compact_touch,
+                        active_item_drag,
+                        drop_target,
                         actions,
                     );
                     let measured_h = child_ui.min_rect().height();
@@ -1923,6 +2305,32 @@ fn render_entry_row_with_menu(
             indent,
         )
     };
+    if !compact_touch && !in_pinned && resp.drag_started() {
+        let folder_drag_active = ui
+            .ctx()
+            .data(|d| d.get_temp::<FolderDragState>(egui::Id::new("krono_folder_drag")))
+            .is_some();
+        if !folder_drag_active {
+            if let Some(pos) = ui
+                .ctx()
+                .pointer_interact_pos()
+                .or_else(|| ui.ctx().pointer_hover_pos())
+            {
+                ui.ctx().data_mut(|d| {
+                    d.insert_temp(
+                        egui::Id::new("krono_item_drag"),
+                        ItemDragState {
+                            path: entry.path().to_string(),
+                            label: entry.title().to_string(),
+                            icon: entry.icon(in_pinned),
+                            start_pos: pos,
+                            active: false,
+                        },
+                    );
+                });
+            }
+        }
+    }
     if resp.clicked() {
         entry.push_open(actions);
     }

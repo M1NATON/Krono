@@ -23,6 +23,7 @@ rfd = "0.15"
 arboard = { version = "3", default-features = false, features = ["image-data"] }
 zeroize = "1.8"
 spellbook = "0.4"
+printpdf = { version = "0.7", default-features = false }
 
 [target.'cfg(any(target_os = "windows", target_os = "macos"))'.dependencies]
 tray-icon = "0.19"

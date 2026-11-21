@@ -199,6 +199,25 @@ impl KronoApp {
                 if !n.dirty {
                     return;
                 }
+                if krono_core::path::is_encrypted_note(&n.path) {
+                    let Some(pw) = self.vault_crypto.master_password().map(str::to_string) else {
+                        return;
+                    };
+                    let doc_clone = n.doc.clone();
+                    let path_clone = n.path.clone();
+                    match self.save_encrypted_note_doc(&path_clone, &doc_clone, &pw) {
+                        Ok((modified, _)) => {
+                            if let Some(SplitContent::Note(ref mut n2)) = self.split.right {
+                                n2.modified = modified;
+                                n2.dirty = false;
+                                n2.last_edit_at = None;
+                            }
+                            self.reload_index_caches();
+                        }
+                        Err(e) => self.push_toast(e, ToastKind::Error),
+                    }
+                    return;
+                }
                 self.watcher.mark_internal_change();
                 match save_note(&self.config.vault_dir, &n.path, &n.doc) {
                     Ok((modified, size)) => {

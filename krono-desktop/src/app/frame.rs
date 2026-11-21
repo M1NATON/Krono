@@ -147,6 +147,8 @@ impl KronoApp {
                 filter: &mut self.pages_filter,
                 sort: &mut self.pages_sort,
                 filter_open: &mut self.pages_filter_open,
+                tree_tab: &mut self.sidebar_tree_tab,
+                show_system_folders: &mut self.config.sidebar_show_system_folders,
             };
             let mut cal_ui = CalendarUiState {
                 open: self.config.calendar_open,
@@ -187,6 +189,7 @@ impl KronoApp {
                     nav_board: self.config.nav_show_board,
                     nav_graph: self.config.nav_show_graph,
                     nav_overview: self.config.nav_show_overview,
+                    custom_titlebar: self.config.custom_titlebar,
                 },
             ));
             if desktop_sidebar_t > 0.99 && (sb_w - self.config.sidebar_width).abs() > 1.0 {
@@ -259,6 +262,7 @@ impl KronoApp {
 
         // 4. Desktop Right Inspector (smoothly animated panel, hidden by default)
         if !self.zen_mode && layout.is_desktop() && desktop_inspector_t > 0.02 {
+            let current_full_md = self.current_doc.serialize();
             actions.extend(render_inspector(
                 ctx,
                 &palette,
@@ -271,6 +275,8 @@ impl KronoApp {
                 &self.cached_outgoing,
                 &self.local_graph_data,
                 &mut self.local_graph_depth,
+                &current_full_md,
+                &mut self.history,
             ));
         }
 
@@ -527,6 +533,7 @@ impl KronoApp {
                     right_rect_opt = Some(r_rect);
                 }
 
+                let is_left_active = self.split.active_pane == super::split::SplitPane::Left;
                 let mut render_left_pane = |ui: &mut egui::Ui| match self.view_mode {
                 ViewMode::Editor => {
                     if layout.is_mobile() && self.mobile_showing_list {
@@ -534,6 +541,8 @@ impl KronoApp {
                             filter: &mut self.pages_filter,
                             sort: &mut self.pages_sort,
                             filter_open: &mut self.pages_filter_open,
+                            tree_tab: &mut self.sidebar_tree_tab,
+                            show_system_folders: &mut self.config.sidebar_show_system_folders,
                         };
                         let mut cal_ui = CalendarUiState {
                             open: self.config.calendar_open,
@@ -559,6 +568,16 @@ impl KronoApp {
                             &mut pages_ui,
                             &mut cal_ui,
                         ));
+                    } else if self.is_current_note_locked() {
+                        if let Some(ref lp) = self.selected_path {
+                            crate::ui::vault_modals::render_locked_note_overlay(
+                                ui,
+                                &palette,
+                                lang,
+                                lp,
+                                &mut actions,
+                            );
+                        }
                     } else {
                         let doc_state = EditorDocState {
                             selected_path: self.selected_path.as_deref(),
@@ -763,7 +782,6 @@ impl KronoApp {
             };
 
             if let (Some(l_rect), Some(r_rect)) = (left_rect_opt, right_rect_opt) {
-                let is_left_active = self.split.active_pane == super::split::SplitPane::Left;
                 let mut left_ui = ui.new_child(
                     egui::UiBuilder::new()
                         .max_rect(l_rect.shrink(4.0))
@@ -996,6 +1014,8 @@ impl KronoApp {
                 filter: &mut self.pages_filter,
                 sort: &mut self.pages_sort,
                 filter_open: &mut self.pages_filter_open,
+                tree_tab: &mut self.sidebar_tree_tab,
+                show_system_folders: &mut self.config.sidebar_show_system_folders,
             };
             let mut cal_ui = CalendarUiState {
                 open: self.config.calendar_open,
@@ -1035,6 +1055,7 @@ impl KronoApp {
                     nav_board: self.config.nav_show_board,
                     nav_graph: self.config.nav_show_graph,
                     nav_overview: self.config.nav_show_overview,
+                    custom_titlebar: self.config.custom_titlebar,
                 },
             );
             actions.extend(d_actions);
@@ -1047,6 +1068,7 @@ impl KronoApp {
             && self.view_mode == ViewMode::Editor
             && drawer_inspector_t > 0.02
         {
+            let current_full_md = self.current_doc.serialize();
             let (i_actions, dismissed) = render_inspector_drawer(
                 ctx,
                 &palette,
@@ -1059,6 +1081,8 @@ impl KronoApp {
                 &self.cached_outgoing,
                 &self.local_graph_data,
                 &mut self.local_graph_depth,
+                &current_full_md,
+                &mut self.history,
             );
             actions.extend(i_actions);
             if dismissed {
@@ -1179,6 +1203,57 @@ impl KronoApp {
             crate::ui::bulk_modals::BulkModalOutcome::Rescan => self.scan_tag_rename(),
             crate::ui::bulk_modals::BulkModalOutcome::Apply => self.apply_tag_rename(),
             crate::ui::bulk_modals::BulkModalOutcome::None => {}
+        }
+
+        if crate::ui::vault_modals::render_vault_crypto_modal(
+            ctx,
+            &palette,
+            lang,
+            &mut self.vault_crypto,
+        ) {
+            self.submit_crypto_modal();
+        }
+
+        // Compact Vault Status / Clipboard Countdown Pill
+        let clip_secs = self.vault_crypto.clipboard_seconds_left();
+        if self.vault_crypto.is_unlocked() || clip_secs.is_some() {
+            egui::Area::new(egui::Id::new("vault_status_pill"))
+                .order(egui::Order::Foreground)
+                .anchor(egui::Align2::RIGHT_BOTTOM, egui::vec2(-16.0, -14.0))
+                .show(ctx, |ui| {
+                    egui::Frame::none()
+                        .fill(palette.bg_elevated)
+                        .stroke(egui::Stroke::new(1.0_f32, palette.border_subtle))
+                        .rounding(egui::Rounding::same(8.0))
+                        .inner_margin(egui::Margin::symmetric(10.0, 6.0))
+                        .show(ui, |ui| {
+                            ui.horizontal(|ui| {
+                                ui.spacing_mut().item_spacing.x = 8.0;
+                                if let Some(secs) = clip_secs {
+                                    ui.label(
+                                        egui::RichText::new(format!(
+                                            "{}: {secs}s",
+                                            strings(lang).clipboard_clears_in
+                                        ))
+                                        .font(crate::ui::theme::font_mono(11.5))
+                                        .color(palette.warning),
+                                    );
+                                }
+                                if self.vault_crypto.is_unlocked() {
+                                    if crate::ui::components::secondary_button(
+                                        ui,
+                                        &palette,
+                                        Some(crate::ui::icons::Icon::Lock),
+                                        strings(lang).vault_lock_now_btn,
+                                    )
+                                    .clicked()
+                                    {
+                                        actions.push(UiAction::LockVaultNow);
+                                    }
+                                }
+                            });
+                        });
+                });
         }
 
         // 7. Animated Toasts

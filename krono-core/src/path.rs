@@ -3,6 +3,7 @@ use std::collections::{BTreeMap, HashSet};
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum VaultFileKind {
     Markdown,
+    EncryptedMarkdown,
     Board,
     Table,
     Canvas,
@@ -25,6 +26,8 @@ impl VaultFileKind {
             Some(Self::Table)
         } else if lower.ends_with(".canvas") {
             Some(Self::Canvas)
+        } else if lower.ends_with(".md.enc") {
+            Some(Self::EncryptedMarkdown)
         } else if lower.ends_with(".md") {
             Some(Self::Markdown)
         } else if is_image_ext(&lower) {
@@ -41,6 +44,7 @@ impl VaultFileKind {
     pub fn extension(self) -> &'static str {
         match self {
             Self::Markdown => ".md",
+            Self::EncryptedMarkdown => ".md.enc",
             Self::Board => ".board.json",
             Self::Table => ".table.json",
             Self::Canvas => ".canvas",
@@ -49,7 +53,7 @@ impl VaultFileKind {
     }
 }
 
-/// Strips `.board.json`, `.table.json`, `.canvas`, `.md`, or image extensions from a path/filename stem.
+/// Strips `.board.json`, `.table.json`, `.canvas`, `.md.enc`, `.md`, or image extensions from a path/filename stem.
 pub fn vault_file_stem(path: &str) -> &str {
     let norm = path.trim().rsplit('/').next().unwrap_or(path);
     let lower = norm.to_lowercase();
@@ -57,6 +61,7 @@ pub fn vault_file_stem(path: &str) -> &str {
         ".board.json",
         ".table.json",
         ".canvas",
+        ".md.enc",
         ".md",
         ".jpeg",
         ".webp",
@@ -104,11 +109,15 @@ pub fn validate_vault_path(raw: &str) -> Result<(String, VaultFileKind), String>
     Ok((normalized, kind))
 }
 
+pub fn is_encrypted_note(path: &str) -> bool {
+    VaultFileKind::from_path(path) == Some(VaultFileKind::EncryptedMarkdown)
+}
+
 /// Validates and normalizes a vault-relative markdown path (`/` separated).
 pub fn validate_rel_path(raw: &str) -> Result<String, String> {
     let (normalized, kind) = validate_vault_path(raw)?;
-    if kind != VaultFileKind::Markdown {
-        return Err(format!("only .md notes are allowed: {raw}"));
+    if !matches!(kind, VaultFileKind::Markdown | VaultFileKind::EncryptedMarkdown) {
+        return Err(format!("only .md / .md.enc notes are allowed: {raw}"));
     }
     Ok(normalized)
 }

@@ -464,6 +464,30 @@ fn render_tab_scroll(
                                 }
                             },
                         );
+                        hairline_h(ui, p);
+                        setting_row(
+                            ui,
+                            p,
+                            s.settings_vault_autolock,
+                            s.settings_vault_autolock_desc,
+                            180.0,
+                            |ui| {
+                                if segmented_control(
+                                    ui,
+                                    p,
+                                    "settings_autolock_seg",
+                                    &mut cfg.vault_autolock_minutes,
+                                    &[
+                                        (5u32, None, "5m"),
+                                        (10u32, None, "10m"),
+                                        (15u32, None, "15m"),
+                                        (0u32, None, s.settings_autolock_off),
+                                    ],
+                                ) {
+                                    actions.push(UiAction::ConfigChanged);
+                                }
+                            },
+                        );
                     });
 
                     ui.add_space(14.0);

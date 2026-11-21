@@ -13,6 +13,7 @@ pub mod dialogs;
 pub mod editor_view;
 pub mod embedded_board;
 pub mod graph_view;
+pub mod history_view;
 pub mod icons;
 pub mod image_cache;
 pub mod inspector;
@@ -30,6 +31,7 @@ pub mod theme;
 pub mod titlebar;
 pub mod topbar;
 pub mod vault_map_view;
+pub mod vault_modals;
 pub mod viewport_2d;
 
 use crate::config::SlashTrigger;
@@ -121,10 +123,19 @@ pub enum PagesSortOrder {
     NameDesc,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum SidebarTreeTab {
+    #[default]
+    Files,
+    Tags,
+}
+
 pub struct PagesTreeUiState<'a> {
     pub filter: &'a mut PagesKindFilter,
     pub sort: &'a mut PagesSortOrder,
     pub filter_open: &'a mut bool,
+    pub tree_tab: &'a mut SidebarTreeTab,
+    pub show_system_folders: &'a mut bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -194,6 +205,7 @@ pub struct SidebarModulesState {
     pub nav_board: bool,
     pub nav_graph: bool,
     pub nav_overview: bool,
+    pub custom_titlebar: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -450,6 +462,10 @@ pub enum UiAction {
         folder_path: String,
         to_index: usize,
     },
+    MoveItemToFolder {
+        path: String,
+        target_folder: String,
+    },
     TogglePinTab(NavTarget),
     ReorderRecentTab {
         target: NavTarget,
@@ -461,6 +477,23 @@ pub enum UiAction {
     EmbeddedBoard(embedded_board::EmbeddedBoardAction),
     CheckForUpdates,
     InstallUpdate,
+    LoadNoteHistory(String),
+    SelectHistoryVersion {
+        path: String,
+        sha: String,
+    },
+    RestoreHistoryVersion {
+        path: String,
+        content: String,
+    },
+    OpenCreateEncryptedNote,
+    OpenEncryptCurrentNote,
+    OpenUnlockModal(String),
+    LockVaultNow,
+    CopySecretToClipboard(String),
+    ExportNoteHtml,
+    ExportNotePdf,
+    QuickAddDailyTask(String),
 }
 
 #[cfg(test)]

@@ -420,7 +420,7 @@ fn node_color(p: &ThemePalette, node: &GraphNode, mode: GraphColorMode) -> Color
         VaultFileKind::Board => p.token_colors(ColorToken::Blue).1,
         VaultFileKind::Table => p.token_colors(ColorToken::Teal).1,
         VaultFileKind::Asset => p.text_muted,
-        VaultFileKind::Markdown => match mode {
+        VaultFileKind::Markdown | VaultFileKind::EncryptedMarkdown => match mode {
             GraphColorMode::ByStatus => match node.status {
                 Some(st) => p.status_colors(st).1,
                 None => p.text_muted,
@@ -442,7 +442,9 @@ fn node_world_radius(degree: usize) -> f32 {
 
 fn open_action_for_node(path: &str, kind: VaultFileKind) -> UiAction {
     match kind {
-        VaultFileKind::Markdown => UiAction::OpenNote(path.to_string()),
+        VaultFileKind::Markdown | VaultFileKind::EncryptedMarkdown => {
+            UiAction::OpenNote(path.to_string())
+        }
         VaultFileKind::Board | VaultFileKind::Table => UiAction::OpenCollection(path.to_string()),
         VaultFileKind::Canvas => UiAction::OpenCanvas(path.to_string()),
         VaultFileKind::Asset => UiAction::OpenImageLightbox(path.to_string()),
@@ -624,7 +626,7 @@ pub fn render_graph_view(
             continue;
         }
         match node.kind {
-            VaultFileKind::Markdown => vis_notes += 1,
+            VaultFileKind::Markdown | VaultFileKind::EncryptedMarkdown => vis_notes += 1,
             VaultFileKind::Board => vis_boards += 1,
             VaultFileKind::Table => vis_tables += 1,
             VaultFileKind::Canvas => vis_canvases += 1,

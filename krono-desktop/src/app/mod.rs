@@ -4,12 +4,15 @@ mod canvas;
 mod capture;
 mod collections;
 pub(crate) mod english;
+mod export;
 mod frame;
+pub(crate) mod history;
 mod notes;
 mod shortcuts;
 mod split;
 mod sync;
 mod tasks;
+pub(crate) mod vault_crypto;
 mod vault_ops;
 
 use crate::config::AppConfig;
@@ -143,6 +146,7 @@ pub struct KronoApp {
     pub(crate) pages_filter: PagesKindFilter,
     pub(crate) pages_sort: PagesSortOrder,
     pub(crate) pages_filter_open: bool,
+    pub(crate) sidebar_tree_tab: crate::ui::SidebarTreeTab,
     new_tag_input: String,
     adding_tag: bool,
     table_filter_query: String,
@@ -237,6 +241,8 @@ pub struct KronoApp {
     pub(crate) zen_mode: bool,
     pub(crate) applied_custom_titlebar: bool,
     pub(crate) split: split::SplitViewState,
+    pub(crate) history: history::HistoryState,
+    pub(crate) vault_crypto: vault_crypto::VaultCryptoState,
 
     // TMDB background channel
     pub(crate) tmdb_tx: mpsc::Sender<TmdbEvent>,
@@ -407,6 +413,7 @@ impl KronoApp {
             pages_filter: PagesKindFilter::All,
             pages_sort: PagesSortOrder::NameAsc,
             pages_filter_open: false,
+            sidebar_tree_tab: crate::ui::SidebarTreeTab::Files,
             new_tag_input: String::new(),
             adding_tag: false,
             table_filter_query: String::new(),
@@ -481,6 +488,8 @@ impl KronoApp {
             zen_mode: false,
             applied_custom_titlebar,
             split: split::SplitViewState::default(),
+            history: history::HistoryState::default(),
+            vault_crypto: vault_crypto::VaultCryptoState::default(),
             tmdb_tx,
             tmdb_rx,
             #[cfg(debug_assertions)]
@@ -496,16 +505,6 @@ impl KronoApp {
             let s = strings(app.config.language);
             app.push_toast(s.toast_index_recovered, ToastKind::Info);
         }
-        for n in &app.notes {
-            if let Some((folder, _)) = n.path.rsplit_once('/') {
-                app.expanded_folders.insert(folder.to_string());
-            }
-        }
-        for c in &app.collections {
-            if let Some((folder, _)) = c.path.rsplit_once('/') {
-                app.expanded_folders.insert(folder.to_string());
-            }
-        }
         let initial_path = app
             .notes
             .iter()
@@ -515,6 +514,7 @@ impl KronoApp {
         if let Some(first) = initial_path {
             app.open_note(&first);
         }
+        app.expanded_folders.clear();
         app
     }
 
@@ -619,6 +619,9 @@ impl KronoApp {
 impl eframe::App for KronoApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.poll_background_events(ctx);
+        self.history.reset_for_path(self.selected_path.as_deref());
+        self.poll_history_channels(ctx);
+        self.tick_vault_autolock(ctx);
         self.poll_tray_commands(ctx);
         self.process_dropped_files(ctx);
         self.handle_shortcuts(ctx);

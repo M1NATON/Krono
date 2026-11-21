@@ -145,14 +145,14 @@ enum PendingDiskOp {
     SoftDelete { rel_path: String },
 }
 
-fn build_agent() -> ureq::Agent {
+pub(crate) fn build_agent() -> ureq::Agent {
     ureq::AgentBuilder::new()
         .timeout_connect(Duration::from_secs(12))
         .timeout(Duration::from_secs(35))
         .build()
 }
 
-fn apply_headers(req: ureq::Request, token: &str) -> ureq::Request {
+pub(crate) fn apply_headers(req: ureq::Request, token: &str) -> ureq::Request {
     let auth = zeroize::Zeroizing::new(format!("Bearer {}", token.trim()));
     req.set("Authorization", &auth)
         .set("Accept", "application/vnd.github+json")
@@ -160,7 +160,7 @@ fn apply_headers(req: ureq::Request, token: &str) -> ureq::Request {
         .set("User-Agent", "Krono-Desktop/0.2")
 }
 
-fn format_ureq_err(err: ureq::Error, lang: Lang) -> String {
+pub(crate) fn format_ureq_err(err: ureq::Error, lang: Lang) -> String {
     match err {
         ureq::Error::Status(code, resp) => {
             let body = resp.into_string().unwrap_or_default();
@@ -181,6 +181,10 @@ fn format_ureq_err(err: ureq::Error, lang: Lang) -> String {
                     Lang::Ru => format!("Ошибка 404: репозиторий или ветка не найдены (либо нет доступа у токена). {gh_msg}"),
                     Lang::En => format!("HTTP 404: Repository or branch not found (or token lacks access). {gh_msg}"),
                 },
+                429 => match lang {
+                    Lang::Ru => "Ошибка 429: превышен лимит запросов GitHub API. Попробуйте позже.".into(),
+                    Lang::En => "HTTP 429: GitHub API rate limit exceeded. Try again later.".into(),
+                },
                 _ => format!("GitHub HTTP {code}: {gh_msg}"),
             }
         }
@@ -191,7 +195,7 @@ fn format_ureq_err(err: ureq::Error, lang: Lang) -> String {
     }
 }
 
-fn parse_owner_repo(repo_input: &str, lang: Lang) -> Result<(String, String), String> {
+pub(crate) fn parse_owner_repo(repo_input: &str, lang: Lang) -> Result<(String, String), String> {
     normalize_github_repo(repo_input).ok_or_else(|| match lang {
         Lang::Ru => "Укажите репозиторий в формате owner/repo или ссылку GitHub.".into(),
         Lang::En => "Specify repository as owner/repo or a GitHub URL.".into(),

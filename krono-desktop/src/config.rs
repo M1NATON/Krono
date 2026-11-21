@@ -187,6 +187,14 @@ pub struct AppConfig {
     pub nav_show_graph: bool,
     #[serde(default = "default_true")]
     pub nav_show_overview: bool,
+    #[serde(default = "default_autolock_minutes")]
+    pub vault_autolock_minutes: u32,
+    #[serde(default = "default_true")]
+    pub sidebar_show_system_folders: bool,
+}
+
+fn default_autolock_minutes() -> u32 {
+    10
 }
 
 fn default_ui_zoom() -> f32 {
@@ -293,6 +301,8 @@ impl Default for AppConfig {
             nav_show_board: true,
             nav_show_graph: true,
             nav_show_overview: true,
+            vault_autolock_minutes: default_autolock_minutes(),
+            sidebar_show_system_folders: true,
         }
     }
 }

@@ -51,7 +51,7 @@ impl NoteStatus {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Default)]
 pub struct Frontmatter {
     pub title: String,
     pub status: Option<NoteStatus>,
@@ -74,7 +74,7 @@ impl Frontmatter {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Default)]
 pub struct NoteDocument {
     pub frontmatter: Frontmatter,
     pub body: String,
@@ -91,6 +91,12 @@ pub struct NoteMeta {
     pub word_count: usize,
     pub pinned: bool,
     pub board_order: i64,
+}
+
+impl NoteMeta {
+    pub fn is_encrypted(&self) -> bool {
+        crate::path::is_encrypted_note(&self.path)
+    }
 }
 
 fn strip_quotes(s: &str) -> &str {

@@ -81,6 +81,8 @@ pub enum Icon {
     SwapArrows,
     LayoutGrid,
     SelectBox,
+    Lock,
+    Unlock,
 }
 
 fn lucide_char(icon: Icon) -> Option<char> {
@@ -160,7 +162,9 @@ fn lucide_char(icon: Icon) -> Option<char> {
         | Icon::Star
         | Icon::SwapArrows
         | Icon::LayoutGrid
-        | Icon::SelectBox => None,
+        | Icon::SelectBox
+        | Icon::Lock
+        | Icon::Unlock => None,
     }
 }
 
@@ -184,6 +188,33 @@ pub fn draw_icon(painter: &Painter, rect: Rect, icon: Icon, color: Color32) {
     let c = rect.center();
 
     match icon {
+        Icon::Lock | Icon::Unlock => {
+            let body = Rect::from_min_max(
+                pos2(c.x - side * 0.28, c.y - side * 0.05),
+                pos2(c.x + side * 0.28, c.y + side * 0.34),
+            );
+            painter.rect_stroke(body, Rounding::same(side * 0.08), Stroke::new(sw, color));
+            let r = side * 0.16;
+            let shackle_cy = c.y - side * 0.12;
+            let shift_x = if icon == Icon::Unlock { -side * 0.08 } else { 0.0 };
+            let mut arc = Vec::with_capacity(9);
+            for i in 0..=8 {
+                let a = std::f32::consts::PI * (1.0 - (i as f32 / 8.0));
+                arc.push(pos2(c.x + shift_x + a.cos() * r, shackle_cy - a.sin() * r));
+            }
+            painter.add(egui::Shape::line(arc, Stroke::new(sw, color)));
+            painter.line_segment(
+                [pos2(c.x + shift_x - r, shackle_cy), pos2(c.x + shift_x - r, body.top())],
+                Stroke::new(sw, color),
+            );
+            if icon == Icon::Lock {
+                painter.line_segment(
+                    [pos2(c.x + r, shackle_cy), pos2(c.x + r, body.top())],
+                    Stroke::new(sw, color),
+                );
+            }
+            return;
+        }
         Icon::Undo | Icon::Redo => {
             // Sharp U-turn arrow: points left for Undo (dir = -1.0), right for Redo (dir = 1.0)
             let dir = if icon == Icon::Undo { -1.0_f32 } else { 1.0_f32 };

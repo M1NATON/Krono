@@ -939,6 +939,9 @@ fn handle_preview_action(act: PreviewAction, actions: &mut Vec<UiAction>) {
         PreviewAction::CopyCode(code) => {
             actions.push(UiAction::CopyText(code));
         }
+        PreviewAction::CopySecret(secret) => {
+            actions.push(UiAction::CopySecretToClipboard(secret));
+        }
         PreviewAction::OpenImage(path) => {
             actions.push(UiAction::OpenImageLightbox(path));
         }

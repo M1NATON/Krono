@@ -159,7 +159,8 @@ impl VaultIndex {
                      word_count INTEGER NOT NULL,
                      pinned INTEGER NOT NULL DEFAULT 0,
                      board_order INTEGER NOT NULL DEFAULT 0,
-                     blob_sha TEXT NOT NULL DEFAULT ''
+                     blob_sha TEXT NOT NULL DEFAULT '',
+                     encrypted INTEGER NOT NULL DEFAULT 0
                  );
                  CREATE VIRTUAL TABLE IF NOT EXISTS notes_fts USING fts5(
                      path UNINDEXED,
@@ -252,6 +253,14 @@ impl VaultIndex {
                 )
                 .map_err(|e| format!("migrate notes.board_order: {e}"))?;
         }
+        if !cols.contains("encrypted") {
+            self.conn
+                .execute(
+                    "ALTER TABLE notes ADD COLUMN encrypted INTEGER NOT NULL DEFAULT 0",
+                    [],
+                )
+                .map_err(|e| format!("migrate notes.encrypted: {e}"))?;
+        }
         Ok(())
     }
 
@@ -339,7 +348,7 @@ impl VaultIndex {
 
         for f in disk_files {
             match f.kind {
-                VaultFileKind::Markdown => {
+                VaultFileKind::Markdown | VaultFileKind::EncryptedMarkdown => {
                     note_disk_set.insert(f.rel_path.clone());
                     let unchanged = !needs_schema_refresh
                         && existing_notes.get(&f.rel_path).is_some_and(|(m, s, sha)| {
@@ -425,14 +434,26 @@ impl VaultIndex {
             if let Ok(raw_bytes) = fs::read(&info.full_path) {
                 let norm = normalize_lf_bytes(&raw_bytes);
                 let sha = git_blob_sha1(&norm);
-                let raw = String::from_utf8_lossy(&norm);
-                let stem = info
-                    .full_path
-                    .file_stem()
-                    .map(|s| s.to_string_lossy().to_string())
-                    .unwrap_or_else(|| "Untitled".to_string());
-                let doc = NoteDocument::parse(&raw, &stem);
-                Self::upsert_rows_tx(&tx, &info.rel_path, &doc, info.modified, info.size, &sha)?;
+                if info.kind == VaultFileKind::EncryptedMarkdown {
+                    let stem = vault_file_stem(&info.rel_path);
+                    Self::upsert_encrypted_rows_tx(
+                        &tx,
+                        &info.rel_path,
+                        stem,
+                        info.modified,
+                        info.size,
+                        &sha,
+                    )?;
+                } else {
+                    let raw = String::from_utf8_lossy(&norm);
+                    let stem = info
+                        .full_path
+                        .file_stem()
+                        .map(|s| s.to_string_lossy().to_string())
+                        .unwrap_or_else(|| "Untitled".to_string());
+                    let doc = NoteDocument::parse(&raw, &stem);
+                    Self::upsert_rows_tx(&tx, &info.rel_path, &doc, info.modified, info.size, &sha)?;
+                }
                 report.changed_paths.push(info.rel_path);
             }
         }
@@ -496,6 +517,53 @@ impl VaultIndex {
         }
         tx.commit().map_err(|e| e.to_string())?;
         Ok(report)
+    }
+
+    pub fn upsert_encrypted_note(
+        &mut self,
+        rel_path: &str,
+        title: &str,
+        modified: i64,
+        size: u64,
+        blob_sha: &str,
+    ) -> Result<(), String> {
+        let tx = self.conn.transaction().map_err(|e| e.to_string())?;
+        Self::upsert_encrypted_rows_tx(&tx, rel_path, title, modified, size, blob_sha)?;
+        tx.commit().map_err(|e| e.to_string())
+    }
+
+    /// Indexes ONLY metadata of an encrypted `.md.enc` note — NEVER plaintext in FTS5/links/tasks.
+    fn upsert_encrypted_rows_tx(
+        tx: &rusqlite::Transaction<'_>,
+        rel_path: &str,
+        title: &str,
+        modified: i64,
+        size: u64,
+        blob_sha: &str,
+    ) -> Result<(), String> {
+        tx.execute(
+            "INSERT INTO notes (path, title, status, tags, excerpt, modified, size, word_count, pinned, board_order, blob_sha, encrypted)
+             VALUES (?1, ?2, '', '', '', ?3, ?4, 0, 0, 0, ?5, 1)
+             ON CONFLICT(path) DO UPDATE SET
+               title = excluded.title,
+               status = '',
+               tags = '',
+               excerpt = '',
+               modified = excluded.modified,
+               size = excluded.size,
+               word_count = 0,
+               blob_sha = excluded.blob_sha,
+               encrypted = 1",
+            params![rel_path, title, modified, size as i64, blob_sha],
+        )
+        .map_err(|e| e.to_string())?;
+        tx.execute("DELETE FROM notes_fts WHERE path = ?1", params![rel_path])
+            .map_err(|e| e.to_string())?;
+        tx.execute("DELETE FROM links WHERE source_path = ?1", params![rel_path])
+            .map_err(|e| e.to_string())?;
+        tx.execute("DELETE FROM tasks WHERE path = ?1", params![rel_path])
+            .map_err(|e| e.to_string())?;
+        Ok(())
     }
 
     pub fn upsert_note(
@@ -1359,6 +1427,7 @@ fn kind_to_db_str(kind: VaultFileKind) -> &'static str {
         VaultFileKind::Table => "table",
         VaultFileKind::Canvas => "canvas",
         VaultFileKind::Asset => "asset",
+        VaultFileKind::EncryptedMarkdown => "encrypted_markdown",
         VaultFileKind::Markdown => "markdown",
     }
 }
@@ -1368,6 +1437,7 @@ fn db_str_to_kind(raw: &str) -> VaultFileKind {
         "board" => VaultFileKind::Board,
         "table" => VaultFileKind::Table,
         "canvas" => VaultFileKind::Canvas,
+        "encrypted_markdown" => VaultFileKind::EncryptedMarkdown,
         _ => VaultFileKind::Markdown,
     }
 }

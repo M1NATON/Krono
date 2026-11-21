@@ -1,13 +1,13 @@
-use super::KronoApp;
+use super::{split::SplitContent, KronoApp};
 use crate::i18n::{strings, Lang};
 use crate::storage::{
     index::VaultIndex,
     vault::{
         audit_vault_assets, delete_note, duplicate_canvas, duplicate_collection, duplicate_note,
-        ensure_starter_vault, migrate_diary_hierarchy, read_canvas, read_collection, read_note,
-        rename_canvas, rename_collection, rename_note, rewrite_vault_canvas_links,
-        rewrite_vault_collection_links, rewrite_vault_wikilinks, save_canvas, save_collection,
-        save_note,
+        ensure_starter_vault, migrate_diary_hierarchy, move_vault_file_to_folder, read_canvas,
+        read_collection, read_note, rename_canvas, rename_collection, rename_note,
+        rewrite_vault_canvas_links, rewrite_vault_collection_links, rewrite_vault_wikilinks,
+        save_canvas, save_collection, save_note,
     },
 };
 use crate::ui::{components::ToastKind, NavTarget, RecentTabItem, ViewMode};
@@ -793,6 +793,109 @@ impl KronoApp {
                 ToastKind::Success,
             );
         }
+    }
+
+    pub(super) fn move_item_to_folder(&mut self, old_path: &str, target_folder: &str) {
+        self.flush_unsaved_documents();
+        let existing = self.existing_paths_set();
+        self.watcher.mark_internal_change();
+
+        let (new_path, kind, modified, size) = match move_vault_file_to_folder(
+            &self.config.vault_dir,
+            old_path,
+            target_folder,
+            &existing,
+        ) {
+            Ok(res) => res,
+            Err(e) => {
+                self.push_toast(e, ToastKind::Error);
+                return;
+            }
+        };
+
+        if new_path == old_path {
+            return;
+        }
+
+        match kind {
+            VaultFileKind::Markdown => {
+                let _ = self.index.remove_note(old_path);
+                if let Ok((doc, _, _)) = read_note(&self.config.vault_dir, &new_path) {
+                    let _ = self.index.upsert_note(&new_path, &doc, modified, size);
+                }
+            }
+            VaultFileKind::EncryptedMarkdown => {
+                let _ = self.index.remove_note(old_path);
+                let title = vault_file_stem(&new_path);
+                let _ = self
+                    .index
+                    .upsert_encrypted_note(&new_path, title, modified, size, "");
+            }
+            VaultFileKind::Board | VaultFileKind::Table => {
+                let _ = self.index.remove_collection(old_path);
+                if let Ok((doc, _, _, col_kind)) = read_collection(&self.config.vault_dir, &new_path)
+                {
+                    let _ = self
+                        .index
+                        .upsert_collection(&new_path, col_kind, &doc, modified, size);
+                }
+                let _ = rewrite_vault_collection_links(
+                    &self.config.vault_dir,
+                    &[old_path],
+                    &new_path,
+                );
+            }
+            VaultFileKind::Canvas => {
+                let _ = self.index.remove_collection(old_path);
+                if let Ok((doc, _, _)) = read_canvas(&self.config.vault_dir, &new_path) {
+                    let _ = self.index.upsert_canvas(&new_path, &doc, modified, size);
+                }
+                let _ = rewrite_vault_canvas_links(
+                    &self.config.vault_dir,
+                    old_path,
+                    &new_path,
+                    &[old_path],
+                    &new_path,
+                );
+            }
+            VaultFileKind::Asset => return,
+        }
+
+        if self.selected_path.as_deref() == Some(old_path) {
+            self.selected_path = Some(new_path.clone());
+        }
+        if self.active_collection.path.as_deref() == Some(old_path) {
+            self.active_collection.path = Some(new_path.clone());
+        }
+        if self.active_canvas.path.as_deref() == Some(old_path) {
+            self.active_canvas.path = Some(new_path.clone());
+        }
+        for tab in &mut self.recent_tabs {
+            match tab {
+                NavTarget::Note(p) | NavTarget::Collection(p) | NavTarget::Canvas(p)
+                    if p == old_path =>
+                {
+                    *p = new_path.clone();
+                }
+                _ => {}
+            }
+        }
+        if let Some(split_right) = &mut self.split.right {
+            match split_right {
+                SplitContent::Note(st) if st.path == old_path => st.path = new_path.clone(),
+                SplitContent::Collection(st) if st.path.as_deref() == Some(old_path) => {
+                    st.path = Some(new_path.clone());
+                }
+                _ => {}
+            }
+        }
+
+        self.reload_index_caches();
+        self.expand_parents(&new_path);
+        self.refresh_document_derivations();
+        self.refresh_embedded_boards();
+        self.last_local_save_at = Some(Instant::now());
+        self.push_toast(format!("→ {new_path}"), ToastKind::Success);
     }
 
 }

@@ -824,7 +824,7 @@ fn in_cell(ui: &mut Ui, width: f32, height: f32, add_contents: impl FnOnce(&mut 
             .max_rect(cell_rect)
             .layout(Layout::left_to_right(Align::Center)),
     );
-    cell_ui.set_clip_rect(cell_rect);
+    cell_ui.set_clip_rect(cell_rect.intersect(ui.clip_rect()));
     add_contents(&mut cell_ui);
 }
 

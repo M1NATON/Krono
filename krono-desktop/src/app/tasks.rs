@@ -15,6 +15,69 @@ use std::collections::HashSet;
 use std::time::Instant;
 
 impl KronoApp {
+    pub(super) fn quick_add_daily_task(&mut self, raw_text: &str) {
+        let trimmed = raw_text.trim();
+        if trimmed.is_empty() {
+            return;
+        }
+        let today = today_local();
+        let rel_path = daily_note_rel_path(today);
+        let task_line = if trimmed.contains('@') || trimmed.contains('📅') {
+            format!("- [ ] {trimmed}")
+        } else {
+            format!("- [ ] {trimmed} @{}", today.format_iso())
+        };
+
+        if self.selected_path.as_deref() == Some(rel_path.as_str()) {
+            if !self.current_doc.body.is_empty() && !self.current_doc.body.ends_with('\n') {
+                self.current_doc.body.push('\n');
+            }
+            self.current_doc.body.push_str(&task_line);
+            self.current_doc.body.push('\n');
+            self.dirty = true;
+            self.last_edit_at = Some(Instant::now());
+            self.save_current_note_inner(false);
+            return;
+        }
+
+        if let Ok((mut doc, _, _)) = read_note(&self.config.vault_dir, &rel_path) {
+            if !doc.body.is_empty() && !doc.body.ends_with('\n') {
+                doc.body.push('\n');
+            }
+            doc.body.push_str(&task_line);
+            doc.body.push('\n');
+            if let Ok((modified, size)) = save_note(&self.config.vault_dir, &rel_path, &doc) {
+                self.last_local_save_at = Some(Instant::now());
+                let _ = self.index.upsert_note(&rel_path, &doc, modified, size);
+                self.reload_index_caches();
+            }
+        } else {
+            let tmpl = self.config.daily_template.clone();
+            let tmpl_opt = (!tmpl.trim().is_empty()).then_some(tmpl.as_str());
+            if let Ok(created) = crate::storage::vault::create_daily_note_with_template(
+                &self.config.vault_dir,
+                today,
+                self.config.language,
+                tmpl_opt,
+            ) {
+                for (hp, hdoc, hm, hs) in created.hubs {
+                    let _ = self.index.upsert_note(&hp, &hdoc, hm, hs);
+                }
+                let mut doc = created.day_doc;
+                if !doc.body.is_empty() && !doc.body.ends_with('\n') {
+                    doc.body.push('\n');
+                }
+                doc.body.push_str(&task_line);
+                doc.body.push('\n');
+                if let Ok((modified, size)) = save_note(&self.config.vault_dir, &rel_path, &doc) {
+                    self.last_local_save_at = Some(Instant::now());
+                    let _ = self.index.upsert_note(&rel_path, &doc, modified, size);
+                    self.reload_index_caches();
+                }
+            }
+        }
+    }
+
     pub(super) fn due_tasks_badge_count(&self, today: SimpleDate) -> usize {
         self.vault_tasks
             .iter()

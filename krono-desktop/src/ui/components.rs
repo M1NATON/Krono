@@ -566,7 +566,7 @@ pub fn sidebar_row(
     indent_px: f32,
 ) -> Response {
     let w = ui.available_width().max(80.0);
-    let (rect, resp) = ui.allocate_exact_size(vec2(w, 28.0), Sense::click());
+    let (rect, resp) = ui.allocate_exact_size(vec2(w, 28.0), Sense::click_and_drag());
     let id = ui.make_persistent_id(id_salt);
     let hover_t = anim_bool_eased(ui.ctx(), id.with("hov"), resp.hovered(), 0.10);
 

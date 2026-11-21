@@ -1,7 +1,9 @@
+use crate::app::history::HistoryState;
 use crate::i18n::{strings, Lang};
 use crate::storage::index::BacklinkHit;
 use crate::ui::components::{draw_outer_left_border, hairline_h, icon_button, section_heading};
 use crate::ui::graph_view::{render_local_graph, LocalGraphData};
+use crate::ui::history_view::{render_history_panel, InspectorTab};
 use crate::ui::icons::{draw_icon, Icon};
 use crate::ui::motion::{anim_bool_eased, with_alpha};
 use crate::ui::theme::{font_body, font_medium, font_mono, font_semibold, ThemePalette};
@@ -29,6 +31,8 @@ pub fn render_inspector(
     outgoing: &[OutgoingLinkInfo],
     local_graph: &LocalGraphData,
     local_graph_depth: &mut usize,
+    current_full_md: &str,
+    history: &mut HistoryState,
 ) -> Vec<UiAction> {
     let mut actions = Vec::new();
     let Some(path) = selected_path else {
@@ -64,6 +68,8 @@ pub fn render_inspector(
                 outgoing,
                 local_graph,
                 local_graph_depth,
+                current_full_md,
+                history,
                 &mut actions,
             );
         });
@@ -85,6 +91,8 @@ pub fn render_inspector_drawer(
     outgoing: &[OutgoingLinkInfo],
     local_graph: &LocalGraphData,
     local_graph_depth: &mut usize,
+    current_full_md: &str,
+    history: &mut HistoryState,
 ) -> (Vec<UiAction>, bool) {
     let mut actions = Vec::new();
     let mut dismiss = false;
@@ -170,6 +178,8 @@ pub fn render_inspector_drawer(
                             outgoing,
                             local_graph,
                             local_graph_depth,
+                            current_full_md,
+                            history,
                             &mut actions,
                         );
                     }
@@ -215,9 +225,57 @@ fn render_inspector_contents(
     outgoing: &[OutgoingLinkInfo],
     local_graph: &LocalGraphData,
     local_graph_depth: &mut usize,
+    current_full_md: &str,
+    history: &mut HistoryState,
     actions: &mut Vec<UiAction>,
 ) {
     let s = strings(lang);
+
+    // Tab switcher: Info | History
+    ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = 6.0;
+        for (tab, label) in [
+            (InspectorTab::Info, s.inspector_tab_info),
+            (InspectorTab::History, s.inspector_tab_history),
+        ] {
+            let active = history.active_tab == tab;
+            let fill = if active { p.accent_soft } else { p.bg_elevated };
+            let fg = if active { p.accent_text } else { p.text_secondary };
+            let stroke = if active {
+                Stroke::new(1.0_f32, p.accent)
+            } else {
+                Stroke::new(1.0_f32, p.border_hairline)
+            };
+            let resp = ui
+                .add(
+                    egui::Button::new(egui::RichText::new(label).font(font_medium(12.0)).color(fg))
+                        .fill(fill)
+                        .stroke(stroke)
+                        .rounding(Rounding::same(6.0))
+                        .min_size(vec2(64.0, 26.0)),
+                )
+                .on_hover_cursor(CursorIcon::PointingHand);
+            if resp.clicked() {
+                history.active_tab = tab;
+                if tab == InspectorTab::History
+                    && history.loaded_for_path.as_deref() != Some(path)
+                    && !history.loading_commits
+                {
+                    actions.push(UiAction::LoadNoteHistory(path.to_string()));
+                }
+            }
+        }
+    });
+    ui.add_space(10.0);
+
+    if history.active_tab == InspectorTab::History {
+        egui::ScrollArea::vertical()
+            .id_salt("inspector_history_scroll")
+            .show(ui, |ui| {
+                render_history_panel(ui, p, lang, path, current_full_md, history, actions);
+            });
+        return;
+    }
 
     egui::ScrollArea::vertical()
         .id_salt("inspector_scroll")

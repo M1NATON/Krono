@@ -34,6 +34,7 @@ pub enum PreviewAction {
     NavigateWikilink(String),
     ToggleTask(usize),
     CopyCode(String),
+    CopySecret(String),
     OpenImage(String),
     EmbeddedBoard(EmbeddedBoardAction),
     SendTaskToBoard {
@@ -560,6 +561,74 @@ fn render_markdown_preview_inner(
                 ui.add_space(4.0);
             }
             Block::CodeBlock { lang: code_lang, code } => {
+                if code_lang.trim().eq_ignore_ascii_case("secret") {
+                    let block = krono_core::crypto::parse_secret_block(code);
+                    let s = strings(lang);
+                    egui::Frame::none()
+                        .fill(p.bg_elevated)
+                        .stroke(Stroke::new(1.0_f32, p.accent))
+                        .rounding(Rounding::same(8.0))
+                        .inner_margin(Margin::symmetric(14.0, 10.0))
+                        .show(ui, |ui| {
+                            ui.set_width(ui.available_width());
+                            ui.horizontal(|ui| {
+                                let (ir, _) = ui.allocate_exact_size(vec2(14.0, 14.0), Sense::hover());
+                                draw_icon(ui.painter(), ir, Icon::Lock, p.accent_text);
+                                let hdr = block.title.as_deref().unwrap_or(s.secret_card_title);
+                                ui.label(
+                                    egui::RichText::new(hdr)
+                                        .font(font_semibold(13.0))
+                                        .color(p.text_primary),
+                                );
+                            });
+                            ui.add_space(6.0);
+                            for (e_idx, entry) in block.entries.iter().enumerate() {
+                                let reveal_id = ui.make_persistent_id(("secret_reveal", depth, b_idx, e_idx));
+                                let revealed = ui.ctx().data(|d| d.get_temp::<bool>(reveal_id).unwrap_or(false));
+                                ui.horizontal(|ui| {
+                                    ui.label(
+                                        egui::RichText::new(format!("{}:", entry.label))
+                                            .font(font_medium(12.0))
+                                            .color(p.text_muted),
+                                    );
+                                    let shown_val = if entry.sensitive && !revealed {
+                                        "••••••••".to_string()
+                                    } else {
+                                        entry.value.clone()
+                                    };
+                                    ui.label(
+                                        egui::RichText::new(shown_val)
+                                            .font(font_mono(12.0))
+                                            .color(p.text_primary),
+                                    );
+                                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                        if crate::ui::components::icon_button(
+                                            ui,
+                                            p,
+                                            Icon::Copy,
+                                            s.copy_btn,
+                                            false,
+                                        )
+                                        .clicked()
+                                        {
+                                            action = Some(PreviewAction::CopySecret(entry.value.clone()));
+                                        }
+                                        if entry.sensitive {
+                                            let eye_icon = if revealed { Icon::EyeOff } else { Icon::Eye };
+                                            let eye_tip = if revealed { s.secret_hide } else { s.secret_show };
+                                            if crate::ui::components::icon_button(ui, p, eye_icon, eye_tip, revealed)
+                                                .clicked()
+                                            {
+                                                ui.ctx().data_mut(|d| d.insert_temp(reveal_id, !revealed));
+                                            }
+                                        }
+                                    });
+                                });
+                            }
+                        });
+                    ui.add_space(4.0);
+                    continue;
+                }
                 let s = strings(lang);
                 let code_hash = hash_str(code);
                 let just_copied = copied_code_hash == Some(code_hash);

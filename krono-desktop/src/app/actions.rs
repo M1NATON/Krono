@@ -84,6 +84,12 @@ impl KronoApp {
                 } => {
                     self.move_note_in_board(&path, status, insert_before.as_deref());
                 }
+                UiAction::MoveItemToFolder {
+                    path,
+                    target_folder,
+                } => {
+                    self.move_item_to_folder(&path, &target_folder);
+                }
                 UiAction::ShiftNoteInBoard { path, delta } => {
                     self.shift_note_in_board(&path, delta);
                 }
@@ -790,6 +796,41 @@ impl KronoApp {
                             ctx.clone(),
                         );
                     }
+                }
+                UiAction::LoadNoteHistory(path) => {
+                    self.request_note_history(&path);
+                }
+                UiAction::SelectHistoryVersion { path, sha } => {
+                    self.request_history_version(&path, &sha);
+                }
+                UiAction::RestoreHistoryVersion { path, content } => {
+                    self.restore_history_version(&path, &content);
+                }
+                UiAction::OpenCreateEncryptedNote => {
+                    self.open_create_encrypted_modal();
+                }
+                UiAction::OpenEncryptCurrentNote => {
+                    if let Some(path) = self.selected_path.clone() {
+                        self.open_encrypt_existing_modal(&path);
+                    }
+                }
+                UiAction::OpenUnlockModal(path) => {
+                    self.open_unlock_modal(&path);
+                }
+                UiAction::LockVaultNow => {
+                    self.lock_vault();
+                }
+                UiAction::CopySecretToClipboard(secret) => {
+                    self.copy_secret_with_autoclear(secret);
+                }
+                UiAction::ExportNoteHtml => {
+                    self.export_current_note_html();
+                }
+                UiAction::ExportNotePdf => {
+                    self.export_current_note_pdf();
+                }
+                UiAction::QuickAddDailyTask(text) => {
+                    self.quick_add_daily_task(&text);
                 }
             }
         }

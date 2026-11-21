@@ -1727,3 +1727,144 @@ pub fn create_vault_folder(
     fs::create_dir_all(&full).map_err(|e| format!("create folder '{rel}': {e}"))?;
     Ok(rel)
 }
+
+/// Moves a vault file (`.md`, `.md.enc`, `.board.json`, `.table.json`, `.canvas`)
+/// into `target_folder` (empty string = vault root) with atomic write and collision deduplication.
+pub fn move_vault_file_to_folder(
+    vault_dir: &Path,
+    old_rel_path: &str,
+    target_folder: &str,
+    existing_paths: &HashSet<String>,
+) -> Result<(String, VaultFileKind, i64, u64), String> {
+    let (clean_old, kind) = validate_vault_path(old_rel_path)?;
+    if matches!(kind, VaultFileKind::Asset) {
+        return Err("moving binary assets is not supported".to_string());
+    }
+    let clean_target = target_folder.trim().replace('\\', "/");
+    let clean_target = clean_target.trim_matches('/').to_string();
+    if !clean_target.is_empty() {
+        if clean_target.contains('\0') || clean_target.as_bytes().get(1) == Some(&b':') {
+            return Err(format!("invalid target folder: {target_folder}"));
+        }
+        for seg in clean_target.split('/') {
+            if seg.is_empty() || seg == "." || seg == ".." || seg.starts_with('.') {
+                return Err(format!("disallowed target folder segment '{seg}'"));
+            }
+        }
+    }
+
+    let old_parent = clean_old.rsplit_once('/').map(|(d, _)| d).unwrap_or("");
+    let old_full = full_vault_path(vault_dir, &clean_old)?;
+    if !old_full.is_file() {
+        return Err(format!("source file does not exist: {clean_old}"));
+    }
+    if old_parent == clean_target {
+        let meta = fs::metadata(&old_full).map_err(|e| format!("stat '{clean_old}': {e}"))?;
+        let modified = meta
+            .modified()
+            .ok()
+            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+            .map(|d| d.as_secs() as i64)
+            .unwrap_or(0);
+        return Ok((clean_old, kind, modified, meta.len()));
+    }
+
+    let file_name = clean_old.rsplit('/').next().unwrap_or(&clean_old);
+    let candidate = if clean_target.is_empty() {
+        file_name.to_string()
+    } else {
+        format!("{clean_target}/{file_name}")
+    };
+
+    let mut filtered_existing = existing_paths.clone();
+    filtered_existing.remove(&clean_old);
+    let has_collision = filtered_existing
+        .iter()
+        .any(|p| p.eq_ignore_ascii_case(&candidate));
+    let new_rel_path = if has_collision {
+        unique_vault_path(
+            (!clean_target.is_empty()).then_some(clean_target.as_str()),
+            vault_file_stem(&clean_old),
+            kind.extension(),
+            &filtered_existing,
+        )
+    } else {
+        candidate
+    };
+
+    let bytes = fs::read(&old_full).map_err(|e| format!("read '{clean_old}': {e}"))?;
+    let new_full = full_vault_path(vault_dir, &new_rel_path)?;
+    write_file_atomic(&new_full, &bytes)?;
+    let meta = fs::metadata(&new_full).map_err(|e| format!("stat '{new_rel_path}': {e}"))?;
+    let modified = meta
+        .modified()
+        .ok()
+        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0);
+    let size = meta.len();
+    if new_rel_path != clean_old {
+        let _ = fs::remove_file(&old_full);
+    }
+    Ok((new_rel_path, kind, modified, size))
+}
+
+#[cfg(test)]
+mod move_tests {
+    use super::*;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    static MOVE_TEST_ID: AtomicU64 = AtomicU64::new(0);
+
+    #[test]
+    fn moves_notes_boards_and_encrypted_files_between_folders() {
+        let id = MOVE_TEST_ID.fetch_add(1, Ordering::Relaxed);
+        let dir = std::env::temp_dir().join(format!(
+            "krono_move_test_{}_{}",
+            std::process::id(),
+            id
+        ));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(dir.join("work")).unwrap();
+        fs::write(dir.join("note.md"), "# Note\n").unwrap();
+        fs::write(dir.join("board.board.json"), "{}").unwrap();
+        fs::write(dir.join("secret.md.enc"), "ENC").unwrap();
+        fs::write(dir.join("work/note.md"), "# Existing\n").unwrap();
+
+        let existing: HashSet<String> = [
+            "note.md".to_string(),
+            "board.board.json".to_string(),
+            "secret.md.enc".to_string(),
+            "work/note.md".to_string(),
+        ]
+        .into_iter()
+        .collect();
+
+        let (moved_note, kind_n, _, _) =
+            move_vault_file_to_folder(&dir, "note.md", "work", &existing).unwrap();
+        assert_eq!(kind_n, VaultFileKind::Markdown);
+        assert_eq!(moved_note, "work/note-2.md");
+        assert!(!dir.join("note.md").exists());
+        assert!(dir.join("work/note-2.md").exists());
+
+        let (moved_board, kind_b, _, _) =
+            move_vault_file_to_folder(&dir, "board.board.json", "work", &existing).unwrap();
+        assert_eq!(kind_b, VaultFileKind::Board);
+        assert_eq!(moved_board, "work/board.board.json");
+
+        let (moved_enc, kind_e, _, _) =
+            move_vault_file_to_folder(&dir, "secret.md.enc", "work", &existing).unwrap();
+        assert_eq!(kind_e, VaultFileKind::EncryptedMarkdown);
+        assert_eq!(moved_enc, "work/secret.md.enc");
+
+        let mut existing_after = existing.clone();
+        existing_after.remove("board.board.json");
+        existing_after.insert("work/board.board.json".to_string());
+        let (back_root, _, _, _) =
+            move_vault_file_to_folder(&dir, "work/board.board.json", "", &existing_after).unwrap();
+        assert_eq!(back_root, "board.board.json");
+        assert!(dir.join("board.board.json").exists());
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+}

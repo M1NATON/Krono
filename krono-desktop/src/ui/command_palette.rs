@@ -194,6 +194,31 @@ pub fn render_command_palette(
             label: s.action_toggle_split,
             action: UiAction::ToggleSplitRight,
         },
+        PaletteCommand {
+            icon: Icon::Lock,
+            label: s.action_new_encrypted_note,
+            action: UiAction::OpenCreateEncryptedNote,
+        },
+        PaletteCommand {
+            icon: Icon::Lock,
+            label: s.action_encrypt_current_note,
+            action: UiAction::OpenEncryptCurrentNote,
+        },
+        PaletteCommand {
+            icon: Icon::Lock,
+            label: s.action_lock_vault_now,
+            action: UiAction::LockVaultNow,
+        },
+        PaletteCommand {
+            icon: Icon::FileOutput,
+            label: s.action_export_html,
+            action: UiAction::ExportNoteHtml,
+        },
+        PaletteCommand {
+            icon: Icon::FileOutput,
+            label: s.action_export_pdf,
+            action: UiAction::ExportNotePdf,
+        },
     ];
 
     let parsed_query = krono_core::search::parse_search_query(query);

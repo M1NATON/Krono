@@ -1450,6 +1450,7 @@ pub fn render_canvas_view(
                             VaultFileKind::Table => Icon::Table,
                             VaultFileKind::Canvas => Icon::Canvas,
                             VaultFileKind::Asset => Icon::Image,
+                            VaultFileKind::EncryptedMarkdown => Icon::Lock,
                             VaultFileKind::Markdown => Icon::Document,
                         };
                         let resolved_title = notes

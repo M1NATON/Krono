@@ -1,5 +1,5 @@
 [workspace]
-members = ["krono-core", "krono-desktop"]
+members = ["krono-core", "krono-desktop", "krono-mcp"]
 resolver = "2"
 
 [workspace.package]

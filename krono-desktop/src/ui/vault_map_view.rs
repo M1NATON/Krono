@@ -132,6 +132,7 @@ fn pretty_folder_title(lang: Lang, folder: &str) -> String {
 fn kind_icon(kind: VaultFileKind) -> Icon {
     match kind {
         VaultFileKind::Markdown => Icon::Document,
+        VaultFileKind::EncryptedMarkdown => Icon::Lock,
         VaultFileKind::Board => Icon::Board,
         VaultFileKind::Table => Icon::Table,
         VaultFileKind::Canvas => Icon::Canvas,
@@ -142,7 +143,9 @@ fn kind_icon(kind: VaultFileKind) -> Icon {
 fn kind_matches_filter(kind: VaultFileKind, filter: PagesKindFilter) -> bool {
     match filter {
         PagesKindFilter::All => true,
-        PagesKindFilter::Notes => kind == VaultFileKind::Markdown,
+        PagesKindFilter::Notes => {
+            matches!(kind, VaultFileKind::Markdown | VaultFileKind::EncryptedMarkdown)
+        }
         PagesKindFilter::Boards => kind == VaultFileKind::Board,
         PagesKindFilter::Tables => kind == VaultFileKind::Table,
         PagesKindFilter::Canvases => kind == VaultFileKind::Canvas,
@@ -151,7 +154,7 @@ fn kind_matches_filter(kind: VaultFileKind, filter: PagesKindFilter) -> bool {
 
 fn open_action_for(kind: VaultFileKind, rel_path: String, actions: &mut Vec<UiAction>) {
     match kind {
-        VaultFileKind::Markdown => {
+        VaultFileKind::Markdown | VaultFileKind::EncryptedMarkdown => {
             actions.push(UiAction::OpenNote(rel_path));
             actions.push(UiAction::SetViewMode(ViewMode::Editor));
         }

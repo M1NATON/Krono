@@ -17,6 +17,7 @@ pub struct TasksViewState {
     pub query: String,
     pub show_no_date: bool,
     pub show_completed: bool,
+    pub quick_add_draft: String,
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -52,6 +53,32 @@ pub fn render_tasks_view(
         });
         ui.add_space(12.0);
     }
+
+    // Quick-add bar -> Today's Diary
+    ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = 6.0;
+        let input_w = (ui.available_width() - 96.0).max(140.0).min(460.0);
+        let resp = ui.add(
+            egui::TextEdit::singleline(&mut state.quick_add_draft)
+                .hint_text(s.tasks_quick_add_placeholder)
+                .desired_width(input_w)
+                .font(font_body(13.0)),
+        );
+        let enter_submit = resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+        let btn_submit = crate::ui::components::primary_button(
+            ui,
+            p,
+            Some(Icon::Plus),
+            s.tasks_quick_add_btn,
+            false,
+        )
+        .clicked();
+        if (enter_submit || btn_submit) && !state.quick_add_draft.trim().is_empty() {
+            let txt = std::mem::take(&mut state.quick_add_draft);
+            actions.push(UiAction::QuickAddDailyTask(txt));
+        }
+    });
+    ui.add_space(10.0);
 
     // Filter toolbar
     ui.horizontal_wrapped(|ui| {

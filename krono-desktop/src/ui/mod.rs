@@ -29,6 +29,7 @@ pub mod table_view;
 pub mod tasks_view;
 pub mod theme;
 pub mod titlebar;
+pub mod empty_state;
 pub mod topbar;
 pub mod vault_map_view;
 pub mod vault_modals;
@@ -201,8 +202,6 @@ pub struct SidebarModulesState {
     pub show_english: bool,
     pub study_language: String,
     pub nav_tasks: bool,
-    pub nav_table: bool,
-    pub nav_board: bool,
     pub nav_graph: bool,
     pub nav_overview: bool,
     pub custom_titlebar: bool,
@@ -329,6 +328,7 @@ pub enum UiAction {
         kind: CreateItemKind,
     },
     StartCreateSubfolder(String),
+    DeleteFolder(String),
     SendTaskToBoard {
         task_idx: usize,
         board_path: String,

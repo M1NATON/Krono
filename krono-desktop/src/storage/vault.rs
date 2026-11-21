@@ -309,6 +309,7 @@ fn weekday_label(lang: Lang, date: SimpleDate) -> &'static str {
     }
 }
 
+#[cfg(test)]
 pub fn create_note(
     vault_dir: &Path,
     raw_title_or_path: &str,
@@ -474,23 +475,49 @@ pub fn delete_note(vault_dir: &Path, rel_path: &str) -> Result<(), String> {
             }
         }
     }
-    // Prune empty parent directories inside vault_dir (never vault_dir itself)
-    let mut cur = full.parent();
-    while let Some(dir) = cur {
-        if dir == vault_dir {
-            break;
-        }
-        if fs::read_dir(dir)
-            .map(|mut it| it.next().is_none())
-            .unwrap_or(false)
-        {
-            let _ = fs::remove_dir(dir);
-            cur = dir.parent();
-        } else {
-            break;
-        }
-    }
     Ok(())
+}
+
+/// Explicitly deletes a vault folder (moving any contained vault files to `.trash` first).
+pub fn delete_vault_folder(
+    vault_dir: &Path,
+    rel_folder: &str,
+) -> Result<Vec<(String, VaultFileKind)>, String> {
+    let clean = rel_folder.trim().replace('\\', "/");
+    let clean = clean.trim_matches('/').to_string();
+    if clean.is_empty()
+        || clean.contains('\0')
+        || clean.as_bytes().get(1) == Some(&b':')
+        || clean
+            .split('/')
+            .any(|seg| seg.is_empty() || seg == "." || seg == ".." || seg.starts_with('.'))
+    {
+        return Err(format!("invalid folder path: {rel_folder}"));
+    }
+    if clean.eq_ignore_ascii_case("daily") {
+        return Err("cannot delete daily root folder".to_string());
+    }
+
+    let mut full_dir = vault_dir.to_path_buf();
+    for seg in clean.split('/') {
+        full_dir.push(seg);
+    }
+    if !full_dir.is_dir() {
+        return Err(format!("folder not found: {clean}"));
+    }
+
+    let prefix = format!("{clean}/");
+    let files: Vec<(String, VaultFileKind)> = list_vault_files(vault_dir)
+        .into_iter()
+        .filter(|f| f.rel_path.starts_with(&prefix))
+        .map(|f| (f.rel_path, f.kind))
+        .collect();
+
+    for (rel_path, _) in &files {
+        delete_note(vault_dir, rel_path)?;
+    }
+    fs::remove_dir_all(&full_dir).map_err(|e| format!("delete folder '{clean}': {e}"))?;
+    Ok(files)
 }
 
 pub fn ensure_starter_vault(vault_dir: &Path, lang: Lang) -> Result<(), String> {
@@ -651,6 +678,7 @@ pub fn ensure_daily_hubs_for_date(
     Ok(touched)
 }
 
+#[cfg(test)]
 pub fn create_daily_note(
     vault_dir: &Path,
     date: SimpleDate,
@@ -1410,6 +1438,8 @@ mod tests {
 
         delete_note(&dir, "sub/temp.md").unwrap();
         assert!(!dir.join("sub/temp.md").exists());
+        assert!(dir.join("sub").exists());
+        delete_vault_folder(&dir, "sub").unwrap();
         assert!(!dir.join("sub").exists());
         let trash_entries: Vec<_> = fs::read_dir(dir.join(".trash"))
             .unwrap()

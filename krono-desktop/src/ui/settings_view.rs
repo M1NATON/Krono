@@ -1,5 +1,6 @@
 use crate::config::{
-    AccentPreset, AppConfig, CustomSlashSnippet, EditorWidth, SlashTrigger, ThemePreset,
+    AccentPreset, AppConfig, CustomSlashSnippet, EditorWidth, SlashTrigger, StartupMode,
+    ThemePreset,
 };
 use crate::i18n::{strings, Lang};
 use crate::storage::vault::{list_custom_templates, AssetAuditEntry};
@@ -459,6 +460,32 @@ fn render_tab_scroll(
                                     p,
                                     "sw_custom_titlebar",
                                     &mut cfg.custom_titlebar,
+                                ) {
+                                    actions.push(UiAction::ConfigChanged);
+                                }
+                            },
+                        );
+                        hairline_h(ui, p);
+                        setting_row(
+                            ui,
+                            p,
+                            s.settings_startup_mode,
+                            s.settings_startup_mode_desc,
+                            240.0,
+                            |ui| {
+                                if segmented_control(
+                                    ui,
+                                    p,
+                                    "seg_startup_mode",
+                                    &mut cfg.startup_mode,
+                                    &[
+                                        (StartupMode::EmptyScreen, None, s.settings_startup_empty),
+                                        (
+                                            StartupMode::RestoreTabs,
+                                            None,
+                                            s.settings_startup_restore,
+                                        ),
+                                    ],
                                 ) {
                                     actions.push(UiAction::ConfigChanged);
                                 }

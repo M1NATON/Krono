@@ -92,6 +92,14 @@ impl SlashTrigger {
     }
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum StartupMode {
+    #[default]
+    EmptyScreen,
+    RestoreTabs,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CustomSlashSnippet {
     pub trigger: String,
@@ -191,6 +199,14 @@ pub struct AppConfig {
     pub vault_autolock_minutes: u32,
     #[serde(default = "default_true")]
     pub sidebar_show_system_folders: bool,
+    #[serde(default)]
+    pub startup_mode: StartupMode,
+    #[serde(default)]
+    pub recent_history: Vec<String>,
+    #[serde(default)]
+    pub open_tab_keys: Vec<String>,
+    #[serde(default)]
+    pub last_active_tab_key: Option<String>,
 }
 
 fn default_autolock_minutes() -> u32 {
@@ -303,6 +319,10 @@ impl Default for AppConfig {
             nav_show_overview: true,
             vault_autolock_minutes: default_autolock_minutes(),
             sidebar_show_system_folders: true,
+            startup_mode: StartupMode::EmptyScreen,
+            recent_history: Vec::new(),
+            open_tab_keys: Vec::new(),
+            last_active_tab_key: None,
         }
     }
 }

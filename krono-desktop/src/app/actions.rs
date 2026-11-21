@@ -113,7 +113,10 @@ impl KronoApp {
                     self.navigate_to_target(target, true);
                 }
                 UiAction::CloseRecentTab(target) => {
-                    self.recent_tabs.retain(|t| t != &target);
+                    self.close_tab_and_update_view(&target);
+                }
+                UiAction::DeleteFolder(folder) => {
+                    self.delete_folder(&folder);
                 }
                 UiAction::OpenCreateModalInFolder(folder) => {
                     self.create_modal.open_with(CreateItemKind::Note);

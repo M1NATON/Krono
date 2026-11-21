@@ -497,7 +497,6 @@ impl KronoApp {
         };
 
         app.reload_index_caches();
-        app.sync_pinned_tabs_into_recent();
         if let Some(err) = startup_migration_err {
             app.push_toast(err, ToastKind::Error);
         }
@@ -505,14 +504,49 @@ impl KronoApp {
             let s = strings(app.config.language);
             app.push_toast(s.toast_index_recovered, ToastKind::Info);
         }
-        let initial_path = app
-            .notes
-            .iter()
-            .find(|n| n.path.eq_ignore_ascii_case("welcome.md"))
-            .or_else(|| app.notes.first())
-            .map(|n| n.path.clone());
-        if let Some(first) = initial_path {
-            app.open_note(&first);
+        match app.config.startup_mode {
+            crate::config::StartupMode::EmptyScreen => {
+                app.recent_tabs.clear();
+                app.enter_empty_state();
+            }
+            crate::config::StartupMode::RestoreTabs => {
+                let saved_keys = app.config.open_tab_keys.clone();
+                for key in &saved_keys {
+                    if let Some(tgt) = vault_ops::nav_target_from_key(key) {
+                        let exists = match &tgt {
+                            NavTarget::Note(p) => app.notes.iter().any(|n| n.path == *p),
+                            NavTarget::Collection(p) | NavTarget::Canvas(p) => {
+                                app.collections.iter().any(|c| c.path == *p)
+                            }
+                            NavTarget::View(_) => false,
+                        };
+                        if exists && !app.recent_tabs.contains(&tgt) {
+                            app.recent_tabs.push(tgt);
+                        }
+                    }
+                }
+                app.sync_pinned_tabs_into_recent();
+                let active_tgt = app
+                    .config
+                    .last_active_tab_key
+                    .as_deref()
+                    .and_then(vault_ops::nav_target_from_key)
+                    .filter(|t| app.recent_tabs.contains(t))
+                    .or_else(|| app.recent_tabs.last().cloned());
+                if let Some(tgt) = active_tgt {
+                    app.navigate_to_target(tgt, false);
+                } else {
+                    let initial_path = app
+                        .notes
+                        .iter()
+                        .find(|n| n.path.eq_ignore_ascii_case("welcome.md"))
+                        .or_else(|| app.notes.first())
+                        .map(|n| n.path.clone());
+                    if let Some(first) = initial_path {
+                        app.open_note(&first);
+                    }
+                }
+            }
         }
         app.expanded_folders.clear();
         app

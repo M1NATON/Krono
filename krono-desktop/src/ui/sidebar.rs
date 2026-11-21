@@ -1206,14 +1206,12 @@ fn render_pages_and_tags_tree_inner(
             insert_into_tree(&mut root, &parts, entry);
             filtered_count += 1;
         }
-        if *pages_ui.filter == PagesKindFilter::All {
-            for folder in vault_folders {
-                let top = folder.split('/').next().unwrap_or(folder.as_str());
-                if hide_system && modules.is_some_and(|m| is_system_root_folder(top, m)) {
-                    continue;
-                }
-                ensure_folder_path(&mut root, folder);
+        for folder in vault_folders {
+            let top = folder.split('/').next().unwrap_or(folder.as_str());
+            if hide_system && modules.is_some_and(|m| is_system_root_folder(top, m)) {
+                continue;
             }
+            ensure_folder_path(&mut root, folder);
         }
     }
     let total_all = notes_n + boards_n + tables_n + canvases_n;
@@ -1994,7 +1992,14 @@ fn render_folder_node(
                     if context_menu_row(ui, p, Icon::Folder, s.folder_ctx_new_subfolder, false)
                         .clicked()
                     {
-                        actions.push(UiAction::StartCreateSubfolder(folder_ctx));
+                        actions.push(UiAction::StartCreateSubfolder(folder_ctx.clone()));
+                        ui.close_menu();
+                    }
+                    ui.add_space(3.0);
+                    hairline_h(ui, p);
+                    ui.add_space(3.0);
+                    if context_menu_row(ui, p, Icon::Trash, s.folder_ctx_delete, true).clicked() {
+                        actions.push(UiAction::DeleteFolder(folder_ctx));
                         ui.close_menu();
                     }
                 }

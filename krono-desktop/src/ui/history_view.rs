@@ -112,6 +112,13 @@ pub fn render_history_panel(
                                     .font(font_mono(10.5))
                                     .color(p.text_muted),
                             );
+                            if !commit.author.trim().is_empty() {
+                                ui.label(
+                                    egui::RichText::new(&commit.author)
+                                        .font(font_body(10.5))
+                                        .color(p.text_muted),
+                                );
+                            }
                         });
                         let msg = if commit.message.is_empty() {
                             "—"

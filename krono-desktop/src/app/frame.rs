@@ -185,8 +185,6 @@ impl KronoApp {
                     show_english: self.config.show_module_english,
                     study_language: self.config.study_language.clone(),
                     nav_tasks: self.config.nav_show_tasks,
-                    nav_table: self.config.nav_show_table,
-                    nav_board: self.config.nav_show_board,
                     nav_graph: self.config.nav_show_graph,
                     nav_overview: self.config.nav_show_overview,
                     custom_titlebar: self.config.custom_titlebar,
@@ -568,6 +566,11 @@ impl KronoApp {
                             &mut pages_ui,
                             &mut cal_ui,
                         ));
+                    } else if self.selected_path.is_none() {
+                        let recent = self.build_empty_recent_entries();
+                        actions.extend(crate::ui::empty_state::render_empty_state(
+                            ui, &palette, lang, &recent,
+                        ));
                     } else if self.is_current_note_locked() {
                         if let Some(ref lp) = self.selected_path {
                             crate::ui::vault_modals::render_locked_note_overlay(
@@ -699,45 +702,59 @@ impl KronoApp {
                     ));
                 }
                 ViewMode::Collection => {
-                    if view_t < 0.99 {
-                        ui.add_space((1.0 - view_t) * 6.0);
+                    if self.active_collection.path.is_none() {
+                        let recent = self.build_empty_recent_entries();
+                        actions.extend(crate::ui::empty_state::render_empty_state(
+                            ui, &palette, lang, &recent,
+                        ));
+                    } else {
+                        if view_t < 0.99 {
+                            ui.add_space((1.0 - view_t) * 6.0);
+                        }
+                        actions.extend(render_collection_view(
+                            ctx,
+                            ui,
+                            &palette,
+                            lang,
+                            layout,
+                            today,
+                            &mut self.active_collection,
+                            &self.notes,
+                            &mut self.cover_cache,
+                            self.has_saved_tmdb_token,
+                        ));
                     }
-                    actions.extend(render_collection_view(
-                        ctx,
-                        ui,
-                        &palette,
-                        lang,
-                        layout,
-                        today,
-                        &mut self.active_collection,
-                        &self.notes,
-                        &mut self.cover_cache,
-                        self.has_saved_tmdb_token,
-                    ));
                 }
                 ViewMode::Canvas => {
-                    let canvas_md_ctx = crate::ui::canvas_view::CanvasMarkdownCtx {
-                        today,
-                        heading_serif: self.config.heading_serif,
-                        resolved_titles: &self.resolved_titles,
-                        copied_code_hash: self.copied_code_hash,
-                        embedded_boards: &self.embedded_boards,
-                        available_boards: &available_boards,
-                        embedded_notes: &embedded_notes,
-                    };
-                    actions.extend(render_canvas_view(
-                        ctx,
-                        ui,
-                        &palette,
-                        lang,
-                        layout,
-                        &mut self.active_canvas,
-                        &self.notes,
-                        &self.collections,
-                        &self.config.vault_dir,
-                        &mut self.image_cache,
-                        &canvas_md_ctx,
-                    ));
+                    if self.active_canvas.path.is_none() {
+                        let recent = self.build_empty_recent_entries();
+                        actions.extend(crate::ui::empty_state::render_empty_state(
+                            ui, &palette, lang, &recent,
+                        ));
+                    } else {
+                        let canvas_md_ctx = crate::ui::canvas_view::CanvasMarkdownCtx {
+                            today,
+                            heading_serif: self.config.heading_serif,
+                            resolved_titles: &self.resolved_titles,
+                            copied_code_hash: self.copied_code_hash,
+                            embedded_boards: &self.embedded_boards,
+                            available_boards: &available_boards,
+                            embedded_notes: &embedded_notes,
+                        };
+                        actions.extend(render_canvas_view(
+                            ctx,
+                            ui,
+                            &palette,
+                            lang,
+                            layout,
+                            &mut self.active_canvas,
+                            &self.notes,
+                            &self.collections,
+                            &self.config.vault_dir,
+                            &mut self.image_cache,
+                            &canvas_md_ctx,
+                        ));
+                    }
                 }
                 ViewMode::Settings => {
                     let prev_tab = self.settings_tab;
@@ -1051,8 +1068,6 @@ impl KronoApp {
                     show_english: self.config.show_module_english,
                     study_language: self.config.study_language.clone(),
                     nav_tasks: self.config.nav_show_tasks,
-                    nav_table: self.config.nav_show_table,
-                    nav_board: self.config.nav_show_board,
                     nav_graph: self.config.nav_show_graph,
                     nav_overview: self.config.nav_show_overview,
                     custom_titlebar: self.config.custom_titlebar,

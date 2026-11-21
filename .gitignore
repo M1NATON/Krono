@@ -7,20 +7,26 @@
 # Local user/dev vault, databases & crash/screenshot artifacts
 /krono_vault/
 .krono/
+.trash/
 *.db
 *.db-wal
 *.db-shm
 *.bmp
 *.log
+*.tmp
 
 # Local tooling / assistant metadata
 /.tgrep/
 /graphify-out/
 .graphifyignore
 GEMINI.md
+CLAUDE.md
+AGENTS.md
 implementation_plan.md
 .antigravityignore
 .agents/
+.claude/
+.cursor/
 
 # OS / IDE files
 .DS_Store

@@ -1,16 +1,23 @@
-use super::{split::SplitContent, KronoApp};
+use super::{
+    split::{SplitContent, SplitPane},
+    KronoApp,
+};
 use crate::i18n::{strings, Lang};
 use crate::storage::{
     index::VaultIndex,
     vault::{
-        audit_vault_assets, delete_note, duplicate_canvas, duplicate_collection, duplicate_note,
-        ensure_starter_vault, migrate_diary_hierarchy, move_vault_file_to_folder, read_canvas,
-        read_collection, read_note, rename_canvas, rename_collection, rename_note,
-        rewrite_vault_canvas_links, rewrite_vault_collection_links, rewrite_vault_wikilinks,
-        save_canvas, save_collection, save_note,
+        audit_vault_assets, delete_note, delete_vault_folder, duplicate_canvas,
+        duplicate_collection, duplicate_note, ensure_starter_vault, migrate_diary_hierarchy,
+        move_vault_file_to_folder, read_canvas, read_collection, read_note, rename_canvas,
+        rename_collection, rename_note, rewrite_vault_canvas_links,
+        rewrite_vault_collection_links, rewrite_vault_wikilinks, save_canvas, save_collection,
+        save_note,
     },
 };
-use crate::ui::{components::ToastKind, NavTarget, RecentTabItem, ViewMode};
+use crate::ui::{
+    components::ToastKind, empty_state::EmptyRecentEntry, icons::Icon, NavTarget, RecentTabItem,
+    ViewMode,
+};
 use krono_core::{
     note::NoteDocument,
     path::{vault_file_stem, VaultFileKind},
@@ -171,24 +178,199 @@ impl KronoApp {
         let _ = self.config.save();
     }
 
+    pub(super) fn persist_open_tabs_state(&mut self) {
+        self.config.open_tab_keys = self
+            .recent_tabs
+            .iter()
+            .filter_map(nav_target_key)
+            .collect();
+        self.config.last_active_tab_key = self
+            .primary_active_file_path()
+            .and_then(|p| match VaultFileKind::from_path(p) {
+                Some(VaultFileKind::Canvas) => Some(format!("canvas:{p}")),
+                Some(VaultFileKind::Board | VaultFileKind::Table) => Some(format!("col:{p}")),
+                Some(VaultFileKind::Markdown | VaultFileKind::EncryptedMarkdown) => {
+                    Some(format!("note:{p}"))
+                }
+                _ => None,
+            });
+        let _ = self.config.save();
+    }
+
+    pub(super) fn enter_empty_state(&mut self) {
+        self.selected_path = None;
+        self.dirty = false;
+        self.external_conflict_open_note = false;
+        self.current_doc = NoteDocument::parse("", "");
+        self.active_collection.path = None;
+        self.active_collection.dirty = false;
+        self.active_collection.reset_transient();
+        self.active_canvas.path = None;
+        self.active_canvas.dirty = false;
+        self.active_canvas.reset_transient();
+        self.split.right = None;
+        self.split.active_pane = SplitPane::Left;
+        self.view_mode = ViewMode::Editor;
+        self.refresh_document_derivations();
+        self.refresh_embedded_boards();
+    }
+
+    pub(super) fn close_tab_and_update_view(&mut self, target: &NavTarget) {
+        self.recent_tabs.retain(|t| t != target);
+
+        if let Some(split_right) = &self.split.right {
+            let matches_split = match (target, split_right) {
+                (NavTarget::Note(p), SplitContent::Note(st)) => st.path == *p,
+                (NavTarget::Collection(p), SplitContent::Collection(st)) => {
+                    st.path.as_deref() == Some(p.as_str())
+                }
+                _ => false,
+            };
+            if matches_split {
+                self.split.right = None;
+                self.split.active_pane = SplitPane::Left;
+            }
+        }
+
+        let is_active = match target {
+            NavTarget::Note(p) => {
+                self.view_mode == ViewMode::Editor && self.selected_path.as_deref() == Some(p.as_str())
+            }
+            NavTarget::Collection(p) => {
+                self.view_mode == ViewMode::Collection
+                    && self.active_collection.path.as_deref() == Some(p.as_str())
+            }
+            NavTarget::Canvas(p) => {
+                self.view_mode == ViewMode::Canvas
+                    && self.active_canvas.path.as_deref() == Some(p.as_str())
+            }
+            NavTarget::View(_) => false,
+        };
+
+        if self.recent_tabs.is_empty() {
+            self.enter_empty_state();
+        } else if is_active {
+            if let Some(next) = self.recent_tabs.last().cloned() {
+                self.navigate_to_target(next, false);
+            }
+        }
+        self.persist_open_tabs_state();
+    }
+
+    pub(crate) fn build_empty_recent_entries(&self) -> Vec<EmptyRecentEntry> {
+        let mut out = Vec::new();
+        let mut seen = std::collections::HashSet::new();
+
+        for key in &self.config.recent_history {
+            if out.len() >= 4 {
+                break;
+            }
+            let Some(target) = nav_target_from_key(key) else {
+                continue;
+            };
+            match &target {
+                NavTarget::Note(path) => {
+                    if let Some(meta) = self.notes.iter().find(|n| n.path == *path) {
+                        if seen.insert(path.clone()) {
+                            let folder_hint = path
+                                .rsplit_once('/')
+                                .map(|(d, _)| d.to_string())
+                                .unwrap_or_default();
+                            out.push(EmptyRecentEntry {
+                                title: meta.title.clone(),
+                                folder_hint,
+                                icon: if meta.is_encrypted() {
+                                    Icon::Lock
+                                } else {
+                                    Icon::Document
+                                },
+                                target,
+                            });
+                        }
+                    }
+                }
+                NavTarget::Collection(path) | NavTarget::Canvas(path) => {
+                    if let Some(col) = self.collections.iter().find(|c| c.path == *path) {
+                        if seen.insert(path.clone()) {
+                            let folder_hint = path
+                                .rsplit_once('/')
+                                .map(|(d, _)| d.to_string())
+                                .unwrap_or_default();
+                            let icon = match col.kind {
+                                VaultFileKind::Board => Icon::Board,
+                                VaultFileKind::Table => Icon::Table,
+                                VaultFileKind::Canvas => Icon::Canvas,
+                                _ => Icon::Document,
+                            };
+                            out.push(EmptyRecentEntry {
+                                title: col.title.clone(),
+                                folder_hint,
+                                icon,
+                                target,
+                            });
+                        }
+                    }
+                }
+                NavTarget::View(_) => {}
+            }
+        }
+
+        for note in &self.notes {
+            if out.len() >= 4 {
+                break;
+            }
+            if seen.insert(note.path.clone()) {
+                let folder_hint = note
+                    .path
+                    .rsplit_once('/')
+                    .map(|(d, _)| d.to_string())
+                    .unwrap_or_default();
+                out.push(EmptyRecentEntry {
+                    title: note.title.clone(),
+                    folder_hint,
+                    icon: if note.is_encrypted() {
+                        Icon::Lock
+                    } else {
+                        Icon::Document
+                    },
+                    target: NavTarget::Note(note.path.clone()),
+                });
+            }
+        }
+        out
+    }
+
     pub(super) fn record_nav(&mut self, target: NavTarget) {
         if matches!(
             target,
             NavTarget::Note(_) | NavTarget::Collection(_) | NavTarget::Canvas(_)
-        ) && !self.recent_tabs.contains(&target)
-        {
-            self.recent_tabs.push(target.clone());
-            self.sync_pinned_tabs_into_recent();
-            let unpinned_count = self
-                .recent_tabs
-                .iter()
-                .filter(|t| !self.is_tab_pinned(t))
-                .count();
-            if unpinned_count > 10 {
-                if let Some(idx) = self.recent_tabs.iter().position(|t| !self.is_tab_pinned(t)) {
-                    self.recent_tabs.remove(idx);
+        ) {
+            if let Some(key) = nav_target_key(&target) {
+                self.config.recent_history.retain(|k| k != &key);
+                self.config.recent_history.insert(0, key.clone());
+                self.config.recent_history.truncate(12);
+                self.config.last_active_tab_key = Some(key);
+            }
+            if !self.recent_tabs.contains(&target) {
+                self.recent_tabs.push(target.clone());
+                self.sync_pinned_tabs_into_recent();
+                let unpinned_count = self
+                    .recent_tabs
+                    .iter()
+                    .filter(|t| !self.is_tab_pinned(t))
+                    .count();
+                if unpinned_count > 10 {
+                    if let Some(idx) = self.recent_tabs.iter().position(|t| !self.is_tab_pinned(t)) {
+                        self.recent_tabs.remove(idx);
+                    }
                 }
             }
+            self.config.open_tab_keys = self
+                .recent_tabs
+                .iter()
+                .filter_map(nav_target_key)
+                .collect();
+            let _ = self.config.save();
         }
         if self.nav_suppress_push {
             return;
@@ -671,57 +853,18 @@ impl KronoApp {
         self.watcher.mark_internal_change();
         match delete_note(&self.config.vault_dir, rel_path) {
             Ok(()) => {
-                if is_canvas {
+                let target = if is_canvas {
                     let _ = self.index.remove_collection(rel_path);
-                    self.reload_index_caches();
-                    if self.active_canvas.path.as_deref() == Some(rel_path) {
-                        self.active_canvas.path = None;
-                        self.active_canvas.dirty = false;
-                        self.active_canvas.reset_transient();
-                        if self.view_mode == ViewMode::Canvas {
-                            self.view_mode = ViewMode::Editor;
-                        }
-                    }
-                    self.refresh_document_derivations();
-                    self.refresh_embedded_boards();
+                    NavTarget::Canvas(rel_path.to_string())
                 } else if is_collection {
                     let _ = self.index.remove_collection(rel_path);
-                    self.reload_index_caches();
-                    if self.active_collection.path.as_deref() == Some(rel_path) {
-                        self.active_collection.path = None;
-                        self.active_collection.dirty = false;
-                        self.active_collection.reset_transient();
-                        if self.view_mode == ViewMode::Collection {
-                            self.view_mode = ViewMode::Editor;
-                        }
-                    }
-                    self.refresh_document_derivations();
-                    self.refresh_embedded_boards();
+                    NavTarget::Collection(rel_path.to_string())
                 } else {
                     let _ = self.index.remove_note(rel_path);
-                    self.reload_index_caches();
-                    if self.selected_path.as_deref() == Some(rel_path) {
-                        self.selected_path = None;
-                        self.dirty = false;
-                        self.external_conflict_open_note = false;
-                        if let Some(next) = self.notes.first().map(|n| n.path.clone()) {
-                            self.open_note(&next);
-                        } else {
-                            self.current_doc = NoteDocument::parse("", "");
-                            self.refresh_document_derivations();
-                            self.refresh_embedded_boards();
-                        }
-                    } else {
-                        self.refresh_document_derivations();
-                        self.refresh_embedded_boards();
-                    }
-                }
-                self.recent_tabs.retain(|t| match t {
-                    NavTarget::Note(p) | NavTarget::Collection(p) | NavTarget::Canvas(p) => {
-                        p != rel_path
-                    }
-                    NavTarget::View(_) => true,
-                });
+                    NavTarget::Note(rel_path.to_string())
+                };
+                self.reload_index_caches();
+                self.close_tab_and_update_view(&target);
                 self.nav_history.retain(|t| match t {
                     NavTarget::Note(p) | NavTarget::Collection(p) | NavTarget::Canvas(p) => {
                         p != rel_path
@@ -734,6 +877,86 @@ impl KronoApp {
                 self.last_local_save_at = Some(Instant::now());
                 let s = strings(self.config.language);
                 self.push_toast(s.toast_moved_to_trash, ToastKind::Info);
+            }
+            Err(e) => self.push_toast(e, ToastKind::Error),
+        }
+    }
+
+    pub(super) fn delete_folder(&mut self, folder: &str) {
+        self.flush_unsaved_documents();
+        self.watcher.mark_internal_change();
+        match delete_vault_folder(&self.config.vault_dir, folder) {
+            Ok(removed) => {
+                let prefix = format!("{folder}/");
+                let mut active_removed = false;
+                for (path, kind) in &removed {
+                    match kind {
+                        VaultFileKind::Markdown | VaultFileKind::EncryptedMarkdown => {
+                            let _ = self.index.remove_note(path);
+                            self.recent_tabs
+                                .retain(|t| !matches!(t, NavTarget::Note(p) if p == path));
+                            if self.selected_path.as_deref() == Some(path.as_str()) {
+                                active_removed = true;
+                            }
+                        }
+                        VaultFileKind::Board | VaultFileKind::Table | VaultFileKind::Canvas => {
+                            let _ = self.index.remove_collection(path);
+                            self.recent_tabs.retain(|t| {
+                                !matches!(t, NavTarget::Collection(p) | NavTarget::Canvas(p) if p == path)
+                            });
+                            if self.active_collection.path.as_deref() == Some(path.as_str())
+                                || self.active_canvas.path.as_deref() == Some(path.as_str())
+                            {
+                                active_removed = true;
+                            }
+                        }
+                        VaultFileKind::Asset => {
+                            let _ = self.index.remove_asset(path);
+                        }
+                    }
+                    self.config.recent_history.retain(|k| {
+                        nav_target_from_key(k)
+                            .and_then(|t| match t {
+                                NavTarget::Note(p)
+                                | NavTarget::Collection(p)
+                                | NavTarget::Canvas(p) => Some(p),
+                                NavTarget::View(_) => None,
+                            })
+                            .is_none_or(|p| p != *path)
+                    });
+                    self.config.pinned_tabs.retain(|k| {
+                        nav_target_from_key(k)
+                            .and_then(|t| match t {
+                                NavTarget::Note(p)
+                                | NavTarget::Collection(p)
+                                | NavTarget::Canvas(p) => Some(p),
+                                NavTarget::View(_) => None,
+                            })
+                            .is_none_or(|p| p != *path)
+                    });
+                }
+
+                self.expanded_folders
+                    .retain(|f| f != folder && !f.starts_with(&prefix));
+                self.config
+                    .pinned_folders
+                    .retain(|f| f != folder && !f.starts_with(&prefix));
+                self.config
+                    .folder_order
+                    .retain(|f| f != folder && !f.starts_with(&prefix));
+
+                self.reload_index_caches();
+                if self.recent_tabs.is_empty() || active_removed {
+                    if let Some(next) = self.recent_tabs.last().cloned() {
+                        self.navigate_to_target(next, false);
+                    } else {
+                        self.enter_empty_state();
+                    }
+                }
+                self.persist_open_tabs_state();
+                self.last_local_save_at = Some(Instant::now());
+                let s = strings(self.config.language);
+                self.push_toast(s.toast_folder_deleted, ToastKind::Info);
             }
             Err(e) => self.push_toast(e, ToastKind::Error),
         }

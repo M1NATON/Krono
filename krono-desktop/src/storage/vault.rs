@@ -1,5 +1,6 @@
 use crate::config::write_file_atomic;
 use crate::i18n::{format_daily_month_title, format_daily_title, format_daily_year_title, Lang};
+use chrono::Datelike;
 use krono_core::{
     canvas::CanvasDoc,
     collection::{CollectionDoc, CollectionViewKind},
@@ -13,6 +14,7 @@ use krono_core::{
         slugify_title, unique_note_path, unique_vault_path, validate_rel_path,
         validate_vault_path, vault_file_stem, VaultFileKind,
     },
+    templates::{english_lesson_template, render_template, sanitize_template_id, TemplateVars},
 };
 use std::{
     collections::HashSet,
@@ -231,7 +233,79 @@ pub fn note_preset_body(preset_id: &str, title: &str, lang: Lang) -> (Option<Not
                 "# {title}\n\n## Opening Hook\n\n## Outline\n1. Intro\n2. Deep Dive\n3. Summary & CTA\n\n## Draft\n\n\n## Pre-publish Checklist\n- [ ] Fact check\n- [ ] Title & Thumbnail\n"
             ),
         ),
+        ("english_lesson", _) => {
+            let (tags, body) = english_lesson_template(title, lang == Lang::Ru);
+            (None, tags, body)
+        }
         _ => (None, Vec::new(), String::new()),
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CustomTemplateInfo {
+    pub id: String,
+    pub name: String,
+    pub rel_path: String,
+}
+
+fn templates_dir(vault_dir: &Path) -> PathBuf {
+    vault_dir.join(".krono").join("templates")
+}
+
+pub fn list_custom_templates(vault_dir: &Path) -> Vec<CustomTemplateInfo> {
+    let dir = templates_dir(vault_dir);
+    let Ok(entries) = fs::read_dir(&dir) else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    for entry in entries.flatten() {
+        let Ok(meta) = entry.metadata() else {
+            continue;
+        };
+        if !meta.is_file() {
+            continue;
+        }
+        let file_name = entry.file_name();
+        let Some(fname) = file_name.to_str() else {
+            continue;
+        };
+        let Some(id) = sanitize_template_id(fname) else {
+            continue;
+        };
+        let name = id.replace(['_', '-'], " ");
+        out.push(CustomTemplateInfo {
+            rel_path: format!(".krono/templates/{fname}"),
+            name,
+            id,
+        });
+    }
+    out.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+    out
+}
+
+pub fn read_custom_template(vault_dir: &Path, id: &str) -> Result<String, String> {
+    let clean_id = sanitize_template_id(&format!("{id}.md"))
+        .ok_or_else(|| "invalid template id".to_string())?;
+    let path = templates_dir(vault_dir).join(format!("{clean_id}.md"));
+    fs::read_to_string(&path).map_err(|e| format!("read template {clean_id}: {e}"))
+}
+
+fn weekday_label(lang: Lang, date: SimpleDate) -> &'static str {
+    match (lang, date.weekday_mon0()) {
+        (Lang::Ru, 0) => "Понедельник",
+        (Lang::Ru, 1) => "Вторник",
+        (Lang::Ru, 2) => "Среда",
+        (Lang::Ru, 3) => "Четверг",
+        (Lang::Ru, 4) => "Пятница",
+        (Lang::Ru, 5) => "Суббота",
+        (Lang::Ru, _) => "Воскресенье",
+        (Lang::En, 0) => "Monday",
+        (Lang::En, 1) => "Tuesday",
+        (Lang::En, 2) => "Wednesday",
+        (Lang::En, 3) => "Thursday",
+        (Lang::En, 4) => "Friday",
+        (Lang::En, 5) => "Saturday",
+        (Lang::En, _) => "Sunday",
     }
 }
 
@@ -281,6 +355,35 @@ pub fn create_note_with_preset(
     existing_paths: &HashSet<String>,
 ) -> Result<(String, NoteDocument, i64, u64), String> {
     let (_, title) = split_folder_and_title(raw_title_or_path);
+    if let Some(custom_id) = preset_id.strip_prefix("custom:") {
+        let raw = read_custom_template(vault_dir, custom_id)?;
+        let now = chrono::Local::now().date_naive();
+        let today = SimpleDate::from_ymd(now.year(), now.month(), now.day()).unwrap_or(SimpleDate {
+            year: 2026,
+            month: 1,
+            day: 1,
+        });
+        let date_str = today.format_iso();
+        let month_str = format_daily_month_title(lang, today.year, today.month);
+        let rendered = render_template(
+            &raw,
+            &TemplateVars {
+                title: &title,
+                date: &date_str,
+                month: &month_str,
+                weekday: weekday_label(lang, today),
+            },
+        );
+        let parsed = NoteDocument::parse(&rendered, &title);
+        return create_note_with_tags(
+            vault_dir,
+            raw_title_or_path,
+            parsed.frontmatter.status,
+            parsed.frontmatter.tags,
+            &parsed.body,
+            existing_paths,
+        );
+    }
     let (status, tags, body) = note_preset_body(preset_id, &title, lang);
     create_note_with_tags(vault_dir, raw_title_or_path, status, tags, &body, existing_paths)
 }
@@ -540,20 +643,59 @@ pub fn create_daily_note(
     date: SimpleDate,
     lang: Lang,
 ) -> Result<DailyCreationResult, String> {
+    create_daily_note_with_template(vault_dir, date, lang, None)
+}
+
+pub fn create_daily_note_with_template(
+    vault_dir: &Path,
+    date: SimpleDate,
+    lang: Lang,
+    template_id: Option<&str>,
+) -> Result<DailyCreationResult, String> {
     let rel_path = daily_note_rel_path(date);
     let title = format_daily_title(lang, date);
     let month_title = format_daily_month_title(lang, date.year, date.month);
-    let body = match lang {
-        Lang::Ru => format!(
-            "# {title}\n\nМесяц: [[{month_title}]]\n\n## План на день\n- [ ] \n\n## Заметки\n\n\n## Итоги дня\n- Что получилось хорошо:\n- Над чем поработать завтра:\n"
-        ),
-        Lang::En => format!(
-            "# {title}\n\nMonth: [[{month_title}]]\n\n## Focus Today\n- [ ] \n\n## Notes\n\n\n## Daily Reflection\n- Wins:\n- Tomorrow's priority:\n"
-        ),
-    };
+
     let mut fm = Frontmatter::new(title.clone());
     fm.status = None;
     fm.tags = vec!["daily".to_string()];
+
+    let custom_rendered = template_id
+        .map(str::trim)
+        .filter(|id| !id.is_empty())
+        .and_then(|id| read_custom_template(vault_dir, id).ok())
+        .map(|raw| {
+            let date_str = date.format_iso();
+            render_template(
+                &raw,
+                &TemplateVars {
+                    title: &title,
+                    date: &date_str,
+                    month: &month_title,
+                    weekday: weekday_label(lang, date),
+                },
+            )
+        });
+
+    let body = if let Some(rendered) = custom_rendered {
+        let parsed = NoteDocument::parse(&rendered, &title);
+        if !parsed.frontmatter.tags.is_empty() {
+            let mut tags = vec!["daily".to_string()];
+            tags.extend(parsed.frontmatter.tags);
+            fm.tags = normalize_tags(tags);
+        }
+        parsed.body
+    } else {
+        match lang {
+            Lang::Ru => format!(
+                "# {title}\n\nМесяц: [[{month_title}]]\n\n## План на день\n- [ ] \n\n## Заметки\n\n\n## Итоги дня\n- Что получилось хорошо:\n- Над чем поработать завтра:\n"
+            ),
+            Lang::En => format!(
+                "# {title}\n\nMonth: [[{month_title}]]\n\n## Focus Today\n- [ ] \n\n## Notes\n\n\n## Daily Reflection\n- Wins:\n- Tomorrow's priority:\n"
+            ),
+        }
+    };
+
     let doc = NoteDocument {
         frontmatter: fm,
         body,

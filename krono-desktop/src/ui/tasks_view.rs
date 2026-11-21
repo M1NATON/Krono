@@ -44,6 +44,10 @@ pub fn render_tasks_view(
                 if secondary_button(ui, p, Some(Icon::CalendarDays), s.tasks_carry_over_btn).clicked() {
                     actions.push(UiAction::CarryOverDailyTasks);
                 }
+                ui.add_space(6.0);
+                if secondary_button(ui, p, Some(Icon::Notes), s.weekly_review_btn).clicked() {
+                    actions.push(UiAction::GenerateWeeklyReview);
+                }
             });
         });
         ui.add_space(12.0);

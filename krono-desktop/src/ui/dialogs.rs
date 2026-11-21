@@ -1,4 +1,5 @@
 use crate::i18n::{strings, Lang};
+use crate::storage::vault::CustomTemplateInfo;
 use crate::ui::components::{
     focus_once, hairline_h, icon_button, primary_button, reset_focus_gate, secondary_button,
     styled_text_input,
@@ -93,6 +94,14 @@ fn presets_for_kind(kind: CreateItemKind) -> &'static [CreatePreset] {
                 title_en: "Script / Article",
                 desc_en: "Hook, outline & publish check",
             },
+            CreatePreset {
+                id: "english_lesson",
+                icon: Icon::Globe,
+                title_ru: "Урок английского",
+                desc_ru: "Словарь, грамматика и практика",
+                title_en: "English Lesson",
+                desc_en: "Vocabulary, grammar & practice",
+            },
         ],
         CreateItemKind::Board => &[
             CreatePreset {
@@ -161,6 +170,14 @@ fn presets_for_kind(kind: CreateItemKind) -> &'static [CreatePreset] {
                 title_en: "Contacts / CRM",
                 desc_en: "Role, stage, channel, follow-up",
             },
+            CreatePreset {
+                id: "vocabulary",
+                icon: Icon::Globe,
+                title_ru: "Словарь (English)",
+                desc_ru: "Слова, уровень и повторение",
+                title_en: "Vocabulary (SRS)",
+                desc_en: "Words, level & spaced review",
+            },
         ],
         CreateItemKind::Canvas => &[
             CreatePreset {
@@ -205,6 +222,7 @@ pub fn render_create_item_modal(
     lang: Lang,
     state: &mut CreateModalState,
     existing_folders: &[String],
+    custom_templates: &[CustomTemplateInfo],
 ) -> Option<UiAction> {
     let gate_id = egui::Id::new("create_modal_foc_gate");
     let anim_t = anim_bool_eased(ctx, egui::Id::new("create_modal_anim"), state.open, 0.14);
@@ -447,6 +465,50 @@ pub fn render_create_item_modal(
                                     }
                                 });
                                 ui.add_space(gap);
+                            }
+
+                            if state.kind == CreateItemKind::Note && !custom_templates.is_empty() {
+                                ui.add_space(6.0);
+                                ui.label(
+                                    egui::RichText::new(s.create_custom_templates_label)
+                                        .font(font_medium(12.0))
+                                        .color(p.text_secondary),
+                                );
+                                ui.add_space(6.0);
+                                for row in custom_templates.chunks(pcols) {
+                                    ui.horizontal(|ui| {
+                                        ui.spacing_mut().item_spacing.x = gap;
+                                        for tpl in row {
+                                            let cid = format!("custom:{}", tpl.id);
+                                            let sel = state.preset_id == cid;
+                                            let (rect, resp) = ui.allocate_exact_size(vec2(pcard_w, 46.0), Sense::click());
+                                            let bg = if sel { p.accent_soft } else { p.bg_input };
+                                            ui.painter().rect_filled(rect, Rounding::same(8.0), bg);
+                                            ui.painter().rect_stroke(
+                                                rect,
+                                                Rounding::same(8.0),
+                                                Stroke::new(if sel { 1.4_f32 } else { 1.0_f32 }, if sel { p.accent } else { p.border_hairline }),
+                                            );
+                                            draw_icon(
+                                                ui.painter(),
+                                                Rect::from_center_size(pos2(rect.left() + 17.0, rect.center().y), vec2(14.0, 14.0)),
+                                                Icon::Document,
+                                                if sel { p.accent_text } else { p.text_secondary },
+                                            );
+                                            let tg = ui.painter().layout(
+                                                tpl.name.clone(),
+                                                font_medium(12.0),
+                                                p.text_primary,
+                                                (pcard_w - 36.0).max(60.0),
+                                            );
+                                            ui.painter().galley(pos2(rect.left() + 29.0, rect.center().y - tg.size().y * 0.5), tg, p.text_primary);
+                                            if resp.on_hover_cursor(CursorIcon::PointingHand).clicked() {
+                                                state.preset_id = cid;
+                                            }
+                                        }
+                                    });
+                                    ui.add_space(gap);
+                                }
                             }
                         });
 

@@ -1,7 +1,8 @@
 use super::KronoApp;
 use crate::i18n::Lang;
 use crate::storage::vault::{
-    create_canvas_preset, create_collection_preset, create_daily_note, create_note_with_preset,
+    create_canvas_preset, create_collection_preset, create_daily_note_with_template,
+    create_note_with_preset,
     create_note_with_tags, ensure_daily_hubs_for_date, read_note, save_note,
 };
 use crate::ui::{
@@ -548,7 +549,12 @@ impl KronoApp {
             self.save_current_note();
         }
         self.watcher.mark_internal_change();
-        match create_daily_note(&self.config.vault_dir, date, self.config.language) {
+        match create_daily_note_with_template(
+            &self.config.vault_dir,
+            date,
+            self.config.language,
+            Some(&self.config.daily_template),
+        ) {
             Ok(res) => {
                 let _ = self
                     .index

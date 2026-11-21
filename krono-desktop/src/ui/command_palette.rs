@@ -90,6 +90,11 @@ pub fn render_command_palette(
             action: UiAction::OpenCreateModal(Some(CreateItemKind::Canvas)),
         },
         PaletteCommand {
+            icon: Icon::Sparkles,
+            label: s.action_scratchpad,
+            action: UiAction::OpenScratchpad,
+        },
+        PaletteCommand {
             icon: Icon::CalendarDays,
             label: s.action_daily_note,
             action: UiAction::OpenTodayNote,
@@ -103,6 +108,11 @@ pub fn render_command_palette(
             icon: Icon::CalendarDays,
             label: s.tasks_carry_over_btn,
             action: UiAction::CarryOverDailyTasks,
+        },
+        PaletteCommand {
+            icon: Icon::Notes,
+            label: s.weekly_review_action,
+            action: UiAction::GenerateWeeklyReview,
         },
         PaletteCommand {
             icon: Icon::CircleHelp,

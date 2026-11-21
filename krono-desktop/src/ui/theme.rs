@@ -729,7 +729,61 @@ pub fn setup_fonts(ctx: &egui::Context) {
         .families
         .insert(FontFamily::Name("lucide".into()), vec!["lucide".to_owned()]);
 
+    if let Some(fallback_bytes) = load_system_ipa_fallback_font() {
+        fonts.font_data.insert(
+            "system_ipa_fallback".to_owned(),
+            FontData::from_owned(fallback_bytes),
+        );
+        for family in [
+            FontFamily::Proportional,
+            FontFamily::Monospace,
+            FontFamily::Name("medium".into()),
+            FontFamily::Name("semibold".into()),
+            FontFamily::Name("bold".into()),
+            FontFamily::Name("serif_semibold".into()),
+            FontFamily::Name("serif_bold".into()),
+        ] {
+            fonts
+                .families
+                .entry(family)
+                .or_default()
+                .push("system_ipa_fallback".to_owned());
+        }
+    }
+
     ctx.set_fonts(fonts);
+}
+
+fn load_system_ipa_fallback_font() -> Option<Vec<u8>> {
+    #[cfg(target_os = "windows")]
+    let candidates: &[&str] = &[
+        r"C:\Windows\Fonts\segoeui.ttf",
+        r"C:\Windows\Fonts\arial.ttf",
+        r"C:\Windows\Fonts\tahoma.ttf",
+    ];
+    #[cfg(target_os = "macos")]
+    let candidates: &[&str] = &[
+        "/System/Library/Fonts/Supplemental/Arial.ttf",
+        "/Library/Fonts/Arial.ttf",
+        "/System/Library/Fonts/Helvetica.ttc",
+    ];
+    #[cfg(all(unix, not(target_os = "macos")))]
+    let candidates: &[&str] = &[
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+        "/usr/share/fonts/truetype/noto/NotoSans-Regular.ttf",
+        "/usr/share/fonts/TTF/DejaVuSans.ttf",
+    ];
+    #[cfg(not(any(target_os = "windows", unix)))]
+    let candidates: &[&str] = &[];
+
+    for path in candidates {
+        if let Ok(bytes) = std::fs::read(path) {
+            if !bytes.is_empty() {
+                return Some(bytes);
+            }
+        }
+    }
+    None
 }
 
 #[cfg(test)]

@@ -1,6 +1,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod app;
+mod cli;
 mod config;
 mod i18n;
 mod notifications;
@@ -8,6 +9,7 @@ mod notifications;
 mod shot_runner;
 mod storage;
 mod sync;
+mod tray;
 mod ui;
 
 use app::KronoApp;
@@ -30,6 +32,10 @@ fn append_crash_log(kind: &str, details: &str) {
 }
 
 fn main() -> eframe::Result<()> {
+    if let Some(exit_code) = cli::try_handle_cli() {
+        std::process::exit(exit_code);
+    }
+
     let prev_hook = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
         let msg = if let Some(s) = info.payload().downcast_ref::<&str>() {

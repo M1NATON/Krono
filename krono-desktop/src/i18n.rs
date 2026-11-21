@@ -458,6 +458,7 @@ pub struct Strings {
     pub col_date_all: &'static str,
     pub col_date_overdue: &'static str,
     pub col_date_today: &'static str,
+    pub col_date_due_today: &'static str,
     pub col_date_week: &'static str,
     pub col_date_none: &'static str,
     pub col_saved_views: &'static str,
@@ -502,6 +503,26 @@ pub struct Strings {
     pub update_auto_check_desc: &'static str,
     pub update_prerelease: &'static str,
     pub update_prerelease_desc: &'static str,
+
+    // Stage 3: Scratchpad
+    pub scratchpad_title: &'static str,
+    pub scratchpad_placeholder: &'static str,
+    pub scratchpad_to_daily: &'static str,
+    pub scratchpad_save_note: &'static str,
+    pub scratchpad_copy_clear: &'static str,
+    pub scratchpad_clear: &'static str,
+    pub scratchpad_sent_daily_toast: &'static str,
+    pub scratchpad_saved_note_toast: &'static str,
+    pub action_scratchpad: &'static str,
+
+    // Stage 3: Custom templates & Weekly review
+    pub settings_daily_template: &'static str,
+    pub settings_daily_template_desc: &'static str,
+    pub settings_daily_template_builtin: &'static str,
+    pub create_custom_templates_label: &'static str,
+    pub weekly_review_btn: &'static str,
+    pub weekly_review_action: &'static str,
+    pub weekly_review_created_toast: &'static str,
 }
 
 pub static RU: Strings = Strings {
@@ -935,6 +956,7 @@ pub static RU: Strings = Strings {
     col_date_all: "Все даты",
     col_date_overdue: "Просрочено",
     col_date_today: "Сегодня",
+    col_date_due_today: "На сегодня (≤)",
     col_date_week: "На неделю",
     col_date_none: "Без даты",
     col_saved_views: "Сохранённые виды",
@@ -978,6 +1000,24 @@ pub static RU: Strings = Strings {
     update_auto_check_desc: "Тихая проверка новых релизов на GitHub при старте Krono.",
     update_prerelease: "Получать бета-версии (Pre-release)",
     update_prerelease_desc: "Включать тестовые сборки (beta / rc) при поиске обновлений.",
+
+    scratchpad_title: "Быстрый захват (Scratchpad)",
+    scratchpad_placeholder: "Быстрая мысль, ссылка или заметка… (Ctrl+Enter — в дневник)",
+    scratchpad_to_daily: "В дневник",
+    scratchpad_save_note: "Новая заметка",
+    scratchpad_copy_clear: "Копировать",
+    scratchpad_clear: "Очистить",
+    scratchpad_sent_daily_toast: "Добавлено в сегодняшний дневник",
+    scratchpad_saved_note_toast: "Сохранено как новая заметка",
+    action_scratchpad: "Быстрый захват (Scratchpad)",
+
+    settings_daily_template: "Шаблон ежедневного дневника",
+    settings_daily_template_desc: "Выберите встроенный шаблон или свой .md из папки .krono/templates/",
+    settings_daily_template_builtin: "Встроенный по умолчанию",
+    create_custom_templates_label: "Пользовательские шаблоны (.krono/templates/)",
+    weekly_review_btn: "Недельный обзор",
+    weekly_review_action: "Создать недельный обзор (7 дней)",
+    weekly_review_created_toast: "Недельный обзор сформирован",
 };
 
 pub static EN: Strings = Strings {
@@ -1411,6 +1451,7 @@ pub static EN: Strings = Strings {
     col_date_all: "All dates",
     col_date_overdue: "Overdue",
     col_date_today: "Today",
+    col_date_due_today: "Due (≤ today)",
     col_date_week: "Next 7 days",
     col_date_none: "No date",
     col_saved_views: "Saved views",
@@ -1454,6 +1495,24 @@ pub static EN: Strings = Strings {
     update_auto_check_desc: "Silently check GitHub Releases when Krono starts.",
     update_prerelease: "Include beta versions (Pre-release)",
     update_prerelease_desc: "Include beta / rc builds when checking for updates.",
+
+    scratchpad_title: "Quick Capture (Scratchpad)",
+    scratchpad_placeholder: "Quick thought, snippet or link… (Ctrl+Enter sends to Daily)",
+    scratchpad_to_daily: "To Daily",
+    scratchpad_save_note: "New Note",
+    scratchpad_copy_clear: "Copy",
+    scratchpad_clear: "Clear",
+    scratchpad_sent_daily_toast: "Appended to today's daily note",
+    scratchpad_saved_note_toast: "Saved as new note",
+    action_scratchpad: "Quick Capture (Scratchpad)",
+
+    settings_daily_template: "Daily note template",
+    settings_daily_template_desc: "Use built-in layout or a custom .md file from .krono/templates/",
+    settings_daily_template_builtin: "Built-in default",
+    create_custom_templates_label: "Custom templates (.krono/templates/)",
+    weekly_review_btn: "Weekly Review",
+    weekly_review_action: "Generate Weekly Review (7 days)",
+    weekly_review_created_toast: "Weekly review generated",
 };
 
 pub fn strings(lang: Lang) -> &'static Strings {

@@ -18,6 +18,7 @@ pub mod markdown_editor;
 pub mod markdown_preview;
 pub mod mobile_nav;
 pub mod motion;
+pub mod scratchpad;
 pub mod settings_view;
 pub mod sidebar;
 pub mod table_view;
@@ -320,6 +321,7 @@ pub enum UiAction {
     ToggleTheme,
     ToggleLang,
     OpenPalette,
+    OpenScratchpad,
     OpenSettings(SettingsTab),
     CloseSettings,
     SyncNow,
@@ -335,6 +337,7 @@ pub enum UiAction {
         task_idx: usize,
     },
     CarryOverDailyTasks,
+    GenerateWeeklyReview,
     ConvertTaskToNote {
         source_path: String,
         task_idx: usize,

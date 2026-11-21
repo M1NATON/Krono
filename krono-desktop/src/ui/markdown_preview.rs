@@ -562,50 +562,16 @@ pub fn render_markdown_preview(
                 ui.add_space(10.0);
             }
             Block::Table { headers, rows } => {
-                egui::Frame::none()
-                    .fill(p.bg_elevated)
-                    .stroke(Stroke::new(1.0_f32, p.border_hairline))
-                    .rounding(Rounding::same(8.0))
-                    .inner_margin(Margin::same(10.0))
-                    .show(ui, |ui| {
-                        egui::Grid::new(("md_table", b_idx))
-                            .striped(true)
-                            .spacing([20.0, 8.0])
-                            .show(ui, |ui| {
-                                for cell in headers {
-                                    render_spans(
-                                        ui,
-                                        p,
-                                        cell,
-                                        13.5,
-                                        3,
-                                        heading_serif,
-                                        false,
-                                        p.text_primary,
-                                        resolved_titles,
-                                        &mut action,
-                                    );
-                                }
-                                ui.end_row();
-                                for row in rows {
-                                    for cell in row {
-                                        render_spans(
-                                            ui,
-                                            p,
-                                            cell,
-                                            13.5,
-                                            0,
-                                            heading_serif,
-                                            false,
-                                            p.text_secondary,
-                                            resolved_titles,
-                                            &mut action,
-                                        );
-                                    }
-                                    ui.end_row();
-                                }
-                            });
-                    });
+                render_md_table(
+                    ui,
+                    p,
+                    b_idx,
+                    headers,
+                    rows,
+                    heading_serif,
+                    resolved_titles,
+                    &mut action,
+                );
                 ui.add_space(10.0);
             }
             Block::Rule => {
@@ -710,6 +676,216 @@ pub fn render_markdown_preview(
 }
 
 #[allow(clippy::too_many_arguments)]
+fn spans_char_len(spans: &[Span]) -> usize {
+    spans
+        .iter()
+        .map(|sp| match sp {
+            Span::Text { text, .. } => text.chars().count(),
+            Span::WikiLink { display, .. } => display.chars().count(),
+            Span::LineBreak => 0,
+        })
+        .sum()
+}
+
+#[allow(clippy::too_many_arguments)]
+fn render_md_table(
+    ui: &mut Ui,
+    p: &ThemePalette,
+    b_idx: usize,
+    headers: &[Vec<Span>],
+    rows: &[Vec<Vec<Span>>],
+    heading_serif: bool,
+    resolved_titles: &HashSet<String>,
+    action: &mut Option<PreviewAction>,
+) {
+    let col_count = headers
+        .len()
+        .max(rows.iter().map(|r| r.len()).max().unwrap_or(0))
+        .max(1);
+    let mut max_chars = vec![4usize; col_count];
+    for (c, cell) in headers.iter().enumerate() {
+        max_chars[c] = max_chars[c].max(spans_char_len(cell));
+    }
+    for row in rows {
+        for (c, cell) in row.iter().enumerate() {
+            if c < col_count {
+                max_chars[c] = max_chars[c].max(spans_char_len(cell));
+            }
+        }
+    }
+
+    let min_widths: Vec<f32> = max_chars
+        .iter()
+        .map(|&chars| ((chars.clamp(6, 18) as f32) * 7.8 + 20.0).max(100.0))
+        .collect();
+    let min_sum: f32 = min_widths.iter().sum();
+    let avail_w = ui.available_width().max(120.0);
+    let needs_h_scroll = min_sum > avail_w + 1.0;
+
+    let col_widths: Vec<f32> = if needs_h_scroll {
+        min_widths
+    } else {
+        let extra = (avail_w - min_sum).max(0.0);
+        let weights: Vec<f32> = max_chars.iter().map(|&c| (c.max(6) as f32).sqrt()).collect();
+        let w_sum: f32 = weights.iter().sum::<f32>().max(1.0);
+        min_widths
+            .iter()
+            .zip(weights.iter())
+            .map(|(&mw, &w)| mw + extra * (w / w_sum))
+            .collect()
+    };
+    let table_w: f32 = col_widths.iter().sum();
+
+    let mut draw_table = |ui: &mut Ui| {
+        egui::Frame::none()
+            .fill(p.bg_elevated)
+            .stroke(Stroke::new(1.0_f32, p.border_hairline))
+            .rounding(Rounding::same(8.0_f32))
+            .inner_margin(Margin::ZERO)
+            .show(ui, |ui| {
+                ui.set_width(table_w);
+                ui.spacing_mut().item_spacing.y = 0.0;
+
+                if !headers.is_empty() {
+                    let bg_slot = ui.painter().add(egui::Shape::Noop);
+                    let row_resp = ui
+                        .horizontal(|ui| {
+                            ui.spacing_mut().item_spacing.x = 0.0;
+                            for (c, &col_w) in col_widths.iter().enumerate() {
+                                ui.allocate_ui_with_layout(
+                                    vec2(col_w, 0.0),
+                                    egui::Layout::top_down(egui::Align::Min),
+                                    |ui| {
+                                        egui::Frame::none()
+                                            .inner_margin(Margin::symmetric(10.0, 8.0))
+                                            .show(ui, |ui| {
+                                                ui.set_width((col_w - 20.0).max(40.0));
+                                                if let Some(cell) = headers.get(c) {
+                                                    render_spans(
+                                                        ui,
+                                                        p,
+                                                        cell,
+                                                        13.0,
+                                                        3,
+                                                        heading_serif,
+                                                        false,
+                                                        p.text_primary,
+                                                        resolved_titles,
+                                                        action,
+                                                    );
+                                                }
+                                            });
+                                    },
+                                );
+                            }
+                        })
+                        .response;
+                    let r = Rect::from_min_size(
+                        row_resp.rect.min,
+                        vec2(table_w, row_resp.rect.height()),
+                    );
+                    ui.painter().set(
+                        bg_slot,
+                        egui::Shape::rect_filled(
+                            r,
+                            Rounding {
+                                nw: 8.0,
+                                ne: 8.0,
+                                sw: 0.0,
+                                se: 0.0,
+                            },
+                            p.bg_card,
+                        ),
+                    );
+                    ui.painter().line_segment(
+                        [pos2(r.left(), r.bottom()), pos2(r.right(), r.bottom())],
+                        Stroke::new(1.0_f32, p.border_subtle),
+                    );
+                    let mut x = r.left();
+                    for &col_w in col_widths.iter().take(col_count.saturating_sub(1)) {
+                        x += col_w;
+                        ui.painter().line_segment(
+                            [pos2(x, r.top()), pos2(x, r.bottom())],
+                            Stroke::new(1.0_f32, p.border_hairline),
+                        );
+                    }
+                }
+
+                for (r_idx, row) in rows.iter().enumerate() {
+                    let bg_slot = ui.painter().add(egui::Shape::Noop);
+                    let row_resp = ui
+                        .horizontal(|ui| {
+                            ui.spacing_mut().item_spacing.x = 0.0;
+                            for (c, &col_w) in col_widths.iter().enumerate() {
+                                ui.allocate_ui_with_layout(
+                                    vec2(col_w, 0.0),
+                                    egui::Layout::top_down(egui::Align::Min),
+                                    |ui| {
+                                        egui::Frame::none()
+                                            .inner_margin(Margin::symmetric(10.0, 8.0))
+                                            .show(ui, |ui| {
+                                                ui.set_width((col_w - 20.0).max(40.0));
+                                                if let Some(cell) = row.get(c) {
+                                                    render_spans(
+                                                        ui,
+                                                        p,
+                                                        cell,
+                                                        13.5,
+                                                        0,
+                                                        heading_serif,
+                                                        false,
+                                                        p.text_secondary,
+                                                        resolved_titles,
+                                                        action,
+                                                    );
+                                                }
+                                            });
+                                    },
+                                );
+                            }
+                        })
+                        .response;
+                    let r = Rect::from_min_size(
+                        row_resp.rect.min,
+                        vec2(table_w, row_resp.rect.height()),
+                    );
+                    if r_idx % 2 == 1 {
+                        ui.painter().set(
+                            bg_slot,
+                            egui::Shape::rect_filled(
+                                r,
+                                Rounding::ZERO,
+                                with_alpha(p.bg_hover, 0.25),
+                            ),
+                        );
+                    }
+                    if r_idx + 1 < rows.len() {
+                        ui.painter().line_segment(
+                            [pos2(r.left(), r.bottom()), pos2(r.right(), r.bottom())],
+                            Stroke::new(1.0_f32, p.border_hairline),
+                        );
+                    }
+                    let mut x = r.left();
+                    for &col_w in col_widths.iter().take(col_count.saturating_sub(1)) {
+                        x += col_w;
+                        ui.painter().line_segment(
+                            [pos2(x, r.top()), pos2(x, r.bottom())],
+                            Stroke::new(1.0_f32, p.border_hairline),
+                        );
+                    }
+                }
+            });
+    };
+
+    if needs_h_scroll {
+        egui::ScrollArea::horizontal()
+            .id_salt(("md_table_scroll", b_idx))
+            .show(ui, draw_table);
+    } else {
+        draw_table(ui);
+    }
+}
+
 fn render_spans(
     ui: &mut Ui,
     p: &ThemePalette,

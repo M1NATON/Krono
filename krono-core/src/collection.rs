@@ -11,6 +11,7 @@ pub enum DateFilterPreset {
     All,
     Overdue,
     Today,
+    DueTodayOrOverdue,
     Next7Days,
     NoDate,
 }
@@ -738,6 +739,90 @@ impl CollectionDoc {
                 );
                 doc
             }
+            "vocabulary" => {
+                let mut doc = Self {
+                    schema_version: 1,
+                    title: title.trim().to_string(),
+                    pinned: false,
+                    default_view: CollectionViewKind::Table,
+                    group_by_column: Some("level".to_string()),
+                    columns: vec![
+                        ColumnDef {
+                            id: "translation".into(),
+                            name: if is_ru { "Перевод" } else { "Translation" }.into(),
+                            col_type: ColumnType::Text,
+                            options: Vec::new(),
+                            width: 165.0,
+                        },
+                        ColumnDef {
+                            id: "example".into(),
+                            name: if is_ru { "Пример" } else { "Example" }.into(),
+                            col_type: ColumnType::Text,
+                            options: Vec::new(),
+                            width: 240.0,
+                        },
+                        ColumnDef {
+                            id: "level".into(),
+                            name: if is_ru { "Уровень" } else { "Level" }.into(),
+                            col_type: ColumnType::Select,
+                            width: 136.0,
+                            options: vec![
+                                SelectOption {
+                                    id: "lvl_new".into(),
+                                    label: if is_ru { "Новое" } else { "New" }.into(),
+                                    color: ColorToken::Blue,
+                                },
+                                SelectOption {
+                                    id: "lvl_review".into(),
+                                    label: if is_ru { "Повторить" } else { "Review" }.into(),
+                                    color: ColorToken::Amber,
+                                },
+                                SelectOption {
+                                    id: "lvl_done".into(),
+                                    label: if is_ru { "Выучено" } else { "Mastered" }.into(),
+                                    color: ColorToken::Green,
+                                },
+                            ],
+                        },
+                        ColumnDef {
+                            id: "next_review".into(),
+                            name: if is_ru { "Следующее повторение" } else { "Next Review" }.into(),
+                            col_type: ColumnType::Date,
+                            options: Vec::new(),
+                            width: 155.0,
+                        },
+                    ],
+                    records: Vec::new(),
+                    saved_views: vec![
+                        SavedCollectionView {
+                            id: "view_due_today".into(),
+                            name: if is_ru { "На сегодня" } else { "Due Today" }.into(),
+                            view_kind: CollectionViewKind::Table,
+                            date_preset: DateFilterPreset::DueTodayOrOverdue,
+                            ..Default::default()
+                        },
+                        SavedCollectionView {
+                            id: "view_all".into(),
+                            name: if is_ru { "Все слова" } else { "All Words" }.into(),
+                            view_kind: CollectionViewKind::Table,
+                            date_preset: DateFilterPreset::All,
+                            ..Default::default()
+                        },
+                    ],
+                };
+                let r1 = doc.add_record("ubiquitous", Some(("level", "lvl_new")), 1);
+                if let Some(rec) = doc.records.iter_mut().find(|r| r.id == r1) {
+                    rec.values.insert(
+                        "translation".into(),
+                        FieldValue::Text(if is_ru { "повсеместный" } else { "everywhere" }.into()),
+                    );
+                    rec.values.insert(
+                        "example".into(),
+                        FieldValue::Text("Smartphones have become ubiquitous.".into()),
+                    );
+                }
+                doc
+            }
             _ => Self::new_table(title, is_ru),
         }
     }
@@ -1396,6 +1481,7 @@ pub fn record_matches_smart_filter(
             DateFilterPreset::All => true,
             DateFilterPreset::Overdue => parsed_dates.iter().any(|d| *d < today),
             DateFilterPreset::Today => parsed_dates.iter().any(|d| *d == today),
+            DateFilterPreset::DueTodayOrOverdue => parsed_dates.iter().any(|d| *d <= today),
             DateFilterPreset::Next7Days => {
                 let mut end = today;
                 for _ in 0..7 {
@@ -1717,5 +1803,44 @@ mod tests {
 
         list.sort_by(|a, b| compare_records(a, b, "due", SortDirection::Desc, &board.columns));
         assert_eq!(list.iter().map(|r| r.id.as_str()).collect::<Vec<_>>(), vec!["rec_1", "rec_3", "rec_2"]);
+    }
+
+    #[test]
+    fn vocabulary_preset_and_dynamic_due_filter() {
+        let mut doc = CollectionDoc::new_table_preset("English Vocab", "vocabulary", true);
+        assert_eq!(doc.saved_views.len(), 2);
+        assert_eq!(doc.saved_views[0].date_preset, DateFilterPreset::DueTodayOrOverdue);
+
+        let r_due = doc.add_record("resilient", Some(("level", "lvl_review")), 2);
+        if let Some(rec) = doc.records.iter_mut().find(|r| r.id == r_due) {
+            rec.values.insert("next_review".into(), FieldValue::Text("2026-11-20".into()));
+        }
+        let r_today = doc.add_record("ephemeral", Some(("level", "lvl_new")), 3);
+        if let Some(rec) = doc.records.iter_mut().find(|r| r.id == r_today) {
+            rec.values.insert("next_review".into(), FieldValue::Text("2026-11-21".into()));
+        }
+        let r_future = doc.add_record("pragmatic", Some(("level", "lvl_done")), 4);
+        if let Some(rec) = doc.records.iter_mut().find(|r| r.id == r_future) {
+            rec.values.insert("next_review".into(), FieldValue::Text("2026-11-25".into()));
+        }
+
+        let today = SimpleDate::from_ymd(2026, 11, 21).unwrap();
+        let due_titles: Vec<&str> = doc
+            .records
+            .iter()
+            .filter(|r| {
+                record_matches_smart_filter(
+                    r,
+                    &doc.columns,
+                    "",
+                    DateFilterPreset::DueTodayOrOverdue,
+                    None,
+                    None,
+                    today,
+                )
+            })
+            .map(|r| r.title.as_str())
+            .collect();
+        assert_eq!(due_titles, vec!["resilient", "ephemeral"]);
     }
 }

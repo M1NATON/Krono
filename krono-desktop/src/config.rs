@@ -135,6 +135,8 @@ pub struct AppConfig {
     pub include_prerelease_updates: bool,
     #[serde(default = "default_true")]
     pub task_notifications: bool,
+    #[serde(default)]
+    pub daily_template: String,
     pub sidebar_open: bool,
     pub inspector_open: bool,
     pub sidebar_width: f32,
@@ -175,6 +177,7 @@ impl Default for AppConfig {
             auto_check_updates: true,
             include_prerelease_updates: true,
             task_notifications: true,
+            daily_template: String::new(),
             sidebar_open: true,
             inspector_open: false,
             sidebar_width: 244.0,

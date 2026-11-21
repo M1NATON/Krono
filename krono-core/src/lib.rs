@@ -1,4 +1,5 @@
 pub mod canvas;
+pub mod capture;
 pub mod collection;
 pub mod daily;
 pub mod hash;
@@ -7,3 +8,5 @@ pub mod note;
 pub mod path;
 pub mod sync_plan;
 pub mod tasks;
+pub mod templates;
+pub mod weekly_review;

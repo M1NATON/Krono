@@ -264,6 +264,9 @@ impl KronoApp {
                     self.palette_selected = 0;
                     self.refresh_palette_hits();
                 }
+                UiAction::OpenScratchpad => {
+                    self.open_scratchpad(ctx);
+                }
                 UiAction::OpenSettings(tab) => {
                     if self.view_mode != ViewMode::Settings {
                         self.previous_view_mode = self.view_mode;
@@ -387,6 +390,9 @@ impl KronoApp {
                 }
                 UiAction::CarryOverDailyTasks => {
                     self.carry_over_daily_tasks();
+                }
+                UiAction::GenerateWeeklyReview => {
+                    self.generate_weekly_review();
                 }
                 UiAction::ConvertTaskToNote {
                     source_path,

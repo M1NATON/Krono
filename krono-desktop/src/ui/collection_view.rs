@@ -605,6 +605,7 @@ fn render_collection_header(
                             (DateFilterPreset::All, s.col_date_all),
                             (DateFilterPreset::Overdue, s.col_date_overdue),
                             (DateFilterPreset::Today, s.col_date_today),
+                            (DateFilterPreset::DueTodayOrOverdue, s.col_date_due_today),
                             (DateFilterPreset::Next7Days, s.col_date_week),
                             (DateFilterPreset::NoDate, s.col_date_none),
                         ] {

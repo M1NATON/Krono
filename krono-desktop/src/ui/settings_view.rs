@@ -2,7 +2,7 @@ use crate::config::{
     AccentPreset, AppConfig, CustomSlashSnippet, EditorWidth, SlashTrigger, ThemePreset,
 };
 use crate::i18n::{strings, Lang};
-use crate::storage::vault::AssetAuditEntry;
+use crate::storage::vault::{list_custom_templates, AssetAuditEntry};
 use crate::sync::updater::{AvailableUpdate, CURRENT_APP_VERSION};
 use crate::ui::components::{
     hairline_h, icon_button, keycap_badge, paint_badge_dot, primary_button, secondary_button,
@@ -703,6 +703,58 @@ fn render_tab_scroll(
                                 }
                             },
                         );
+                    });
+
+                    ui.add_space(14.0);
+
+                    // Daily Note Template selector (.krono/templates/*.md)
+                    settings_card(ui, p, |ui| {
+                        ui.label(
+                            egui::RichText::new(s.settings_daily_template)
+                                .font(font_medium(14.0))
+                                .color(p.text_primary),
+                        );
+                        ui.add_space(2.0);
+                        ui.add(
+                            egui::Label::new(
+                                egui::RichText::new(s.settings_daily_template_desc)
+                                    .font(font_body(12.0))
+                                    .color(p.text_muted),
+                            )
+                            .wrap(),
+                        );
+                        ui.add_space(8.0);
+                        let custom_tpls = list_custom_templates(vault_dir);
+                        let current_label = if cfg.daily_template.is_empty() {
+                            s.settings_daily_template_builtin.to_string()
+                        } else {
+                            custom_tpls
+                                .iter()
+                                .find(|t| t.id == cfg.daily_template)
+                                .map(|t| t.name.clone())
+                                .unwrap_or_else(|| cfg.daily_template.clone())
+                        };
+                        egui::ComboBox::from_id_salt("settings_daily_template_combo")
+                            .selected_text(current_label)
+                            .show_ui(ui, |ui| {
+                                if ui
+                                    .selectable_label(
+                                        cfg.daily_template.is_empty(),
+                                        s.settings_daily_template_builtin,
+                                    )
+                                    .clicked()
+                                {
+                                    cfg.daily_template.clear();
+                                    actions.push(UiAction::ConfigChanged);
+                                }
+                                for tpl in &custom_tpls {
+                                    let active = cfg.daily_template == tpl.id;
+                                    if ui.selectable_label(active, &tpl.name).clicked() {
+                                        cfg.daily_template = tpl.id.clone();
+                                        actions.push(UiAction::ConfigChanged);
+                                    }
+                                }
+                            });
                     });
 
                     ui.add_space(14.0);

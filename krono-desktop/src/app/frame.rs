@@ -1,6 +1,6 @@
 use super::{today_local, KronoApp};
 use crate::i18n::{format_relative_time, strings};
-use crate::storage::vault::create_vault_folder;
+use crate::storage::vault::{create_vault_folder, list_custom_templates};
 use crate::ui::{
     board_view::render_board_view,
     canvas_view::render_canvas_view,
@@ -17,6 +17,7 @@ use crate::ui::{
     inspector::{render_inspector, render_inspector_drawer},
     mobile_nav::{render_mobile_bottom_bar, render_mobile_notes_list},
     motion::{anim_bool_eased, anim_since},
+    scratchpad::render_scratchpad_modal,
     settings_view::{render_settings_view, UpdateUiState},
     sidebar::{render_sidebar, render_sidebar_drawer},
     table_view::render_table_view,
@@ -586,12 +587,18 @@ impl KronoApp {
         } else {
             Vec::new()
         };
+        let custom_templates = if self.create_modal.open {
+            list_custom_templates(&self.config.vault_dir)
+        } else {
+            Vec::new()
+        };
         if let Some(act) = render_create_item_modal(
             ctx,
             &palette,
             lang,
             &mut self.create_modal,
             &folders_for_modal,
+            &custom_templates,
         ) {
             actions.push(act);
         }
@@ -638,6 +645,13 @@ impl KronoApp {
             &mut self.image_cache,
             &mut self.lightbox_image,
         );
+
+        // 6c. Quick Capture Scratchpad
+        if let Some(sp_action) =
+            render_scratchpad_modal(ctx, &palette, lang, &mut self.scratchpad)
+        {
+            self.handle_scratchpad_action(ctx, sp_action);
+        }
 
         // 7. Animated Toasts
         render_toasts(ctx, &palette, &mut self.toasts);

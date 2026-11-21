@@ -1,5 +1,6 @@
 mod actions;
 mod canvas;
+mod capture;
 mod collections;
 mod frame;
 mod notes;
@@ -25,6 +26,7 @@ use crate::sync::{
     updater::{AvailableUpdate, UpdateWorker},
     worker::SyncWorker,
 };
+use crate::tray::SystemTrayHandle;
 use crate::ui::{
     canvas_view::CanvasEditorState,
     collection_view::CollectionEditorState,
@@ -34,6 +36,7 @@ use crate::ui::{
     image_cache::ImageTextureCache,
     inspector::OutgoingLinkInfo,
     motion::ease_in_out_cubic,
+    scratchpad::ScratchpadState,
     theme::{apply_palette, setup_fonts, ThemePalette},
     tasks_view::TasksViewState,
     vault_map_view::VaultMapState,
@@ -210,6 +213,10 @@ pub struct KronoApp {
     pub(crate) available_update: Option<AvailableUpdate>,
     pub(crate) update_status_msg: Option<String>,
 
+    // Quick capture (Scratchpad + Tray)
+    pub(crate) scratchpad: ScratchpadState,
+    tray: SystemTrayHandle,
+
     #[cfg(debug_assertions)]
     pub(crate) shot_runner: Option<ShotRunner>,
 }
@@ -282,6 +289,11 @@ impl KronoApp {
         let watcher = VaultWatcher::spawn(config.vault_dir.clone(), cc.egui_ctx.clone());
         let mut sync_worker = SyncWorker::new();
         let mut update_worker = UpdateWorker::new();
+        let tray = if is_shot_mode {
+            SystemTrayHandle::start(cc.egui_ctx.clone(), config.language) // still safe no-op if unavailable
+        } else {
+            SystemTrayHandle::start(cc.egui_ctx.clone(), config.language)
+        };
 
         if config.auto_sync_on_start && config.is_github_configured(has_saved_github_token) {
             if let Ok(Some(token)) = load_github_token() {
@@ -424,6 +436,8 @@ impl KronoApp {
             update_worker,
             available_update: None,
             update_status_msg: None,
+            scratchpad: ScratchpadState::default(),
+            tray,
             #[cfg(debug_assertions)]
             shot_runner,
         };
@@ -558,8 +572,18 @@ impl KronoApp {
 impl eframe::App for KronoApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.poll_background_events(ctx);
+        self.poll_tray_commands(ctx);
         self.process_dropped_files(ctx);
         self.handle_shortcuts(ctx);
+
+        if ctx.input(|i| {
+            ((i.modifiers.ctrl || i.modifiers.command)
+                && i.modifiers.shift
+                && i.key_pressed(egui::Key::Space))
+                || (i.modifiers.alt && !i.modifiers.ctrl && !i.modifiers.shift && i.key_pressed(egui::Key::N))
+        }) {
+            self.open_scratchpad(ctx);
+        }
 
         #[cfg(debug_assertions)]
         self.drive_screenshots(ctx);

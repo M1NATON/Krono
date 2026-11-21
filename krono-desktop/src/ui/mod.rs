@@ -1,3 +1,4 @@
+pub mod board_dnd;
 pub mod board_view;
 pub mod calendar_widget;
 pub mod canvas_view;
@@ -20,6 +21,7 @@ pub mod motion;
 pub mod settings_view;
 pub mod sidebar;
 pub mod table_view;
+pub mod tasks_view;
 pub mod theme;
 pub mod topbar;
 pub mod vault_map_view;
@@ -59,6 +61,7 @@ impl LayoutClass {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ViewMode {
     Editor,
+    Tasks,
     Table,
     Board,
     Graph,
@@ -128,8 +131,44 @@ pub enum EditorMode {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TableSort {
     ModifiedDesc,
+    ModifiedAsc,
     TitleAsc,
+    TitleDesc,
     StatusAsc,
+    StatusDesc,
+    TagsAsc,
+    TagsDesc,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum BoardSort {
+    #[default]
+    Manual,
+    ModifiedDesc,
+    ModifiedAsc,
+    TitleAsc,
+    TitleDesc,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct TableColumnWidths {
+    pub name: f32,
+    pub status: f32,
+    pub tags: f32,
+    pub path: f32,
+    pub modified: f32,
+}
+
+impl Default for TableColumnWidths {
+    fn default() -> Self {
+        Self {
+            name: 260.0,
+            status: 140.0,
+            tags: 180.0,
+            path: 180.0,
+            modified: 110.0,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -291,6 +330,18 @@ pub enum UiAction {
     ToggleFolder(String),
     MarkDirty,
     ToggleTask(usize),
+    ToggleVaultTask {
+        path: String,
+        task_idx: usize,
+    },
+    CarryOverDailyTasks,
+    ConvertTaskToNote {
+        source_path: String,
+        task_idx: usize,
+    },
+    ConvertRecordToNote {
+        record_id: String,
+    },
     CopyText(String),
     ApplyVaultDir(String),
     OpenVaultFolder,

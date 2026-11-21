@@ -14,7 +14,7 @@ pub struct WikiLink {
     pub context: String,
 }
 
-fn is_fence_toggle(trimmed: &str) -> Option<char> {
+pub(crate) fn is_fence_toggle(trimmed: &str) -> Option<char> {
     if trimmed.starts_with("```") {
         Some('`')
     } else if trimmed.starts_with("~~~") {
@@ -221,6 +221,144 @@ fn strip_wikilink_markup(input: &str) -> String {
     out
 }
 
+/// Produces up to `max_lines` clean preview lines from Markdown/frontmatter text,
+/// stripping YAML frontmatter, `#` headings, fenced code blocks, and inline formatting.
+pub fn card_preview_excerpt(
+    raw: &str,
+    max_lines: usize,
+    max_chars_per_line: usize,
+) -> String {
+    if max_lines == 0 || max_chars_per_line == 0 {
+        return String::new();
+    }
+
+    let body = strip_leading_yaml_frontmatter(raw);
+    let mut lines_out: Vec<String> = Vec::with_capacity(max_lines);
+    let mut in_fence: Option<char> = None;
+
+    for line in body.lines() {
+        let trimmed = line.trim();
+        if let Some(ch) = is_fence_toggle(trimmed) {
+            if in_fence == Some(ch) {
+                in_fence = None;
+            } else if in_fence.is_none() {
+                in_fence = Some(ch);
+            }
+            continue;
+        }
+        if in_fence.is_some() || trimmed.is_empty() {
+            continue;
+        }
+        // Skip ATX headings (# .. ######)
+        if trimmed.starts_with('#') {
+            let hashes = trimmed.chars().take_while(|&c| c == '#').count();
+            if (1..=6).contains(&hashes) {
+                let after = trimmed[hashes..].chars().next();
+                if after.is_none() || after.is_some_and(char::is_whitespace) {
+                    continue;
+                }
+            }
+        }
+        // Skip horizontal rules (---, ***, ___)
+        if trimmed.len() >= 3
+            && (trimmed.chars().all(|c| c == '-' || c.is_whitespace())
+                && trimmed.chars().filter(|&c| c == '-').count() >= 3
+                || trimmed.chars().all(|c| c == '*' || c.is_whitespace())
+                    && trimmed.chars().filter(|&c| c == '*').count() >= 3
+                || trimmed.chars().all(|c| c == '_' || c.is_whitespace())
+                    && trimmed.chars().filter(|&c| c == '_').count() >= 3)
+        {
+            continue;
+        }
+
+        let cleaned = clean_preview_line(trimmed);
+        if cleaned.is_empty() {
+            continue;
+        }
+        let clipped = if cleaned.chars().count() > max_chars_per_line {
+            let head: String = cleaned
+                .chars()
+                .take(max_chars_per_line.saturating_sub(1))
+                .collect();
+            format!("{}…", head.trim_end())
+        } else {
+            cleaned
+        };
+        lines_out.push(clipped);
+        if lines_out.len() >= max_lines {
+            break;
+        }
+    }
+
+    lines_out.join("\n")
+}
+
+fn strip_leading_yaml_frontmatter(raw: &str) -> &str {
+    let trimmed_bom = raw.strip_prefix('\u{feff}').unwrap_or(raw);
+    let mut lines = trimmed_bom.split_inclusive('\n');
+    let Some(first) = lines.next() else {
+        return trimmed_bom;
+    };
+    if first.trim() != "---" {
+        return trimmed_bom;
+    }
+    let mut offset = first.len();
+    for line in lines {
+        offset += line.len();
+        let t = line.trim();
+        if t == "---" || t == "..." {
+            return &trimmed_bom[offset..];
+        }
+    }
+    trimmed_bom
+}
+
+fn clean_preview_line(line: &str) -> String {
+    let mut s = line.trim();
+    while let Some(rest) = s.strip_prefix('>') {
+        s = rest.trim_start();
+    }
+    for prefix in ["- [ ] ", "- [x] ", "- [X] ", "* [ ] ", "* [x] ", "* [X] ", "- ", "* "] {
+        if let Some(rest) = s.strip_prefix(prefix) {
+            s = rest.trim_start();
+            break;
+        }
+    }
+    let no_wiki = strip_wikilink_markup(s);
+    let no_links = strip_md_inline_links(&no_wiki);
+    let mut out = String::with_capacity(no_links.len());
+    for ch in no_links.chars() {
+        if matches!(ch, '`' | '~') {
+            continue;
+        }
+        out.push(ch);
+    }
+    let out = out.replace("**", "").replace("__", "");
+    out.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+fn strip_md_inline_links(input: &str) -> String {
+    let mut out = String::with_capacity(input.len());
+    let mut rest = input;
+    while let Some(lb) = rest.find('[') {
+        out.push_str(&rest[..lb]);
+        let after_lb = &rest[lb + 1..];
+        if let Some(rb) = after_lb.find("](") {
+            let label = &after_lb[..rb];
+            let after_paren = &after_lb[rb + 2..];
+            if let Some(rp) = after_paren.find(')') {
+                out.push_str(label);
+                rest = &after_paren[rp + 1..];
+                continue;
+            }
+        }
+        out.push('[');
+        rest = after_lb;
+    }
+    out.push_str(rest);
+    out
+}
+
 pub fn count_words(body: &str) -> (usize, usize) {
     let words = body.split_whitespace().count();
     let chars = body.chars().count();
@@ -356,31 +494,76 @@ pub struct ParsedTaskMeta {
     pub clean_text: String,
     pub due_date: Option<String>,
     pub priority: Option<TaskPriority>,
+    pub recurrence: Option<crate::tasks::TaskRecurrence>,
     pub tags: Vec<String>,
 }
 
 /// Parses inline task metadata tokens like `@2026-11-25`, `@today`/`@сегодня`,
-/// `@tomorrow`/`@завтра`, `📅2026-11-25`, `!high`/`!med`/`!low` and `#tag` from a task line.
+/// `@tomorrow`/`@завтра`, `📅2026-11-25`, `@every day|week|month`, `!high`/`!med`/`!low` and `#tag` from a task line.
 pub fn parse_inline_task_meta(raw: &str, today: crate::daily::SimpleDate) -> ParsedTaskMeta {
+    use crate::tasks::TaskRecurrence;
+
     let mut clean_parts: Vec<String> = Vec::new();
     let mut due_date: Option<String> = None;
     let mut priority: Option<TaskPriority> = None;
+    let mut recurrence: Option<TaskRecurrence> = None;
     let mut tags: Vec<String> = Vec::new();
     let mut seen_tags = std::collections::HashSet::new();
 
-    for token in raw.split_whitespace() {
+    let tokens: Vec<&str> = raw.split_whitespace().collect();
+    let mut i = 0usize;
+    while i < tokens.len() {
+        let token = tokens[i];
         let lower = token.to_lowercase();
         let trimmed_punct = lower.trim_end_matches([',', '.', ';', ':']);
+
+        if (trimmed_punct == "@every" || trimmed_punct == "@каждый" || trimmed_punct == "@каждую")
+            && i + 1 < tokens.len()
+        {
+            let next_lower = tokens[i + 1]
+                .to_lowercase()
+                .trim_end_matches([',', '.', ';', ':'])
+                .to_string();
+            let parsed_rec = match next_lower.as_str() {
+                "day" | "день" => Some(TaskRecurrence::Daily),
+                "week" | "неделю" | "неделя" => Some(TaskRecurrence::Weekly),
+                "month" | "месяц" => Some(TaskRecurrence::Monthly),
+                _ => None,
+            };
+            if let Some(rec) = parsed_rec {
+                recurrence = Some(rec);
+                i += 2;
+                continue;
+            }
+        }
+        if matches!(trimmed_punct, "@daily" | "@ежедневно") {
+            recurrence = Some(TaskRecurrence::Daily);
+            i += 1;
+            continue;
+        }
+        if matches!(trimmed_punct, "@weekly" | "@еженедельно") {
+            recurrence = Some(TaskRecurrence::Weekly);
+            i += 1;
+            continue;
+        }
+        if matches!(trimmed_punct, "@monthly" | "@ежемесячно") {
+            recurrence = Some(TaskRecurrence::Monthly);
+            i += 1;
+            continue;
+        }
+
         if trimmed_punct == "@today" || trimmed_punct == "@сегодня" {
             if due_date.is_none() {
                 due_date = Some(today.format_iso());
             }
+            i += 1;
             continue;
         }
         if trimmed_punct == "@tomorrow" || trimmed_punct == "@завтра" {
             if due_date.is_none() {
                 due_date = Some(today.next_day().format_iso());
             }
+            i += 1;
             continue;
         }
         if let Some(date_raw) = token
@@ -392,6 +575,7 @@ pub fn parse_inline_task_meta(raw: &str, today: crate::daily::SimpleDate) -> Par
                 if due_date.is_none() {
                     due_date = Some(parsed.format_iso());
                 }
+                i += 1;
                 continue;
             }
         }
@@ -400,6 +584,7 @@ pub fn parse_inline_task_meta(raw: &str, today: crate::daily::SimpleDate) -> Par
             "!high" | "!p1" | "!высокий" | "!срочно"
         ) {
             priority = Some(TaskPriority::High);
+            i += 1;
             continue;
         }
         if matches!(
@@ -407,10 +592,12 @@ pub fn parse_inline_task_meta(raw: &str, today: crate::daily::SimpleDate) -> Par
             "!med" | "!medium" | "!p2" | "!средний"
         ) {
             priority = Some(TaskPriority::Medium);
+            i += 1;
             continue;
         }
         if matches!(trimmed_punct, "!low" | "!p3" | "!низкий") {
             priority = Some(TaskPriority::Low);
+            i += 1;
             continue;
         }
         if let Some(raw_tag) = token.strip_prefix('#') {
@@ -423,17 +610,19 @@ pub fn parse_inline_task_meta(raw: &str, today: crate::daily::SimpleDate) -> Par
             }
         }
         clean_parts.push(token.to_string());
+        i += 1;
     }
 
     ParsedTaskMeta {
         clean_text: clean_parts.join(" "),
         due_date,
         priority,
+        recurrence,
         tags,
     }
 }
 
-fn match_task_line_prefix(trimmed_start: &str) -> Option<(&'static str, &str)> {
+pub(crate) fn match_task_line_prefix(trimmed_start: &str) -> Option<(&'static str, &str)> {
     for prefix in [
         "- [ ] ",
         "- [x] ",
@@ -613,5 +802,17 @@ mod tests {
         assert!(!stripped.contains("First task"));
         assert!(stripped.contains("Fake inside fence"));
         assert!(stripped.contains("- [x] Second task"));
+    }
+
+    #[test]
+    fn card_preview_strips_frontmatter_headings_and_fences() {
+        let md = "---\ntitle: Spec\ntags: ui\n---\n# Main Heading\n## Subheading\n```rust\nlet x = 1;\n```\nFirst **meaningful** line with [[Target|Alias]]\n- [ ] Second [link](https://example.com) line\nThird ignored line\n";
+        assert_eq!(
+            card_preview_excerpt(md, 2, 80),
+            "First meaningful line with Alias\nSecond link line"
+        );
+
+        let only_headers = "---\ntitle: Empty\n---\n# Title\n## Section\n";
+        assert_eq!(card_preview_excerpt(only_headers, 2, 80), "");
     }
 }

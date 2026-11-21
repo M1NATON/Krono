@@ -104,16 +104,16 @@ impl ThemePalette {
             Color32::from_rgb(79, 168, 118),
             Color32::from_rgba_unmultiplied(79, 168, 118, 28),
             Shadow {
-                offset: vec2(0.0, 2.0),
-                blur: 8.0,
+                offset: vec2(0.0, 3.0),
+                blur: 10.0,
                 spread: 0.0,
-                color: Color32::from_rgba_unmultiplied(4, 4, 4, 96),
+                color: Color32::from_rgba_unmultiplied(4, 4, 4, 110),
             },
             Shadow {
-                offset: vec2(0.0, 10.0),
-                blur: 24.0,
+                offset: vec2(0.0, 14.0),
+                blur: 28.0,
                 spread: 0.0,
-                color: Color32::from_rgba_unmultiplied(2, 2, 2, 145),
+                color: Color32::from_rgba_unmultiplied(2, 2, 2, 175),
             },
         )
     }
@@ -147,10 +147,10 @@ impl ThemePalette {
             Self::dark_semantics();
         Self {
             is_dark: true,
-            bg_sidebar: Color32::from_rgb(21, 21, 20),       // #151514
-            bg_canvas: Color32::from_rgb(27, 27, 25),        // #1B1B19
-            bg_elevated: Color32::from_rgb(38, 38, 35),      // #262623
-            bg_card: Color32::from_rgb(33, 33, 30),          // #21211E
+            bg_sidebar: Color32::from_rgb(20, 20, 19),       // #141413
+            bg_canvas: Color32::from_rgb(22, 22, 21),        // #161615
+            bg_elevated: Color32::from_rgb(42, 42, 39),      // #2A2A27
+            bg_card: Color32::from_rgb(35, 35, 33),          // #232321
             bg_input: Color32::from_rgb(23, 23, 21),         // #171715
             bg_hover: Color32::from_rgb(44, 44, 40),         // #2C2C28
             bg_selected: Color32::from_rgb(50, 49, 44),      // #32312C
@@ -184,9 +184,9 @@ impl ThemePalette {
         Self {
             is_dark: true,
             bg_sidebar: Color32::from_rgb(5, 5, 5),          // #050505
-            bg_canvas: Color32::from_rgb(10, 10, 10),        // #0A0A0A
-            bg_elevated: Color32::from_rgb(22, 22, 24),      // #161618
-            bg_card: Color32::from_rgb(17, 17, 18),          // #111112
+            bg_canvas: Color32::from_rgb(8, 8, 9),           // #080809
+            bg_elevated: Color32::from_rgb(28, 28, 32),      // #1C1C20
+            bg_card: Color32::from_rgb(21, 21, 24),          // #151518
             bg_input: Color32::from_rgb(8, 8, 9),            // #080809
             bg_hover: Color32::from_rgb(29, 29, 32),         // #1D1D20
             bg_selected: Color32::from_rgb(36, 36, 40),      // #242428

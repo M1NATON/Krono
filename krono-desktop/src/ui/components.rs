@@ -1217,10 +1217,16 @@ pub fn tag_autocomplete_input(
     let input_id = base_id.with("inp");
     let sel_id = base_id.with("sel");
     let popup_id = base_id.with("pop");
+    let open_id = base_id.with("open");
+    let pop_rect_id = base_id.with("pop_rect");
 
     let has_focus_before = ui.ctx().memory(|m| m.has_focus(input_id));
+    let was_open = ui.data(|d| d.get_temp::<bool>(open_id)).unwrap_or(false);
+    let prev_pop_rect = ui
+        .data(|d| d.get_temp::<Option<Rect>>(pop_rect_id))
+        .flatten();
     let (mut key_up, mut key_down, mut key_accept, mut key_esc) = (false, false, false, false);
-    if has_focus_before {
+    if has_focus_before || was_open {
         ui.input_mut(|i| {
             key_up = i.consume_key(egui::Modifiers::NONE, egui::Key::ArrowUp);
             key_down = i.consume_key(egui::Modifiers::NONE, egui::Key::ArrowDown);
@@ -1258,7 +1264,20 @@ pub fn tag_autocomplete_input(
     }
 
     let is_focused = resp.has_focus() || ui.ctx().memory(|m| m.has_focus(input_id));
-    let focus_t = anim_bool_eased(ui.ctx(), base_id.with("foc"), is_focused, 0.13);
+    let mut is_open = was_open || is_focused || resp.gained_focus() || resp.changed();
+    if is_open && ui.input(|i| i.pointer.any_pressed()) {
+        let pt = ui.input(|i| i.pointer.interact_pos());
+        let in_input = pt.is_some_and(|p| outer_rect.expand(2.0).contains(p));
+        let in_popup = pt.is_some_and(|p| prev_pop_rect.is_some_and(|r| r.expand(2.0).contains(p)));
+        if !in_input && !in_popup {
+            is_open = false;
+            if is_focused {
+                ui.memory_mut(|m| m.surrender_focus(input_id));
+            }
+        }
+    }
+
+    let focus_t = anim_bool_eased(ui.ctx(), base_id.with("foc"), is_focused || is_open, 0.13);
     let hov_t = anim_bool_eased(
         ui.ctx(),
         base_id.with("hov"),
@@ -1278,6 +1297,10 @@ pub fn tag_autocomplete_input(
     );
 
     if key_esc {
+        ui.data_mut(|d| {
+            d.insert_temp(open_id, false);
+            d.insert_temp(pop_rect_id, Option::<Rect>::None);
+        });
         ui.memory_mut(|m| m.surrender_focus(input_id));
         return None;
     }
@@ -1321,23 +1344,36 @@ pub fn tag_autocomplete_input(
         }
         if chosen.is_some() {
             draft.clear();
-            ui.data_mut(|d| d.insert_temp(sel_id, 0usize));
+            ui.data_mut(|d| {
+                d.insert_temp(sel_id, 0usize);
+                d.insert_temp(open_id, true);
+            });
             ui.memory_mut(|m| m.request_focus(input_id));
             return chosen;
         }
     }
 
-    if is_focused && total_items > 0 {
+    if is_open && total_items > 0 {
         let pop_w = outer_rect.width().max(196.0);
-        egui::Area::new(popup_id)
-            .order(egui::Order::Foreground)
-            .fixed_pos(pos2(outer_rect.left(), outer_rect.bottom() + 4.0))
+        let est_h = (total_items as f32) * 27.0 + 10.0;
+        let screen_bottom = ui.ctx().screen_rect().bottom();
+        let pop_y = if outer_rect.bottom() + 4.0 + est_h > screen_bottom - 8.0
+            && outer_rect.top() - 4.0 - est_h >= 8.0
+        {
+            outer_rect.top() - 4.0 - est_h
+        } else {
+            outer_rect.bottom() + 4.0
+        };
+        let pop_area_resp = egui::Area::new(popup_id)
+            .order(egui::Order::Tooltip)
+            .interactable(true)
+            .fixed_pos(pos2(outer_rect.left(), pop_y))
             .show(ui.ctx(), |ui| {
                 egui::Frame::none()
                     .fill(p.bg_elevated)
                     .stroke(Stroke::new(1.0_f32, p.border_subtle))
                     .rounding(Rounding::same(8.0))
-                    .shadow(p.shadow_elevated)
+                    .shadow(p.shadow_floating)
                     .inner_margin(Margin::same(4.0))
                     .show(ui, |ui| {
                         ui.set_width(pop_w);
@@ -1348,6 +1384,9 @@ pub fn tag_autocomplete_input(
                             let (bg, fg) = p.tag_colors(tag);
                             let (r, r_resp) =
                                 ui.allocate_exact_size(vec2(pop_w - 8.0, 25.0), Sense::click());
+                            if r_resp.hovered() {
+                                ui.data_mut(|d| d.insert_temp(sel_id, idx));
+                            }
                             if active || r_resp.hovered() {
                                 ui.painter().rect_filled(
                                     r,
@@ -1371,10 +1410,7 @@ pub fn tag_autocomplete_input(
                                 g,
                                 p.text_primary,
                             );
-                            let r_hov = r_resp.hovered();
-                            if r_resp.on_hover_cursor(CursorIcon::PointingHand).clicked()
-                                || (r_hov && ui.input(|i| i.pointer.primary_pressed()))
-                            {
+                            if r_resp.on_hover_cursor(CursorIcon::PointingHand).clicked() {
                                 chosen = Some(tag.clone());
                             }
                         }
@@ -1384,6 +1420,9 @@ pub fn tag_autocomplete_input(
                             let active = idx == sel_idx;
                             let (r, r_resp) =
                                 ui.allocate_exact_size(vec2(pop_w - 8.0, 26.0), Sense::click());
+                            if r_resp.hovered() {
+                                ui.data_mut(|d| d.insert_temp(sel_id, idx));
+                            }
                             if active || r_resp.hovered() {
                                 ui.painter().rect_filled(
                                     r,
@@ -1402,21 +1441,26 @@ pub fn tag_autocomplete_input(
                                 g,
                                 p.accent_text,
                             );
-                            let r_hov = r_resp.hovered();
-                            if r_resp.on_hover_cursor(CursorIcon::PointingHand).clicked()
-                                || (r_hov && ui.input(|i| i.pointer.primary_pressed()))
-                            {
+                            if r_resp.on_hover_cursor(CursorIcon::PointingHand).clicked() {
                                 chosen = Some(new_tag.clone());
                             }
                         }
                     });
             });
+        ui.data_mut(|d| d.insert_temp(pop_rect_id, Some(pop_area_resp.response.rect)));
+    } else {
+        ui.data_mut(|d| d.insert_temp(pop_rect_id, Option::<Rect>::None));
     }
 
     if chosen.is_some() {
         draft.clear();
-        ui.data_mut(|d| d.insert_temp(sel_id, 0usize));
+        ui.data_mut(|d| {
+            d.insert_temp(sel_id, 0usize);
+            d.insert_temp(open_id, true);
+        });
         ui.memory_mut(|m| m.request_focus(input_id));
+    } else {
+        ui.data_mut(|d| d.insert_temp(open_id, is_open));
     }
     chosen
 }

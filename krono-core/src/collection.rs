@@ -1413,6 +1413,110 @@ pub fn record_matches_smart_filter(
     true
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SortDirection {
+    Asc,
+    Desc,
+}
+
+/// Compares two collection records by `__title` or a column ID, always placing
+/// missing/empty field values last regardless of sort direction.
+pub fn compare_records(
+    a: &RecordItem,
+    b: &RecordItem,
+    column_key: &str,
+    dir: SortDirection,
+    columns: &[ColumnDef],
+) -> std::cmp::Ordering {
+    use std::cmp::Ordering;
+
+    let ord = if column_key == "__title" {
+        let ta = a.title.trim().to_lowercase();
+        let tb = b.title.trim().to_lowercase();
+        match (ta.is_empty(), tb.is_empty()) {
+            (true, true) => Ordering::Equal,
+            (true, false) => return Ordering::Greater,
+            (false, true) => return Ordering::Less,
+            (false, false) => ta.cmp(&tb),
+        }
+    } else if let Some(col) = columns.iter().find(|c| c.id == column_key) {
+        let va = a.values.get(column_key);
+        let vb = b.values.get(column_key);
+        match col.col_type {
+            ColumnType::Select => {
+                let ia = va
+                    .map(FieldValue::as_text)
+                    .filter(|s| !s.trim().is_empty())
+                    .and_then(|id| col.options.iter().position(|o| o.id == id));
+                let ib = vb
+                    .map(FieldValue::as_text)
+                    .filter(|s| !s.trim().is_empty())
+                    .and_then(|id| col.options.iter().position(|o| o.id == id));
+                match (ia, ib) {
+                    (None, None) => Ordering::Equal,
+                    (None, Some(_)) => return Ordering::Greater,
+                    (Some(_), None) => return Ordering::Less,
+                    (Some(x), Some(y)) => x.cmp(&y),
+                }
+            }
+            ColumnType::Date => {
+                let da = va
+                    .map(FieldValue::as_text)
+                    .map(|s| s.trim().to_string())
+                    .filter(|s| !s.is_empty());
+                let db = vb
+                    .map(FieldValue::as_text)
+                    .map(|s| s.trim().to_string())
+                    .filter(|s| !s.is_empty());
+                match (da, db) {
+                    (None, None) => Ordering::Equal,
+                    (None, Some(_)) => return Ordering::Greater,
+                    (Some(_), None) => return Ordering::Less,
+                    (Some(sa), Some(sb)) => {
+                        match (SimpleDate::parse_iso(&sa), SimpleDate::parse_iso(&sb)) {
+                            (Some(pa), Some(pb)) => pa.cmp(&pb),
+                            _ => sa.cmp(&sb),
+                        }
+                    }
+                }
+            }
+            ColumnType::Number => {
+                let na = va.and_then(FieldValue::as_number);
+                let nb = vb.and_then(FieldValue::as_number);
+                match (na, nb) {
+                    (None, None) => Ordering::Equal,
+                    (None, Some(_)) => return Ordering::Greater,
+                    (Some(_), None) => return Ordering::Less,
+                    (Some(x), Some(y)) => x.partial_cmp(&y).unwrap_or(Ordering::Equal),
+                }
+            }
+            ColumnType::Checkbox => {
+                let ba = va.map(FieldValue::as_bool).unwrap_or(false);
+                let bb = vb.map(FieldValue::as_bool).unwrap_or(false);
+                ba.cmp(&bb)
+            }
+            _ => {
+                let sa = va.map(FieldValue::as_text).unwrap_or_default().trim().to_lowercase();
+                let sb = vb.map(FieldValue::as_text).unwrap_or_default().trim().to_lowercase();
+                match (sa.is_empty(), sb.is_empty()) {
+                    (true, true) => Ordering::Equal,
+                    (true, false) => return Ordering::Greater,
+                    (false, true) => return Ordering::Less,
+                    (false, false) => sa.cmp(&sb),
+                }
+            }
+        }
+    } else {
+        Ordering::Equal
+    };
+
+    let directed = match dir {
+        SortDirection::Asc => ord,
+        SortDirection::Desc => ord.reverse(),
+    };
+    directed.then_with(|| (a.order, a.created_at).cmp(&(b.order, b.created_at)))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1589,5 +1693,29 @@ mod tests {
             count_matching(DateFilterPreset::All, None, Some(("priority", "prio_high"))),
             1
         );
+    }
+
+    #[test]
+    fn sorts_records_by_priority_date_and_title_with_empty_last() {
+        let board = CollectionDoc::new_board("Test", true);
+        let mut r_low = RecordItem { id: "rec_1".into(), title: "Beta".into(), ..Default::default() };
+        r_low.values.insert("priority".into(), FieldValue::Text("prio_low".into()));
+        r_low.values.insert("due".into(), FieldValue::Text("2026-11-30".into()));
+
+        let mut r_high = RecordItem { id: "rec_2".into(), title: "Alpha".into(), ..Default::default() };
+        r_high.values.insert("priority".into(), FieldValue::Text("prio_high".into()));
+
+        let mut r_none = RecordItem { id: "rec_3".into(), title: "Gamma".into(), ..Default::default() };
+        r_none.values.insert("due".into(), FieldValue::Text("2026-11-20".into()));
+
+        let mut list = vec![r_low.clone(), r_none.clone(), r_high.clone()];
+        list.sort_by(|a, b| compare_records(a, b, "priority", SortDirection::Asc, &board.columns));
+        assert_eq!(list.iter().map(|r| r.id.as_str()).collect::<Vec<_>>(), vec!["rec_2", "rec_1", "rec_3"]);
+
+        list.sort_by(|a, b| compare_records(a, b, "due", SortDirection::Asc, &board.columns));
+        assert_eq!(list.iter().map(|r| r.id.as_str()).collect::<Vec<_>>(), vec!["rec_3", "rec_1", "rec_2"]);
+
+        list.sort_by(|a, b| compare_records(a, b, "due", SortDirection::Desc, &board.columns));
+        assert_eq!(list.iter().map(|r| r.id.as_str()).collect::<Vec<_>>(), vec!["rec_1", "rec_3", "rec_2"]);
     }
 }

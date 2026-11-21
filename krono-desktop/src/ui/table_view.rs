@@ -6,7 +6,7 @@ use crate::ui::components::{
 use crate::ui::icons::{draw_icon, Icon};
 use crate::ui::motion::{anim_bool_eased, lerp_color, with_alpha};
 use crate::ui::theme::{font_body, font_medium, font_mono, font_serif_bold, ThemePalette};
-use crate::ui::{LayoutClass, TableSort, UiAction, ViewMode};
+use crate::ui::{LayoutClass, TableColumnWidths, TableSort, UiAction, ViewMode};
 use eframe::egui::{
     self, pos2, vec2, Align, CursorIcon, Layout, Margin, Rect, Rounding, Sense, Stroke, Ui,
 };
@@ -26,6 +26,7 @@ pub fn render_table_view(
     status_filter: &mut Option<NoteStatus>,
     active_tag: Option<&str>,
     sort_mode: &mut TableSort,
+    col_widths: &mut TableColumnWidths,
 ) -> Vec<UiAction> {
     let s = strings(lang);
     let mut actions = Vec::new();
@@ -102,7 +103,7 @@ pub fn render_table_view(
     if card_mode {
         render_mobile_cards(ui, p, lang, s, &filtered, &mut actions);
     } else {
-        render_desktop_table(ui, p, lang, s, &filtered, &mut actions);
+        render_desktop_table(ui, p, lang, s, &filtered, sort_mode, col_widths, &mut actions);
     }
 
     actions
@@ -152,14 +153,46 @@ fn filter_and_sort_notes<'a>(
 
     match sort_mode {
         TableSort::ModifiedDesc => filtered.sort_by(|a, b| b.modified.cmp(&a.modified)),
+        TableSort::ModifiedAsc => filtered.sort_by(|a, b| a.modified.cmp(&b.modified)),
         TableSort::TitleAsc => {
             filtered.sort_by(|a, b| a.title.to_lowercase().cmp(&b.title.to_lowercase()))
+        }
+        TableSort::TitleDesc => {
+            filtered.sort_by(|a, b| b.title.to_lowercase().cmp(&a.title.to_lowercase()))
         }
         TableSort::StatusAsc => filtered.sort_by(|a, b| {
             a.status
                 .map_or(3, NoteStatus::sort_rank)
                 .cmp(&b.status.map_or(3, NoteStatus::sort_rank))
                 .then_with(|| a.title.to_lowercase().cmp(&b.title.to_lowercase()))
+        }),
+        TableSort::StatusDesc => filtered.sort_by(|a, b| {
+            b.status
+                .map_or(0, |st| 3 - st.sort_rank())
+                .cmp(&a.status.map_or(0, |st| 3 - st.sort_rank()))
+                .then_with(|| a.title.to_lowercase().cmp(&b.title.to_lowercase()))
+        }),
+        TableSort::TagsAsc => filtered.sort_by(|a, b| {
+            let ta = a.tags.first().map(|t| t.to_lowercase()).unwrap_or_default();
+            let tb = b.tags.first().map(|t| t.to_lowercase()).unwrap_or_default();
+            match (ta.is_empty(), tb.is_empty()) {
+                (true, true) => std::cmp::Ordering::Equal,
+                (true, false) => std::cmp::Ordering::Greater,
+                (false, true) => std::cmp::Ordering::Less,
+                (false, false) => ta.cmp(&tb),
+            }
+            .then_with(|| a.title.to_lowercase().cmp(&b.title.to_lowercase()))
+        }),
+        TableSort::TagsDesc => filtered.sort_by(|a, b| {
+            let ta = a.tags.first().map(|t| t.to_lowercase()).unwrap_or_default();
+            let tb = b.tags.first().map(|t| t.to_lowercase()).unwrap_or_default();
+            match (ta.is_empty(), tb.is_empty()) {
+                (true, true) => std::cmp::Ordering::Equal,
+                (true, false) => std::cmp::Ordering::Greater,
+                (false, true) => std::cmp::Ordering::Less,
+                (false, false) => tb.cmp(&ta),
+            }
+            .then_with(|| a.title.to_lowercase().cmp(&b.title.to_lowercase()))
         }),
     }
     filtered
@@ -258,16 +291,24 @@ fn render_sort_pills(ui: &mut Ui, p: &ThemePalette, s: &Strings, sort_mode: &mut
             .font(font_body(12.0))
             .color(p.text_muted),
     );
-    for (mode, lbl) in [
-        (TableSort::ModifiedDesc, s.sort_modified),
-        (TableSort::TitleAsc, s.sort_title),
-        (TableSort::StatusAsc, s.sort_status),
+    for (asc_mode, desc_mode, lbl) in [
+        (TableSort::ModifiedAsc, TableSort::ModifiedDesc, s.sort_modified),
+        (TableSort::TitleAsc, TableSort::TitleDesc, s.sort_title),
+        (TableSort::StatusAsc, TableSort::StatusDesc, s.sort_status),
     ] {
-        let active = *sort_mode == mode;
+        let active = *sort_mode == asc_mode || *sort_mode == desc_mode;
+        let arrow = if *sort_mode == asc_mode {
+            " ↑"
+        } else if *sort_mode == desc_mode {
+            " ↓"
+        } else {
+            ""
+        };
+        let full_lbl = format!("{lbl}{arrow}");
         let fg_rest = if active { p.text_primary } else { p.text_muted };
         let g = ui
             .painter()
-            .layout_no_wrap(lbl.to_string(), font_medium(12.0), fg_rest);
+            .layout_no_wrap(full_lbl, font_medium(12.0), fg_rest);
         let (rect, resp) = ui.allocate_exact_size(vec2(g.size().x + 12.0, 24.0), Sense::click());
         let hov = anim_bool_eased(ui.ctx(), resp.id.with("hov"), resp.hovered(), 0.10);
         let sel_t = anim_bool_eased(ui.ctx(), resp.id.with("sel"), active, 0.14);
@@ -286,7 +327,11 @@ fn render_sort_pills(ui: &mut Ui, p: &ThemePalette, s: &Strings, sort_mode: &mut
             lerp_color(fg_rest, p.text_primary, sel_t.max(hov)),
         );
         if resp.on_hover_cursor(CursorIcon::PointingHand).clicked() {
-            *sort_mode = mode;
+            *sort_mode = if *sort_mode == desc_mode {
+                asc_mode
+            } else {
+                desc_mode
+            };
         }
     }
 }
@@ -511,12 +556,15 @@ fn render_mobile_cards(
         });
 }
 
+#[allow(clippy::too_many_arguments)]
 fn render_desktop_table(
     ui: &mut Ui,
     p: &ThemePalette,
     lang: Lang,
     s: &Strings,
     filtered: &[&NoteMeta],
+    sort_mode: &mut TableSort,
+    col_widths: &mut TableColumnWidths,
     actions: &mut Vec<UiAction>,
 ) {
     egui::Frame::none()
@@ -528,21 +576,15 @@ fn render_desktop_table(
             let avail_w = (ui.available_width() - 28.0).max(460.0);
             let show_path = avail_w >= 680.0;
             let col_del = 32.0;
-            let gaps = if show_path { 40.0 } else { 32.0 };
-            let usable = (avail_w - col_del - gaps).max(380.0);
-            let col_status = if show_path { 140.0 } else { 132.0 };
-            let col_mod = if show_path { 100.0 } else { 96.0 };
-            let rem = (usable - col_status - col_mod).max(160.0);
-            let (col_name, col_tags, col_path) = if show_path {
-                let name = (rem * 0.40).max(130.0);
-                let tags = (rem * 0.30).max(96.0);
-                let path = (rem - name - tags).max(90.0);
-                (name, tags, path)
+            let col_name = col_widths.name.clamp(120.0, 560.0);
+            let col_status = col_widths.status.clamp(100.0, 320.0);
+            let col_tags = col_widths.tags.clamp(90.0, 420.0);
+            let col_path = if show_path {
+                col_widths.path.clamp(90.0, 480.0)
             } else {
-                let name = (rem * 0.60).max(130.0);
-                let tags = (rem - name).max(80.0);
-                (name, tags, 0.0)
+                0.0
             };
+            let col_mod = col_widths.modified.clamp(84.0, 240.0);
 
             egui::Frame::none()
                 .fill(p.bg_sidebar)
@@ -555,14 +597,73 @@ fn render_desktop_table(
                 .inner_margin(Margin::symmetric(14.0, 9.0))
                 .show(ui, |ui| {
                     ui.horizontal(|ui| {
-                        ui.spacing_mut().item_spacing.x = 8.0;
-                        col_header(ui, p, s.table_col_name, col_name);
-                        col_header(ui, p, s.table_col_status, col_status);
-                        col_header(ui, p, s.table_col_tags, col_tags);
-                        if show_path {
-                            col_header(ui, p, s.table_col_path, col_path);
+                        ui.spacing_mut().item_spacing.x = 2.0;
+                        let name_ind = match *sort_mode {
+                            TableSort::TitleAsc => Some("↑"),
+                            TableSort::TitleDesc => Some("↓"),
+                            _ => None,
+                        };
+                        if col_header(ui, p, s.table_col_name, col_name - 6.0, name_ind) {
+                            *sort_mode = if *sort_mode == TableSort::TitleAsc {
+                                TableSort::TitleDesc
+                            } else {
+                                TableSort::TitleAsc
+                            };
                         }
-                        col_header(ui, p, s.table_col_modified, col_mod);
+                        col_widths.name = (col_widths.name + resize_handle(ui, p, "ntbl_name"))
+                            .clamp(120.0, 560.0);
+
+                        let st_ind = match *sort_mode {
+                            TableSort::StatusAsc => Some("↑"),
+                            TableSort::StatusDesc => Some("↓"),
+                            _ => None,
+                        };
+                        if col_header(ui, p, s.table_col_status, col_status - 6.0, st_ind) {
+                            *sort_mode = if *sort_mode == TableSort::StatusAsc {
+                                TableSort::StatusDesc
+                            } else {
+                                TableSort::StatusAsc
+                            };
+                        }
+                        col_widths.status = (col_widths.status + resize_handle(ui, p, "ntbl_status"))
+                            .clamp(100.0, 320.0);
+
+                        let tg_ind = match *sort_mode {
+                            TableSort::TagsAsc => Some("↑"),
+                            TableSort::TagsDesc => Some("↓"),
+                            _ => None,
+                        };
+                        if col_header(ui, p, s.table_col_tags, col_tags - 6.0, tg_ind) {
+                            *sort_mode = if *sort_mode == TableSort::TagsAsc {
+                                TableSort::TagsDesc
+                            } else {
+                                TableSort::TagsAsc
+                            };
+                        }
+                        col_widths.tags = (col_widths.tags + resize_handle(ui, p, "ntbl_tags"))
+                            .clamp(90.0, 420.0);
+
+                        if show_path {
+                            let _ = col_header(ui, p, s.table_col_path, col_path - 6.0, None);
+                            col_widths.path = (col_widths.path + resize_handle(ui, p, "ntbl_path"))
+                                .clamp(90.0, 480.0);
+                        }
+
+                        let mod_ind = match *sort_mode {
+                            TableSort::ModifiedAsc => Some("↑"),
+                            TableSort::ModifiedDesc => Some("↓"),
+                            _ => None,
+                        };
+                        if col_header(ui, p, s.table_col_modified, col_mod - 6.0, mod_ind) {
+                            *sort_mode = if *sort_mode == TableSort::ModifiedDesc {
+                                TableSort::ModifiedAsc
+                            } else {
+                                TableSort::ModifiedDesc
+                            };
+                        }
+                        col_widths.modified = (col_widths.modified + resize_handle(ui, p, "ntbl_mod"))
+                            .clamp(84.0, 240.0);
+
                         let _ = ui.allocate_exact_size(vec2(col_del, 18.0), Sense::hover());
                     });
                 });
@@ -716,12 +817,52 @@ fn in_cell(ui: &mut Ui, width: f32, height: f32, add_contents: impl FnOnce(&mut 
     add_contents(&mut cell_ui);
 }
 
-fn col_header(ui: &mut Ui, p: &ThemePalette, text: &str, width: f32) {
-    in_cell(ui, width, 18.0, |ui| {
-        ui.label(
-            egui::RichText::new(text)
-                .font(font_medium(12.0))
-                .color(p.text_muted),
-        );
-    });
+fn col_header(
+    ui: &mut Ui,
+    p: &ThemePalette,
+    text: &str,
+    width: f32,
+    sort_indicator: Option<&str>,
+) -> bool {
+    let label = match sort_indicator {
+        Some(ind) => format!("{text} {ind}"),
+        None => text.to_string(),
+    };
+    let (cell_rect, resp) = ui.allocate_exact_size(vec2(width.max(40.0), 20.0), Sense::click());
+    let g = ui.painter().layout_no_wrap(
+        label,
+        font_medium(12.0),
+        if sort_indicator.is_some() || resp.hovered() {
+            p.text_primary
+        } else {
+            p.text_muted
+        },
+    );
+    ui.painter().galley(
+        pos2(cell_rect.left() + 2.0, cell_rect.center().y - g.size().y * 0.5),
+        g,
+        p.text_muted,
+    );
+    resp.on_hover_cursor(CursorIcon::PointingHand).clicked()
+}
+
+fn resize_handle(ui: &mut Ui, p: &ThemePalette, id_key: &str) -> f32 {
+    let (rect, _) = ui.allocate_exact_size(vec2(6.0, 20.0), Sense::hover());
+    let resp = ui.interact(rect, ui.make_persistent_id(id_key), Sense::drag());
+    let active = resp.hovered() || resp.dragged();
+    ui.painter().line_segment(
+        [
+            pos2(rect.center().x, rect.top() + 2.0),
+            pos2(rect.center().x, rect.bottom() - 2.0),
+        ],
+        Stroke::new(if active { 2.0_f32 } else { 1.0_f32 }, if active { p.accent } else { p.border_hairline }),
+    );
+    if active {
+        resp.clone().on_hover_cursor(CursorIcon::ResizeHorizontal);
+    }
+    if resp.dragged() {
+        resp.drag_delta().x
+    } else {
+        0.0
+    }
 }

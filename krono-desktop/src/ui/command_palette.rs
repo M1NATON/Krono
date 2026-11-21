@@ -95,6 +95,16 @@ pub fn render_command_palette(
             action: UiAction::OpenTodayNote,
         },
         PaletteCommand {
+            icon: Icon::Task,
+            label: s.tasks_title,
+            action: UiAction::SetViewMode(ViewMode::Tasks),
+        },
+        PaletteCommand {
+            icon: Icon::CalendarDays,
+            label: s.tasks_carry_over_btn,
+            action: UiAction::CarryOverDailyTasks,
+        },
+        PaletteCommand {
             icon: Icon::CircleHelp,
             label: s.action_md_help,
             action: UiAction::OpenSettings(SettingsTab::MarkdownHelp),

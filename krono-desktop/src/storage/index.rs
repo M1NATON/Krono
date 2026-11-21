@@ -1,12 +1,15 @@
 use crate::storage::vault::list_vault_files;
+use chrono::Datelike;
 use krono_core::{
     canvas::CanvasDoc,
     collection::{CollectionDoc, CollectionViewKind},
+    daily::{parse_daily_note_path, SimpleDate},
     hash::{git_blob_sha1, normalize_lf_bytes},
-    markdown::{count_words, extract_wikilinks, plain_excerpt},
+    markdown::{card_preview_excerpt, count_words, extract_wikilinks, TaskPriority},
     note::{parse_tags_value, NoteDocument, NoteMeta, NoteStatus},
     path::{vault_file_stem, VaultFileKind},
     sync_plan::count_local_changes,
+    tasks::{extract_tasks, TaskRecurrence},
 };
 use rusqlite::{params, Connection, OptionalExtension};
 use std::{
@@ -63,6 +66,27 @@ pub struct BacklinkHit {
 pub struct RawLinkEdge {
     pub source_path: String,
     pub target_raw: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct VaultTaskRow {
+    pub path: String,
+    pub note_title: String,
+    pub line_idx: usize,
+    pub task_idx: usize,
+    pub raw_text: String,
+    pub clean_text: String,
+    pub done: bool,
+    pub due_date: Option<SimpleDate>,
+    pub priority: Option<TaskPriority>,
+    pub recurrence: Option<TaskRecurrence>,
+    pub tags: Vec<String>,
+}
+
+fn local_today() -> SimpleDate {
+    let now = chrono::Local::now().date_naive();
+    SimpleDate::from_ymd(now.year(), now.month(), now.day())
+        .unwrap_or(SimpleDate { year: 2026, month: 1, day: 1 })
 }
 
 pub struct VaultIndex {
@@ -176,7 +200,21 @@ impl VaultIndex {
                      modified INTEGER NOT NULL,
                      size INTEGER NOT NULL,
                      blob_sha TEXT NOT NULL DEFAULT ''
-                 );",
+                 );
+                 CREATE TABLE IF NOT EXISTS tasks (
+                     path TEXT NOT NULL,
+                     line_idx INTEGER NOT NULL,
+                     task_idx INTEGER NOT NULL,
+                     raw_text TEXT NOT NULL,
+                     clean_text TEXT NOT NULL,
+                     done INTEGER NOT NULL,
+                     due_date TEXT,
+                     priority TEXT,
+                     recurrence TEXT,
+                     tags TEXT NOT NULL DEFAULT '',
+                     PRIMARY KEY (path, task_idx)
+                 );
+                 CREATE INDEX IF NOT EXISTS idx_tasks_due ON tasks(done, due_date);",
             )
             .map_err(|e| format!("init sqlite schema: {e}"))?;
 
@@ -292,13 +330,21 @@ impl VaultIndex {
         let mut canvases_to_upsert = Vec::new();
         let mut assets_to_upsert = Vec::new();
 
+        let needs_schema_refresh = self
+            .get_meta("schema_rev")
+            .ok()
+            .flatten()
+            .as_deref()
+            != Some("2");
+
         for f in disk_files {
             match f.kind {
                 VaultFileKind::Markdown => {
                     note_disk_set.insert(f.rel_path.clone());
-                    let unchanged = existing_notes.get(&f.rel_path).is_some_and(|(m, s, sha)| {
-                        *m == f.modified && *s == f.size && !sha.is_empty()
-                    });
+                    let unchanged = !needs_schema_refresh
+                        && existing_notes.get(&f.rel_path).is_some_and(|(m, s, sha)| {
+                            *m == f.modified && *s == f.size && !sha.is_empty()
+                        });
                     if !unchanged {
                         notes_to_upsert.push(f);
                     }
@@ -440,6 +486,14 @@ impl VaultIndex {
                 report.changed_paths.push(info.rel_path);
             }
         }
+        if needs_schema_refresh {
+            tx.execute(
+                "INSERT INTO meta (key, value) VALUES ('schema_rev', '2')
+                 ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                [],
+            )
+            .map_err(|e| e.to_string())?;
+        }
         tx.commit().map_err(|e| e.to_string())?;
         Ok(report)
     }
@@ -558,6 +612,8 @@ impl VaultIndex {
         tx.execute("DELETE FROM notes_fts WHERE path = ?1", params![rel_path])
             .map_err(|e| e.to_string())?;
         tx.execute("DELETE FROM links WHERE source_path = ?1", params![rel_path])
+            .map_err(|e| e.to_string())?;
+        tx.execute("DELETE FROM tasks WHERE path = ?1", params![rel_path])
             .map_err(|e| e.to_string())?;
         Ok(())
     }
@@ -729,7 +785,7 @@ impl VaultIndex {
         blob_sha: &str,
     ) -> Result<(), String> {
         let tags_joined = doc.frontmatter.tags.join(", ");
-        let excerpt = plain_excerpt(&doc.body, 140);
+        let excerpt = card_preview_excerpt(&doc.body, 2, 72);
         let (word_count, _) = count_words(&doc.body);
 
         tx.execute(
@@ -782,6 +838,43 @@ impl VaultIndex {
                 .execute(params![rel_path, wl.target, wl.context])
                 .map_err(|e| e.to_string())?;
         }
+
+        tx.execute("DELETE FROM tasks WHERE path = ?1", params![rel_path])
+            .map_err(|e| e.to_string())?;
+        let ref_date = parse_daily_note_path(rel_path).unwrap_or_else(local_today);
+        let parsed_tasks = extract_tasks(&doc.body, ref_date);
+        if !parsed_tasks.is_empty() {
+            let mut insert_task = tx
+                .prepare_cached(
+                    "INSERT INTO tasks (path, line_idx, task_idx, raw_text, clean_text, done, due_date, priority, recurrence, tags)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+                )
+                .map_err(|e| e.to_string())?;
+            for t in parsed_tasks {
+                let due_str = t.due_date.map(|d| d.format_iso());
+                let prio_str = t.priority.map(|p| match p {
+                    TaskPriority::High => "high",
+                    TaskPriority::Medium => "med",
+                    TaskPriority::Low => "low",
+                });
+                let rec_str = t.recurrence.map(TaskRecurrence::as_db_str);
+                let tags_str = t.tags.join(", ");
+                insert_task
+                    .execute(params![
+                        rel_path,
+                        t.line_idx as i64,
+                        t.task_idx as i64,
+                        t.raw_text,
+                        t.clean_text,
+                        if t.done { 1i64 } else { 0i64 },
+                        due_str,
+                        prio_str,
+                        rec_str,
+                        tags_str,
+                    ])
+                    .map_err(|e| e.to_string())?;
+            }
+        }
         Ok(())
     }
 
@@ -796,6 +889,53 @@ impl VaultIndex {
             .map_err(|e| e.to_string())?;
         let rows = stmt
             .query_map([], row_to_note_meta)
+            .map_err(|e| e.to_string())?;
+        Ok(rows.flatten().collect())
+    }
+
+    pub fn list_tasks(&self) -> Result<Vec<VaultTaskRow>, String> {
+        let mut stmt = self
+            .conn
+            .prepare(
+                "SELECT t.path, COALESCE(n.title, t.path), t.line_idx, t.task_idx,
+                        t.raw_text, t.clean_text, t.done, t.due_date, t.priority, t.recurrence, t.tags
+                 FROM tasks t
+                 LEFT JOIN notes n ON n.path = t.path
+                 ORDER BY t.done ASC,
+                          CASE WHEN t.due_date IS NULL OR t.due_date = '' THEN 1 ELSE 0 END ASC,
+                          t.due_date ASC,
+                          t.path ASC,
+                          t.task_idx ASC",
+            )
+            .map_err(|e| e.to_string())?;
+        let rows = stmt
+            .query_map([], |row| {
+                let due_raw: Option<String> = row.get(7)?;
+                let prio_raw: Option<String> = row.get(8)?;
+                let rec_raw: Option<String> = row.get(9)?;
+                let tags_raw: String = row.get(10)?;
+                let due_date = due_raw.as_deref().and_then(SimpleDate::parse_iso);
+                let priority = match prio_raw.as_deref() {
+                    Some("high") => Some(TaskPriority::High),
+                    Some("med") => Some(TaskPriority::Medium),
+                    Some("low") => Some(TaskPriority::Low),
+                    _ => None,
+                };
+                let recurrence = rec_raw.as_deref().and_then(TaskRecurrence::from_db_str);
+                Ok(VaultTaskRow {
+                    path: row.get(0)?,
+                    note_title: row.get(1)?,
+                    line_idx: row.get::<_, i64>(2)?.max(0) as usize,
+                    task_idx: row.get::<_, i64>(3)?.max(0) as usize,
+                    raw_text: row.get(4)?,
+                    clean_text: row.get(5)?,
+                    done: row.get::<_, i64>(6)? != 0,
+                    due_date,
+                    priority,
+                    recurrence,
+                    tags: parse_tags_value(&tags_raw),
+                })
+            })
             .map_err(|e| e.to_string())?;
         Ok(rows.flatten().collect())
     }
@@ -1393,5 +1533,27 @@ mod tests {
             )
             .unwrap();
         assert_eq!(meta.status, None);
+    }
+
+    #[test]
+    fn indexes_tasks_and_cleans_up_on_delete() {
+        let mut idx = VaultIndex::open_in_memory();
+        let doc = NoteDocument::parse(
+            "---\ntitle: Sprint\n---\n- [ ] Ship v0.3 @2026-11-25 !high @every week #release\n- [x] Setup CI\n",
+            "Sprint",
+        );
+        idx.upsert_note("sprint.md", &doc, 200, 80).unwrap();
+
+        let tasks = idx.list_tasks().unwrap();
+        assert_eq!(tasks.len(), 2);
+        assert_eq!(tasks[0].clean_text, "Ship v0.3 #release");
+        assert_eq!(tasks[0].due_date, SimpleDate::from_ymd(2026, 11, 25));
+        assert_eq!(tasks[0].priority, Some(TaskPriority::High));
+        assert_eq!(tasks[0].recurrence, Some(TaskRecurrence::Weekly));
+        assert!(!tasks[0].done);
+        assert!(tasks[1].done);
+
+        idx.remove_note("sprint.md").unwrap();
+        assert!(idx.list_tasks().unwrap().is_empty());
     }
 }

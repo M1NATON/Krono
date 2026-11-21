@@ -147,6 +147,7 @@ pub fn render_sidebar(
     pages_ui: &mut PagesTreeUiState<'_>,
     cal: &mut CalendarUiState<'_>,
     sync: SyncUiState<'_>,
+    due_tasks_badge: usize,
 ) -> Vec<UiAction> {
     let mut actions = Vec::new();
     let target_w = (*sidebar_width).clamp(210.0, 340.0);
@@ -190,6 +191,7 @@ pub fn render_sidebar(
             pages_ui,
             cal,
             sync,
+            due_tasks_badge,
             &mut actions,
         );
     });
@@ -220,6 +222,7 @@ pub fn render_sidebar_drawer(
     pages_ui: &mut PagesTreeUiState<'_>,
     cal: &mut CalendarUiState<'_>,
     sync: SyncUiState<'_>,
+    due_tasks_badge: usize,
 ) -> (Vec<UiAction>, bool) {
     let mut actions = Vec::new();
     let mut dismiss = false;
@@ -278,6 +281,7 @@ pub fn render_sidebar_drawer(
                             pages_ui,
                             cal,
                             sync,
+                            due_tasks_badge,
                             &mut actions,
                         );
                     }
@@ -337,6 +341,7 @@ fn render_sidebar_contents(
     pages_ui: &mut PagesTreeUiState<'_>,
     cal: &mut CalendarUiState<'_>,
     sync: SyncUiState<'_>,
+    due_tasks_badge: usize,
     actions: &mut Vec<UiAction>,
 ) {
     let s = strings(lang);
@@ -394,6 +399,7 @@ fn render_sidebar_contents(
 
         for (mode, icon, label) in [
             (ViewMode::Editor, Icon::Notes, s.nav_notes),
+            (ViewMode::Tasks, Icon::Task, s.nav_tasks),
             (ViewMode::Table, Icon::Table, s.nav_table),
             (ViewMode::Board, Icon::Board, s.nav_board),
             (ViewMode::Graph, Icon::Graph, s.nav_graph),
@@ -478,6 +484,21 @@ fn render_sidebar_contents(
                 g,
                 text_col,
             );
+            if slot.mode == ViewMode::Tasks && due_tasks_badge > 0 {
+                let badge = due_tasks_badge.to_string();
+                let bg = ui.painter().layout_no_wrap(badge, font_mono(10.5), p.accent_text);
+                let bw = (bg.size().x + 10.0).max(18.0);
+                let br = Rect::from_center_size(
+                    pos2(slot.rect.right() - bw * 0.5 - 6.0, slot.rect.center().y),
+                    vec2(bw, 17.0),
+                );
+                ui.painter().rect_filled(br, Rounding::same(8.5), p.accent_soft);
+                ui.painter().galley(
+                    pos2(br.center().x - bg.size().x * 0.5, br.center().y - bg.size().y * 0.5),
+                    bg,
+                    p.accent_text,
+                );
+            }
             if slot.resp.on_hover_cursor(CursorIcon::PointingHand).clicked() {
                 if slot.mode == ViewMode::Editor && !slot.active {
                     actions.push(UiAction::ReturnToNotesTab);

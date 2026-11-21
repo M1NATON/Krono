@@ -92,12 +92,14 @@ impl KronoApp {
         let recent_items = self.build_recent_tab_items();
         let vault_dir_snap = self.config.vault_dir.clone();
         let vault_counts = self.vault_counts();
+        let today = today_local();
+        let due_tasks_badge = self.due_tasks_badge_count(today);
 
         let mut cal_ui = CalendarUiState {
             open: self.config.calendar_open,
             year: &mut self.calendar_year,
             month: &mut self.calendar_month,
-            today: today_local(),
+            today,
             daily_dates: &self.daily_dates,
         };
 
@@ -130,6 +132,7 @@ impl KronoApp {
                 &mut pages_ui,
                 &mut cal_ui,
                 sync_ui,
+                due_tasks_badge,
             ));
             if desktop_sidebar_t > 0.99 && (sb_w - self.config.sidebar_width).abs() > 1.0 {
                 self.config.sidebar_width = sb_w;
@@ -219,21 +222,37 @@ impl KronoApp {
                 ViewMode::Editor if self.mobile_showing_list => Margin::symmetric(12.0, 10.0),
                 ViewMode::Editor => Margin::symmetric(14.0, 8.0),
                 ViewMode::Graph | ViewMode::Canvas | ViewMode::Overview => Margin::same(0.0),
-                ViewMode::Table | ViewMode::Board | ViewMode::Collection => {
-                    Margin::symmetric(12.0, 10.0)
-                }
+                ViewMode::Board | ViewMode::Collection => Margin {
+                    left: 12.0,
+                    right: 12.0,
+                    top: 10.0,
+                    bottom: 4.0,
+                },
+                ViewMode::Table | ViewMode::Tasks => Margin::symmetric(12.0, 10.0),
                 ViewMode::Settings => Margin::symmetric(10.0, 10.0),
             },
             LayoutClass::Compact => match self.view_mode {
                 ViewMode::Editor => Margin::symmetric(16.0, 12.0),
                 ViewMode::Graph | ViewMode::Canvas | ViewMode::Overview => Margin::same(0.0),
-                ViewMode::Table | ViewMode::Board | ViewMode::Collection => Margin::same(16.0),
+                ViewMode::Board | ViewMode::Collection => Margin {
+                    left: 16.0,
+                    right: 16.0,
+                    top: 14.0,
+                    bottom: 6.0,
+                },
+                ViewMode::Table | ViewMode::Tasks => Margin::same(16.0),
                 ViewMode::Settings => Margin::symmetric(16.0, 14.0),
             },
             LayoutClass::Desktop => match self.view_mode {
                 ViewMode::Editor => Margin::symmetric(20.0, 14.0),
                 ViewMode::Graph | ViewMode::Canvas | ViewMode::Overview => Margin::same(0.0),
-                ViewMode::Table | ViewMode::Board | ViewMode::Collection => Margin::same(22.0),
+                ViewMode::Board | ViewMode::Collection => Margin {
+                    left: 22.0,
+                    right: 22.0,
+                    top: 18.0,
+                    bottom: 6.0,
+                },
+                ViewMode::Table | ViewMode::Tasks => Margin::same(22.0),
                 ViewMode::Settings => Margin::symmetric(24.0, 20.0),
             },
         };
@@ -337,6 +356,20 @@ impl KronoApp {
                         ));
                     }
                 }
+                ViewMode::Tasks => {
+                    if view_t < 0.99 {
+                        ui.add_space((1.0 - view_t) * 6.0);
+                    }
+                    actions.extend(crate::ui::tasks_view::render_tasks_view(
+                        ui,
+                        &palette,
+                        lang,
+                        layout,
+                        today,
+                        &self.vault_tasks,
+                        &mut self.tasks_view_state,
+                    ));
+                }
                 ViewMode::Table => {
                     if view_t < 0.99 {
                         ui.add_space((1.0 - view_t) * 6.0);
@@ -351,6 +384,7 @@ impl KronoApp {
                         &mut self.table_status_filter,
                         self.active_tag_filter.as_deref(),
                         &mut self.table_sort,
+                        &mut self.table_col_widths,
                     ));
                 }
                 ViewMode::Board => {
@@ -373,6 +407,7 @@ impl KronoApp {
                         &mut self.quick_add_board_tags,
                         &mut self.quick_add_board_tag_input,
                         &board_tags,
+                        &mut self.board_sort,
                     ));
                 }
                 ViewMode::Graph => {
@@ -495,6 +530,7 @@ impl KronoApp {
                 &mut pages_ui,
                 &mut cal_ui,
                 sync_ui,
+                due_tasks_badge,
             );
             actions.extend(d_actions);
             if dismissed {

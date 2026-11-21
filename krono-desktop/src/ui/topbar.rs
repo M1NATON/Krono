@@ -242,6 +242,16 @@ pub fn render_topbar(
                                         .color(p.text_primary),
                                 );
                             }
+                            ViewMode::Tasks => {
+                                let (ir, _) = ui.allocate_exact_size(vec2(14.0, 14.0), Sense::hover());
+                                draw_icon(ui.painter(), ir, Icon::Task, p.accent_text);
+                                ui.add_space(4.0);
+                                ui.label(
+                                    egui::RichText::new(s.tasks_title)
+                                        .font(font_medium(13.5))
+                                        .color(p.text_primary),
+                                );
+                            }
                             ViewMode::Canvas => {
                                 if let Some(path) = doc.active_canvas_path {
                                     if show_folder_crumb {
@@ -478,7 +488,7 @@ fn render_mobile_topbar(
             }
         }
         ViewMode::Table | ViewMode::Board => 104.0,
-        ViewMode::Graph | ViewMode::Overview | ViewMode::Settings => 40.0,
+        ViewMode::Tasks | ViewMode::Graph | ViewMode::Overview | ViewMode::Settings => 40.0,
     };
     let left_w = (ui.available_width() - right_reserve).max(64.0);
 
@@ -569,6 +579,13 @@ fn render_mobile_topbar(
                     ViewMode::Overview => {
                         ui.label(
                             egui::RichText::new(s.overview_title)
+                                .font(font_medium(15.5))
+                                .color(p.text_primary),
+                        );
+                    }
+                    ViewMode::Tasks => {
+                        ui.label(
+                            egui::RichText::new(s.tasks_title)
                                 .font(font_medium(15.5))
                                 .color(p.text_primary),
                         );
@@ -689,7 +706,7 @@ fn render_mobile_topbar(
                         actions.push(UiAction::OpenCreateModal(None));
                     }
                 }
-                ViewMode::Graph | ViewMode::Overview | ViewMode::Settings => {
+                ViewMode::Tasks | ViewMode::Graph | ViewMode::Overview | ViewMode::Settings => {
                     render_mob_sync(ui, actions);
                 }
                 ViewMode::Canvas => {

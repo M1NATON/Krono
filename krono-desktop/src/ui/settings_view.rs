@@ -513,6 +513,28 @@ fn render_tab_scroll(
                         setting_row(
                             ui,
                             p,
+                            s.settings_task_notifications,
+                            s.settings_task_notifications_desc,
+                            56.0,
+                            |ui| {
+                                if toggle_switch(
+                                    ui,
+                                    p,
+                                    "sw_task_notifications",
+                                    &mut cfg.task_notifications,
+                                ) {
+                                    actions.push(UiAction::ConfigChanged);
+                                }
+                            },
+                        );
+
+                        ui.add_space(12.0);
+                        hairline_h(ui, p);
+                        ui.add_space(12.0);
+
+                        setting_row(
+                            ui,
+                            p,
                             s.settings_show_footer,
                             s.settings_show_footer_desc,
                             56.0,

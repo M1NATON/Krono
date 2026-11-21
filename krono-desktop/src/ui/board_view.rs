@@ -8,22 +8,17 @@ use crate::ui::motion::{anim_bool_eased, anim_value_smooth, lerp_color, with_alp
 use crate::ui::theme::{
     font_body, font_medium, font_mono, font_semibold, font_serif_bold, ThemePalette,
 };
-use crate::ui::{LayoutClass, UiAction, ViewMode};
+use crate::ui::board_dnd::{BoardDndState, ColumnGeometry};
+use crate::ui::{BoardSort, LayoutClass, UiAction, ViewMode};
 use eframe::egui::{
-    self, pos2, vec2, Align, CursorIcon, DragAndDrop, LayerId, Layout, Margin, Order, Rounding,
-    Sense, Stroke, Ui,
+    self, pos2, vec2, Align, Color32, CursorIcon, Layout, Margin, Order, Rect, Rounding, Sense,
+    Stroke, Ui,
 };
 use krono_core::{
     collection::CollectionViewKind,
     note::{NoteMeta, NoteStatus},
 };
 use std::collections::HashMap;
-
-#[derive(Clone, Debug)]
-struct DragCardPayload {
-    path: String,
-    height: f32,
-}
 
 #[allow(clippy::too_many_arguments)]
 pub fn render_board_view(
@@ -39,6 +34,7 @@ pub fn render_board_view(
     quick_add_tags: &mut Vec<String>,
     quick_add_tag_input: &mut String,
     available_tags: &[String],
+    board_sort: &mut BoardSort,
 ) -> Vec<UiAction> {
     let s = strings(lang);
     let mut actions = Vec::new();
@@ -59,6 +55,7 @@ pub fn render_board_view(
                 }
             }
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                ui.spacing_mut().item_spacing.x = 8.0;
                 if secondary_button(ui, p, Some(Icon::Board), s.new_custom_board_btn).clicked() {
                     actions.push(UiAction::CreateCollection {
                         title: if lang == Lang::Ru {
@@ -68,6 +65,23 @@ pub fn render_board_view(
                         },
                         kind: CollectionViewKind::Board,
                     });
+                }
+
+                let sort_lbl = match *board_sort {
+                    BoardSort::Manual => if lang == Lang::Ru { "Порядок: Ручной" } else { "Order: Manual" },
+                    BoardSort::ModifiedDesc => if lang == Lang::Ru { "Дата ↓" } else { "Date ↓" },
+                    BoardSort::ModifiedAsc => if lang == Lang::Ru { "Дата ↑" } else { "Date ↑" },
+                    BoardSort::TitleAsc => if lang == Lang::Ru { "Название ↑" } else { "Title ↑" },
+                    BoardSort::TitleDesc => if lang == Lang::Ru { "Название ↓" } else { "Title ↓" },
+                };
+                if secondary_button(ui, p, Some(Icon::Filter), sort_lbl).clicked() {
+                    *board_sort = match *board_sort {
+                        BoardSort::Manual => BoardSort::ModifiedDesc,
+                        BoardSort::ModifiedDesc => BoardSort::ModifiedAsc,
+                        BoardSort::ModifiedAsc => BoardSort::TitleAsc,
+                        BoardSort::TitleAsc => BoardSort::TitleDesc,
+                        BoardSort::TitleDesc => BoardSort::Manual,
+                    };
                 }
             });
         });
@@ -96,14 +110,25 @@ pub fn render_board_view(
             grouped.entry(st).or_default().push(n);
         }
     }
+    let is_sorted = *board_sort != BoardSort::Manual;
     for list in grouped.values_mut() {
-        list.sort_by(|a, b| {
-            let ar = if a.board_order > 0 { 0 } else { 1 };
-            let br = if b.board_order > 0 { 0 } else { 1 };
-            ar.cmp(&br)
-                .then_with(|| a.board_order.cmp(&b.board_order))
-                .then_with(|| b.modified.cmp(&a.modified))
-        });
+        match *board_sort {
+            BoardSort::Manual => list.sort_by(|a, b| {
+                let ar = if a.board_order > 0 { 0 } else { 1 };
+                let br = if b.board_order > 0 { 0 } else { 1 };
+                ar.cmp(&br)
+                    .then_with(|| a.board_order.cmp(&b.board_order))
+                    .then_with(|| b.modified.cmp(&a.modified))
+            }),
+            BoardSort::ModifiedDesc => list.sort_by(|a, b| b.modified.cmp(&a.modified)),
+            BoardSort::ModifiedAsc => list.sort_by(|a, b| a.modified.cmp(&b.modified)),
+            BoardSort::TitleAsc => {
+                list.sort_by(|a, b| a.title.to_lowercase().cmp(&b.title.to_lowercase()))
+            }
+            BoardSort::TitleDesc => {
+                list.sort_by(|a, b| b.title.to_lowercase().cmp(&a.title.to_lowercase()))
+            }
+        }
     }
 
     if tabbed_mode {
@@ -124,47 +149,63 @@ pub fn render_board_view(
         return actions;
     }
 
-    let avail_h = ui.available_height().max(320.0);
-    let active_drag = DragAndDrop::payload::<DragCardPayload>(ui.ctx());
+    let board_bottom = ui.max_rect().bottom();
+    let dnd_id = ui.make_persistent_id("notes_kanban_dnd");
+    let mut dnd = BoardDndState::load(ui.ctx(), dnd_id);
+    if let Some(drop_ev) = dnd.begin_frame(ui.ctx(), is_sorted) {
+        actions.push(UiAction::MoveNoteInBoard {
+            path: drop_ev.card_id,
+            status: NoteStatus::from_str_lossy(&drop_ev.to_col),
+            insert_before: drop_ev.insert_before_id,
+        });
+    }
+
     let qa_top_id = egui::Id::new("board_qa_at_top_st");
     let mut qa_at_top = ui.ctx().data(|d| d.get_temp::<bool>(qa_top_id)).unwrap_or(false);
     if quick_add_status.is_none() {
         qa_at_top = false;
     }
     let ptr_pos = ui.ctx().pointer_interact_pos();
+    let mut new_columns: HashMap<String, ColumnGeometry> = HashMap::new();
+    let prev_selectable = ui.style().interaction.selectable_labels;
+    if dnd.is_dragging() {
+        ui.style_mut().interaction.selectable_labels = false;
+    }
 
     ui.columns(3, |cols| {
         for (idx, status) in NoteStatus::ALL.into_iter().enumerate() {
             let col_ui = &mut cols[idx];
-            let col_total_w = col_ui.available_width().max(180.0);
-            let inner_w = (col_total_w - 24.0).max(140.0);
+            let col_total_w = col_ui.available_width().max(240.0);
+            let inner_w = (col_total_w - 20.0).max(180.0);
             let (pill_bg, dot_col, text_col) = p.status_colors(status);
+            let col_id = status.as_yaml_str().to_string();
             let items = grouped.get(&status).map(Vec::as_slice).unwrap_or(&[]);
             let is_top_open = *quick_add_status == Some(status) && qa_at_top;
 
-            let prev_col_rect: Option<egui::Rect> = col_ui.data(|d| {
-                d.get_temp(col_ui.make_persistent_id(("kboard_col_rect", status.sort_rank())))
-            });
-            let prev_card_rects: Vec<(String, f32, f32)> = col_ui
-                .data(|d| {
-                    d.get_temp(col_ui.make_persistent_id(("kboard_card_rects", status.sort_rank())))
-                })
-                .unwrap_or_default();
+            let prev_col_rect = dnd.columns.get(&col_id).map(|c| c.drop_rect);
+            let col_ptr_inside = prev_col_rect
+                .is_some_and(|r| ptr_pos.is_some_and(|pt| r.contains(pt)));
+            let col_hov_t = anim_bool_eased(
+                col_ui.ctx(),
+                col_ui.make_persistent_id(("kboard_col_hov", status.sort_rank())),
+                col_ptr_inside || is_top_open,
+                0.12,
+            );
 
             let mut col_frame = egui::Frame::none()
-                .fill(p.bg_sidebar)
-                .stroke(Stroke::new(1.0_f32, p.border_hairline))
-                .rounding(Rounding::same(10.0))
-                .inner_margin(Margin::same(12.0))
+                .fill(Color32::TRANSPARENT)
+                .stroke(Stroke::NONE)
+                .rounding(Rounding::same(12.0))
+                .inner_margin(Margin::symmetric(10.0, 8.0))
                 .begin(col_ui);
 
-            let mut hovered_insert_before: Option<String> = None;
-            let mut new_card_rects: Vec<(String, f32, f32)> = Vec::with_capacity(items.len());
+            let mut col_base_cards: Vec<(String, f32, f32)> = Vec::with_capacity(items.len());
+            let col_scroll_rect;
+            let col_scroll_offset_y;
             {
                 let cui = &mut col_frame.content_ui;
                 cui.set_width(inner_w);
                 cui.set_max_width(inner_w);
-                cui.set_min_height((avail_h - 28.0).max(260.0));
 
                 // Column Header
                 cui.horizontal(|ui| {
@@ -192,7 +233,16 @@ pub fn render_board_view(
                             .color(p.text_muted),
                     );
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        if icon_button(ui, p, Icon::Plus, s.add_card_btn, is_top_open).clicked() {
+                        let hdr_alpha = col_hov_t;
+                        if muted_board_icon_btn(
+                            ui,
+                            p,
+                            Icon::Plus,
+                            s.add_card_btn,
+                            is_top_open,
+                            hdr_alpha,
+                        )
+                        .clicked() {
                             if is_top_open {
                                 *quick_add_status = None;
                                 qa_at_top = false;
@@ -210,6 +260,12 @@ pub fn render_board_view(
                     });
                 });
 
+                cui.add_space(6.0);
+                let (hr, _) = cui.allocate_exact_size(vec2(inner_w, 1.0), Sense::hover());
+                cui.painter().line_segment(
+                    [hr.left_center(), hr.right_center()],
+                    Stroke::new(1.0_f32, with_alpha(p.border_hairline, 0.75)),
+                );
                 cui.add_space(8.0);
                 if is_top_open {
                     render_quick_add_control(
@@ -236,144 +292,103 @@ pub fn render_board_view(
                     );
                 }
 
-                let hovering_this_col = active_drag.is_some()
-                    && ptr_pos.is_some_and(|pt| prev_col_rect.is_some_and(|r| r.contains(pt)));
-                let drag_h = active_drag.as_ref().map(|d| d.height).unwrap_or(76.0);
-                let drag_path = active_drag.as_ref().map(|d| d.path.as_str());
-                let others: Vec<&NoteMeta> = items
-                    .iter()
-                    .copied()
-                    .filter(|it| Some(it.path.as_str()) != drag_path)
-                    .collect();
-                let target_slot_idx: Option<usize> = if hovering_this_col {
-                    let pt = ptr_pos.unwrap();
-                    let mut count = 0usize;
-                    for it in &others {
-                        if let Some((_, cy, _)) =
-                            prev_card_rects.iter().find(|(id, _, _)| id == &it.path)
-                        {
-                            if *cy < pt.y {
-                                count += 1;
-                            }
-                        }
-                    }
-                    hovered_insert_before = others.get(count).map(|it| it.path.clone());
-                    Some(count)
-                } else {
-                    None
-                };
-
-                egui::ScrollArea::vertical()
+                let mut v_sa = egui::ScrollArea::vertical()
                     .id_salt(("kanban_col", status.sort_rank()))
+                    .drag_to_scroll(!dnd.is_dragging())
                     .auto_shrink([false, true])
-                    .max_height((avail_h - 140.0).max(160.0))
-                    .show(cui, |ui| {
+                    .max_height((board_bottom - cui.cursor().top() - 8.0).max(160.0));
+                if let Some(next_y) = dnd.vertical_autoscroll_offset(cui.ctx(), &col_id) {
+                    v_sa = v_sa.vertical_scroll_offset(next_y);
+                }
+                let dragged_id = dnd.dragged_card_id().map(str::to_string);
+                let hidden_id = dnd.hidden_card_id().map(str::to_string);
+                let drag_h = dnd.dragged_card_height();
+                let dnd_active = dnd.is_active();
+                let dnd_dragging = dnd.is_dragging();
+
+                let v_out = v_sa.show(cui, |ui| {
                         ui.set_width(inner_w);
                         let scroll_origin_y = ui.cursor().top();
-                        let scroll_clip = ui.clip_rect();
+                        let others: Vec<(usize, &NoteMeta)> = items
+                            .iter()
+                            .copied()
+                            .enumerate()
+                            .filter(|(_, it)| dragged_id.as_deref() != Some(it.path.as_str()))
+                            .collect();
 
-                        // Floating tooltip ghost for dragged card originating from this column
-                        for item in items {
-                            let drag_id = ui.make_persistent_id(("kanban_card", &item.path));
-                            if ui.ctx().is_being_dragged(drag_id) {
-                                let cur_h = prev_card_rects
-                                    .iter()
-                                    .find(|(id, _, _)| id == &item.path)
-                                    .map(|(_, _, h)| *h)
-                                    .unwrap_or(76.0);
-                                DragAndDrop::set_payload(
-                                    ui.ctx(),
-                                    DragCardPayload {
-                                        path: item.path.clone(),
-                                        height: cur_h,
-                                    },
-                                );
-                                let layer_id = LayerId::new(Order::Tooltip, drag_id);
-                                let mut dummy_reord = None;
-                                let ir = ui.with_layer_id(layer_id, |ui| {
-                                    ui.set_width(inner_w);
-                                    paint_card_contents(
-                                        ui,
-                                        p,
-                                        item,
-                                        inner_w,
-                                        1.0,
-                                        true,
-                                        None,
-                                        &mut dummy_reord,
-                                    )
-                                });
-                                if let Some(ptr) = ptr_pos {
-                                    ui.ctx().set_cursor_icon(CursorIcon::Grabbing);
-                                    let delta = ptr - ir.response.rect.center();
-                                    ui.ctx().transform_layer_shapes(
-                                        layer_id,
-                                        egui::emath::TSTransform::from_translation(delta),
-                                    );
-                                    let ghost_top_y = ptr.y - ir.response.rect.height() * 0.5;
-                                    ui.data_mut(|d| {
-                                        d.insert_temp(
-                                            ui.make_persistent_id(("kboard_ghost_top_y", &item.path)),
-                                            ghost_top_y,
-                                        );
-                                    });
-                                }
-                            }
+                        let mut base_y = scroll_origin_y;
+                        for (_, it) in &others {
+                            let h = dnd.card_heights.get(&it.path).copied().unwrap_or(76.0);
+                            col_base_cards.push((it.path.clone(), base_y, h));
+                            base_y += h + 8.0;
                         }
 
                         let others_len = others.len();
                         for slot_idx in 0..=others_len {
-                            let gap_id =
-                                ui.make_persistent_id(("kboard_slot_gap", status.sort_rank(), slot_idx));
-                            let gap_t = if active_drag.is_some() {
-                                anim_bool_eased(
-                                    ui.ctx(),
-                                    gap_id,
-                                    hovering_this_col && target_slot_idx == Some(slot_idx),
-                                    0.14,
-                                )
-                            } else {
-                                let _ = ui.ctx().animate_bool_with_time(gap_id, false, 0.0);
-                                0.0
-                            };
+                            let gap_t = dnd.slot_gap_factor(&col_id, slot_idx);
                             if gap_t > 0.01 {
                                 let (ph, _) = ui.allocate_exact_size(
-                                    vec2(inner_w, (drag_h * gap_t).max(6.0)),
+                                    vec2(inner_w, (drag_h * gap_t).max(4.0)),
                                     Sense::hover(),
                                 );
-                                ui.painter().rect_filled(
-                                    ph,
-                                    Rounding::same(8.0),
-                                    with_alpha(p.accent_soft, gap_t * 0.85),
-                                );
-                                ui.painter().rect_stroke(
-                                    ph,
-                                    Rounding::same(8.0),
-                                    Stroke::new(1.4_f32, with_alpha(p.accent, gap_t)),
-                                );
-                                ui.painter().line_segment(
-                                    [
-                                        pos2(ph.left() + 14.0, ph.center().y),
-                                        pos2(ph.right() - 14.0, ph.center().y),
-                                    ],
-                                    Stroke::new(2.0_f32, with_alpha(p.accent, gap_t * 0.7)),
-                                );
-                                ui.add_space(8.0 * gap_t);
+                                if dnd.is_active_target_slot(&col_id, slot_idx) {
+                                    ui.painter().rect_filled(
+                                        ph,
+                                        Rounding::same(10.0),
+                                        with_alpha(p.accent, gap_t * 0.08),
+                                    );
+                                    let bar_y = ph.center().y;
+                                    ui.painter().line_segment(
+                                        [
+                                            pos2(ph.left() + 12.0, bar_y),
+                                            pos2(ph.right() - 12.0, bar_y),
+                                        ],
+                                        Stroke::new(2.0_f32, with_alpha(p.accent, gap_t * 0.92)),
+                                    );
+                                    ui.painter().circle_filled(
+                                        pos2(ph.left() + 12.0, bar_y),
+                                        3.5 * gap_t,
+                                        with_alpha(p.accent, gap_t),
+                                    );
+                                    ui.painter().circle_filled(
+                                        pos2(ph.right() - 12.0, bar_y),
+                                        3.5 * gap_t,
+                                        with_alpha(p.accent, gap_t),
+                                    );
+                                } else {
+                                    ui.painter().rect_filled(
+                                        ph,
+                                        Rounding::same(10.0),
+                                        with_alpha(p.bg_elevated, gap_t * 0.24),
+                                    );
+                                    draw_dashed_board_rect(
+                                        ui.painter(),
+                                        ph,
+                                        10.0,
+                                        Stroke::new(1.25_f32, with_alpha(p.border_strong, gap_t * 0.52)),
+                                        6.0,
+                                        4.0,
+                                    );
+                                }
+                                ui.add_space(10.0 * gap_t);
                             }
 
                             if slot_idx < others_len {
-                                let item = others[slot_idx];
+                                let (orig_idx, item) = others[slot_idx];
                                 let drag_id = ui.make_persistent_id(("kanban_card", &item.path));
+                                if hidden_id.as_deref() == Some(item.path.as_str()) {
+                                    let h = dnd.card_heights.get(&item.path).copied().unwrap_or(drag_h);
+                                    let (r, _) = ui.allocate_exact_size(vec2(inner_w, h), Sense::hover());
+                                    dnd.resolve_settling_rect(&item.path, r);
+                                    ui.add_space(8.0);
+                                    continue;
+                                }
+
                                 let card_top = ui.next_widget_position();
-                                let est_h = prev_card_rects
-                                    .iter()
-                                    .find(|(id, _, _)| id == &item.path)
-                                    .map(|(_, _, h)| *h)
-                                    .unwrap_or(76.0);
+                                let est_h = dnd.card_heights.get(&item.path).copied().unwrap_or(76.0);
                                 let est_rect =
                                     egui::Rect::from_min_size(card_top, vec2(inner_w, est_h));
-                                let is_hov =
-                                    active_drag.is_none() && ui.rect_contains_pointer(est_rect);
+                                let is_hov = !dnd_active && ui.rect_contains_pointer(est_rect);
                                 let hov_t = anim_bool_eased(
                                     ui.ctx(),
                                     drag_id.with("hov"),
@@ -381,112 +396,39 @@ pub fn render_board_view(
                                     0.11,
                                 );
 
-                                let local_y = card_top.y - scroll_origin_y;
-                                let settle_id =
-                                    ui.make_persistent_id(("kboard_settle_y", &item.path));
-                                let last_rank: Option<u8> = ui.data(|d| {
-                                    d.get_temp(ui.make_persistent_id((
-                                        "kboard_last_col",
-                                        &item.path,
-                                    )))
-                                });
-                                let ghost_screen_y: Option<f32> = ui.data(|d| {
-                                    d.get_temp(ui.make_persistent_id((
-                                        "kboard_ghost_top_y",
-                                        &item.path,
-                                    )))
-                                });
-                                let anim_local_y = if active_drag.is_none() {
-                                    if let Some(gsy) = ghost_screen_y {
-                                        ui.data_mut(|d| {
-                                            d.remove::<f32>(ui.make_persistent_id((
-                                                "kboard_ghost_top_y",
-                                                &item.path,
-                                            )));
-                                        });
-                                        let seed = (gsy - scroll_origin_y)
-                                            .clamp(local_y - 380.0, local_y + 380.0);
-                                        ui.ctx().animate_value_with_time(settle_id, seed, 0.0);
-                                        ui.ctx().animate_value_with_time(settle_id, local_y, 0.18)
-                                    } else if last_rank == Some(status.sort_rank()) {
-                                        ui.ctx().animate_value_with_time(settle_id, local_y, 0.18)
-                                    } else {
-                                        ui.ctx().animate_value_with_time(settle_id, local_y, 0.0)
-                                    }
-                                } else {
-                                    ui.ctx().animate_value_with_time(settle_id, local_y, 0.0)
-                                };
-                                ui.data_mut(|d| {
-                                    d.insert_temp(
-                                        ui.make_persistent_id(("kboard_last_col", &item.path)),
-                                        status.sort_rank(),
-                                    );
-                                });
-                                let settle_dy = if active_drag.is_none() {
-                                    (anim_local_y - local_y).clamp(-380.0, 380.0)
-                                } else {
-                                    0.0
-                                };
-
-                                let reorder_caps =
-                                    if active_drag.is_none() && others_len > 1 && hov_t > 0.18 {
-                                        Some((
-                                            slot_idx > 0,
-                                            slot_idx + 1 < others_len,
-                                            hov_t,
-                                        ))
-                                    } else {
-                                        None
-                                    };
-                                let mut reord_hit = None;
-                                let inner_resp = if settle_dy.abs() > 0.6 {
-                                    ui.ctx().request_repaint();
-                                    let settle_layer =
-                                        LayerId::new(Order::Middle, drag_id.with("settle"));
-                                    let ir = ui.with_layer_id(settle_layer, |ui| {
-                                        ui.set_clip_rect(scroll_clip);
-                                        paint_card_contents(
-                                            ui,
-                                            p,
-                                            item,
-                                            inner_w,
-                                            hov_t,
-                                            false,
-                                            reorder_caps,
-                                            &mut reord_hit,
-                                        )
-                                    });
-                                    ui.ctx().transform_layer_shapes(
-                                        settle_layer,
-                                        egui::emath::TSTransform::from_translation(vec2(
-                                            0.0, settle_dy,
-                                        )),
-                                    );
-                                    ir.inner
-                                } else {
-                                    paint_card_contents(
-                                        ui,
-                                        p,
-                                        item,
-                                        inner_w,
+                                let reorder_caps = if !is_sorted
+                                    && !dnd_active
+                                    && others_len > 1
+                                    && hov_t > 0.18
+                                {
+                                    Some((
+                                        slot_idx > 0,
+                                        slot_idx + 1 < others_len,
                                         hov_t,
-                                        false,
-                                        reorder_caps,
-                                        &mut reord_hit,
-                                    )
+                                    ))
+                                } else {
+                                    None
                                 };
-                                new_card_rects.push((
-                                    item.path.clone(),
-                                    inner_resp.rect.center().y,
-                                    inner_resp.rect.height(),
-                                ));
+                                let mut reord_hit = None;
+                                let inner_resp = paint_card_contents(
+                                    ui,
+                                    p,
+                                    item,
+                                    inner_w,
+                                    hov_t,
+                                    false,
+                                    reorder_caps,
+                                    &mut reord_hit,
+                                );
+                                dnd.card_heights
+                                    .insert(item.path.clone(), inner_resp.rect.height());
 
                                 if let Some(delta) = reord_hit {
                                     actions.push(UiAction::ShiftNoteInBoard {
                                         path: item.path.clone(),
                                         delta,
                                     });
-                                } else {
+                                } else if !dnd_dragging {
                                     let card_resp = ui.interact(
                                         inner_resp.rect,
                                         drag_id,
@@ -494,6 +436,19 @@ pub fn render_board_view(
                                     );
                                     if card_resp.hovered() {
                                         card_resp.clone().on_hover_cursor(CursorIcon::Grab);
+                                    }
+                                    if card_resp.is_pointer_button_down_on()
+                                        && ui.input(|i| i.pointer.primary_pressed())
+                                    {
+                                        if let Some(press_pos) = ptr_pos {
+                                            dnd.try_begin_pending(
+                                                &item.path,
+                                                &col_id,
+                                                orig_idx,
+                                                inner_resp.rect,
+                                                press_pos,
+                                            );
+                                        }
                                     }
                                     if card_resp.clicked() {
                                         actions.push(UiAction::OpenNote(item.path.clone()));
@@ -504,7 +459,7 @@ pub fn render_board_view(
                             }
                         }
 
-                        if others_len == 0 && active_drag.is_some() && !hovering_this_col {
+                        if others_len == 0 && dnd_dragging && !dnd.is_target_col(&col_id) {
                             let (hint_rect, _) =
                                 ui.allocate_exact_size(vec2(inner_w, 56.0), Sense::hover());
                             ui.painter().rect_stroke(
@@ -547,21 +502,33 @@ pub fn render_board_view(
                                 &mut actions,
                             );
                         }
+                        ui.add_space(10.0);
                     });
+                col_scroll_rect = v_out.inner_rect;
+                col_scroll_offset_y = v_out.state.offset.y;
             }
 
             let col_resp = col_frame.allocate_space(col_ui);
-            col_ui.data_mut(|d| {
-                d.insert_temp(
-                    col_ui.make_persistent_id(("kboard_col_rect", status.sort_rank())),
-                    col_resp.rect,
-                );
-                d.insert_temp(
-                    col_ui.make_persistent_id(("kboard_card_rects", status.sort_rank())),
-                    new_card_rects,
-                );
-            });
-            let can_drop = active_drag.is_some() && col_resp.contains_pointer();
+            let drop_zone_rect = Rect::from_min_max(
+                col_resp.rect.min,
+                pos2(
+                    col_resp.rect.right(),
+                    board_bottom.max(col_resp.rect.bottom()),
+                ),
+            );
+            new_columns.insert(
+                col_id.clone(),
+                ColumnGeometry {
+                    col_id: col_id.clone(),
+                    drop_rect: drop_zone_rect,
+                    scroll_rect: col_scroll_rect,
+                    scroll_offset_y: col_scroll_offset_y,
+                    base_cards: col_base_cards,
+                },
+            );
+            let can_drop = dnd.is_dragging()
+                && dnd.is_target_col(&col_id)
+                && !dnd.is_same_col_sorted_locked(&col_id, is_sorted);
             let drop_t = anim_bool_eased(
                 col_ui.ctx(),
                 col_ui.make_persistent_id(("kanban_drop", status.sort_rank())),
@@ -569,23 +536,39 @@ pub fn render_board_view(
                 0.12,
             );
             if drop_t > 0.01 {
-                col_frame.frame.stroke = Stroke::new(
-                    1.0 + drop_t * 0.5,
-                    lerp_color(p.border_hairline, p.accent, drop_t),
-                );
-                col_frame.frame.fill = lerp_color(p.bg_sidebar, p.bg_elevated, drop_t);
+                col_frame.frame.stroke =
+                    Stroke::new(1.25_f32, with_alpha(dot_col, 0.55 * drop_t));
+                col_frame.frame.fill = with_alpha(dot_col, 0.07 * drop_t);
             }
             col_frame.paint(col_ui);
-
-            if let Some(dropped) = col_resp.dnd_release_payload::<DragCardPayload>() {
-                actions.push(UiAction::MoveNoteInBoard {
-                    path: dropped.path.clone(),
-                    status,
-                    insert_before: hovered_insert_before,
-                });
-            }
         }
     });
+
+    ui.style_mut().interaction.selectable_labels = prev_selectable;
+    dnd.columns = new_columns;
+    if let Some((ghost_id, ghost_min, ghost_size)) = dnd.active_ghost() {
+        if let Some(item) = notes.iter().find(|n| n.path == ghost_id) {
+            let mut dummy_reord = None;
+            egui::Area::new(ui.make_persistent_id(("kboard_ghost_area", ghost_id)))
+                .order(Order::Tooltip)
+                .interactable(false)
+                .fixed_pos(ghost_min)
+                .show(ui.ctx(), |ui| {
+                    ui.set_width(ghost_size.x);
+                    paint_card_contents(
+                        ui,
+                        p,
+                        item,
+                        ghost_size.x,
+                        1.0,
+                        true,
+                        None,
+                        &mut dummy_reord,
+                    );
+                });
+        }
+    }
+    dnd.store(ui.ctx(), dnd_id);
 
     ui.ctx().data_mut(|d| d.insert_temp(qa_top_id, qa_at_top));
     actions
@@ -993,7 +976,7 @@ fn render_quick_add_control(
         }
     } else {
         reset_focus_gate(ui.ctx(), qa_gate_id);
-        let (add_rect, add_resp) = ui.allocate_exact_size(vec2(inner_w, 30.0), Sense::click());
+        let (add_rect, add_resp) = ui.allocate_exact_size(vec2(inner_w, 32.0), Sense::click());
         let hov = anim_bool_eased(
             ui.ctx(),
             add_resp.id.with("hov"),
@@ -1003,17 +986,28 @@ fn render_quick_add_control(
         if hov > 0.01 {
             ui.painter().rect_filled(
                 add_rect,
-                Rounding::same(6.0),
-                lerp_color(p.bg_sidebar, p.bg_hover, hov),
+                Rounding::same(8.0),
+                with_alpha(p.bg_elevated, 0.75 * hov),
+            );
+            ui.painter().rect_stroke(
+                add_rect,
+                Rounding::same(8.0),
+                Stroke::new(1.0_f32, with_alpha(p.border_subtle, hov)),
             );
         }
         let fg = lerp_color(p.text_muted, p.text_primary, hov);
+        draw_icon(
+            ui.painter(),
+            Rect::from_center_size(pos2(add_rect.left() + 14.0, add_rect.center().y), vec2(12.0, 12.0)),
+            Icon::Plus,
+            fg,
+        );
         let g = ui
             .painter()
             .layout_no_wrap(s.add_card_btn.to_string(), font_medium(12.0), fg);
         ui.painter().galley(
             pos2(
-                add_rect.left() + 8.0,
+                add_rect.left() + 26.0,
                 add_rect.center().y - g.size().y * 0.5,
             ),
             g,
@@ -1043,28 +1037,32 @@ fn paint_card_contents(
     reorder_caps: Option<(bool, bool, f32)>,
     reorder_out: &mut Option<isize>,
 ) -> egui::Response {
-    let fill = lerp_color(p.bg_card, p.bg_elevated, hover_t);
-    let border = lerp_color(
-        p.border_hairline,
-        if floating { p.accent } else { p.border_strong },
-        hover_t,
-    );
-    let mut frame = egui::Frame::none()
+    let fill = if floating {
+        p.bg_elevated
+    } else {
+        lerp_color(p.bg_card, p.bg_elevated, hover_t * 0.55)
+    };
+    let border = if floating {
+        p.accent
+    } else {
+        lerp_color(p.border_subtle, with_alpha(p.accent, 0.78), hover_t)
+    };
+    let rest_shadow = egui::Shadow {
+        offset: p.shadow_elevated.offset,
+        blur: p.shadow_elevated.blur,
+        spread: p.shadow_elevated.spread,
+        color: with_alpha(p.shadow_elevated.color, 0.55 + 0.45 * hover_t),
+    };
+    let frame = egui::Frame::none()
         .fill(fill)
-        .stroke(Stroke::new(if floating { 1.3_f32 } else { 1.0_f32 }, border))
-        .rounding(Rounding::same(8.0))
-        .inner_margin(Margin::same(12.0));
-    if floating {
-        frame = frame.shadow(p.shadow_floating);
-    } else if hover_t > 0.02 {
-        let mut hov_sh = p.shadow_elevated;
-        hov_sh.color = with_alpha(hov_sh.color, hover_t * 0.7);
-        frame = frame.shadow(hov_sh);
-    }
+        .stroke(Stroke::new(if floating { 1.5_f32 } else { 1.0_f32 }, border))
+        .rounding(Rounding::same(10.0))
+        .shadow(if floating { p.shadow_floating } else { rest_shadow })
+        .inner_margin(Margin::symmetric(14.0, 12.0));
 
-    let content_w = (card_w - 24.0).max(80.0);
+    let content_w = (card_w - 28.0).max(80.0);
 
-    frame
+    let resp = frame
         .show(ui, |ui| {
             ui.set_width(content_w);
             ui.set_max_width(content_w);
@@ -1183,5 +1181,83 @@ fn paint_card_contents(
                 }
             }
         })
-        .response
+        .response;
+    if p.is_dark {
+        let sheen_alpha = if floating { 28 } else { (14.0 + 12.0 * hover_t) as u8 };
+        let r = resp.rect;
+        ui.painter().line_segment(
+            [pos2(r.left() + 10.0, r.top() + 1.0), pos2(r.right() - 10.0, r.top() + 1.0)],
+            Stroke::new(1.0_f32, Color32::from_rgba_unmultiplied(255, 255, 255, sheen_alpha)),
+        );
+    }
+    resp
+}
+
+fn muted_board_icon_btn(
+    ui: &mut Ui,
+    p: &ThemePalette,
+    icon: Icon,
+    tooltip: &str,
+    active: bool,
+    vis_alpha: f32,
+) -> egui::Response {
+    let (rect, resp) = ui.allocate_exact_size(vec2(24.0, 24.0), Sense::click());
+    let hov = anim_bool_eased(ui.ctx(), resp.id.with("hov"), resp.hovered(), 0.10);
+    if active || hov > 0.01 {
+        let fill = if active {
+            p.accent_soft
+        } else {
+            with_alpha(p.bg_hover, hov)
+        };
+        ui.painter().rect_filled(rect, Rounding::same(6.0), fill);
+    }
+    let alpha = vis_alpha.max(hov);
+    if active || alpha >= 0.02 {
+        let fg = if active {
+            p.accent_text
+        } else {
+            with_alpha(lerp_color(p.text_muted, p.text_primary, hov), alpha)
+        };
+        draw_icon(
+            ui.painter(),
+            Rect::from_center_size(rect.center(), vec2(13.5, 13.5)),
+            icon,
+            fg,
+        );
+    }
+    resp.on_hover_cursor(CursorIcon::PointingHand)
+        .on_hover_text(tooltip)
+}
+
+fn draw_dashed_board_rect(
+    painter: &egui::Painter,
+    rect: Rect,
+    rounding: f32,
+    stroke: Stroke,
+    dash_len: f32,
+    gap_len: f32,
+) {
+    let r = rect.shrink(0.5);
+    let ins = (rounding * 0.45).min(6.0);
+    let edges = [
+        (pos2(r.left() + ins, r.top()), pos2(r.right() - ins, r.top())),
+        (pos2(r.right(), r.top() + ins), pos2(r.right(), r.bottom() - ins)),
+        (pos2(r.right() - ins, r.bottom()), pos2(r.left() + ins, r.bottom())),
+        (pos2(r.left(), r.bottom() - ins), pos2(r.left(), r.top() + ins)),
+    ];
+    let step = dash_len + gap_len;
+    for (a, b) in edges {
+        let diff = b - a;
+        let len = diff.length();
+        if len < 1.0 {
+            continue;
+        }
+        let dir = diff / len;
+        let mut t = 0.0_f32;
+        while t < len {
+            let t_end = (t + dash_len).min(len);
+            painter.line_segment([a + dir * t, a + dir * t_end], stroke);
+            t += step;
+        }
+    }
 }

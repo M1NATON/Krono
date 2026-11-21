@@ -49,6 +49,23 @@ impl SimpleDate {
         let days = days_from_civil(self.year, self.month, self.day) + 1;
         civil_from_days(days)
     }
+
+    pub fn add_days(self, delta: i64) -> Self {
+        let days = days_from_civil(self.year, self.month, self.day) + delta;
+        civil_from_days(days)
+    }
+
+    pub fn add_months(self, months: i32) -> Self {
+        let total = self.year * 12 + (self.month as i32 - 1) + months;
+        let new_year = total.div_euclid(12);
+        let new_month = (total.rem_euclid(12) + 1) as u32;
+        let clamped_day = self.day.min(days_in_month(new_year, new_month));
+        Self {
+            year: new_year,
+            month: new_month,
+            day: clamped_day,
+        }
+    }
 }
 
 pub fn is_leap_year(year: i32) -> bool {
@@ -297,5 +314,24 @@ mod tests {
 
         let d21 = SimpleDate::from_ymd(2026, 11, 21).unwrap();
         assert_eq!(compute_daily_streak(&set, d21), 0);
+    }
+
+    #[test]
+    fn adds_days_and_months_with_clamping() {
+        let d = SimpleDate::from_ymd(2026, 12, 30).unwrap();
+        assert_eq!(d.add_days(3), SimpleDate::from_ymd(2027, 1, 2).unwrap());
+        assert_eq!(d.add_days(-30), SimpleDate::from_ymd(2026, 11, 30).unwrap());
+
+        let jan31 = SimpleDate::from_ymd(2026, 1, 31).unwrap();
+        assert_eq!(jan31.add_months(1), SimpleDate::from_ymd(2026, 2, 28).unwrap());
+        let leap_jan31 = SimpleDate::from_ymd(2024, 1, 31).unwrap();
+        assert_eq!(
+            leap_jan31.add_months(1),
+            SimpleDate::from_ymd(2024, 2, 29).unwrap()
+        );
+        assert_eq!(
+            SimpleDate::from_ymd(2026, 1, 15).unwrap().add_months(-2),
+            SimpleDate::from_ymd(2025, 11, 15).unwrap()
+        );
     }
 }

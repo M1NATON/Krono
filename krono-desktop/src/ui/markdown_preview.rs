@@ -1359,6 +1359,7 @@ fn try_parse_embed_line(raw: &str) -> Option<Block> {
 }
 
 /// Toggles the `target_idx`-th Markdown task checkbox outside fenced code blocks.
+#[allow(dead_code)]
 pub fn toggle_markdown_task(body: &str, target_idx: usize) -> Option<String> {
     let mut out = String::with_capacity(body.len());
     let mut in_fence: Option<char> = None;

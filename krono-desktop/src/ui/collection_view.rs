@@ -54,6 +54,7 @@ pub struct CollectionEditorState {
     pub active_saved_view_id: Option<String>,
     pub new_view_name: String,
     pub sort: Option<CollectionSort>,
+    pub title_col_width: f32,
     pub mobile_active_opt_id: String,
     pub quick_add_col_opt: Option<String>,
     pub quick_add_at_top: bool,
@@ -95,6 +96,7 @@ impl Default for CollectionEditorState {
             active_saved_view_id: None,
             new_view_name: String::new(),
             sort: None,
+            title_col_width: 240.0,
             mobile_active_opt_id: String::new(),
             quick_add_col_opt: None,
             quick_add_at_top: false,
@@ -245,15 +247,27 @@ fn render_collection_header(
 
     ui.horizontal(|ui| {
         let mut title = state.doc.title.clone();
-        let edit_w = if is_mobile {
-            (ui.available_width() - 90.0).max(120.0)
+        let title_font = font_semibold(if is_mobile { 18.0 } else { 22.0 });
+        let measure_txt = if title.trim().is_empty() {
+            s.untitled_hint
         } else {
-            (ui.available_width() * 0.48).clamp(180.0, 420.0)
+            title.as_str()
+        };
+        let measured_w = ui
+            .painter()
+            .layout_no_wrap(measure_txt.to_string(), title_font.clone(), p.text_primary)
+            .size()
+            .x;
+        let edit_w = if is_mobile {
+            (ui.available_width() - 120.0).max(110.0)
+        } else {
+            let max_w = (ui.available_width() * 0.45).clamp(140.0, 360.0);
+            (measured_w + 18.0).clamp(96.0, max_w)
         };
         let resp = ui.add(
             egui::TextEdit::singleline(&mut title)
                 .frame(false)
-                .font(font_semibold(if is_mobile { 18.0 } else { 22.0 }))
+                .font(title_font)
                 .text_color(p.text_primary)
                 .hint_text(s.untitled_hint)
                 .desired_width(edit_w),
@@ -275,82 +289,22 @@ fn render_collection_header(
             actions.push(UiAction::TogglePin(rel_path.to_string()));
         }
 
-        ui.label(
-            egui::RichText::new(format!("{} {}", state.doc.records.len(), s.col_items_unit))
-                .font(font_mono(11.5))
-                .color(p.text_muted),
-        );
-
-        if !is_mobile {
-            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                ui.spacing_mut().item_spacing.x = 8.0;
-                if secondary_button(ui, p, Some(Icon::Plus), s.col_add_field).clicked() {
-                    state.adding_field_open = true;
-                    state.new_field_name.clear();
-                    state.new_field_type = ColumnType::Text;
-                }
-
-                let select_cols = state.doc.select_columns();
-                if state.active_view == CollectionViewKind::Board && select_cols.len() > 1 {
-                    let current_gid = state
-                        .doc
-                        .effective_group_column_id()
-                        .unwrap_or("")
-                        .to_string();
-                    let cur_name = select_cols
-                        .iter()
-                        .find(|c| c.id == current_gid)
-                        .map(|c| c.name.as_str())
-                        .unwrap_or("");
-                    let gid_pop = ui.make_persistent_id("group_col_picker");
-                    let g_btn = secondary_button(
-                        ui,
-                        p,
-                        Some(Icon::ChevronDown),
-                        &format!("{}: {}", s.col_group_by, cur_name),
-                    );
-                    if g_btn.clicked() {
-                        ui.memory_mut(|m| m.toggle_popup(gid_pop));
-                    }
-                    let mut chosen_gid: Option<String> = None;
-                    let opts: Vec<(String, String)> = select_cols
-                        .iter()
-                        .map(|c| (c.id.clone(), c.name.clone()))
-                        .collect();
-                    egui::popup_below_widget(
-                        ui,
-                        gid_pop,
-                        &g_btn,
-                        PopupCloseBehavior::CloseOnClickOutside,
-                        |ui| {
-                            ui.set_min_width(160.0);
-                            for (cid, cname) in opts {
-                                let sel = cid == current_gid;
-                                if crate::ui::components::context_menu_row(
-                                    ui,
-                                    p,
-                                    if sel { Icon::Check } else { Icon::List },
-                                    &cname,
-                                    false,
-                                )
-                                .clicked()
-                                {
-                                    chosen_gid = Some(cid);
-                                    ui.memory_mut(|m| m.close_popup());
-                                }
-                            }
-                        },
-                    );
-                    if let Some(cid) = chosen_gid {
-                        state.doc.group_by_column = Some(cid);
-                        actions.push(UiAction::MarkCollectionDirty);
-                    }
-                }
+        ui.add_space(2.0);
+        egui::Frame::none()
+            .fill(p.bg_elevated)
+            .stroke(Stroke::new(1.0_f32, p.border_hairline))
+            .rounding(Rounding::same(10.0))
+            .inner_margin(Margin::symmetric(8.0, 2.0))
+            .show(ui, |ui| {
+                ui.label(
+                    egui::RichText::new(format!("{} {}", state.doc.records.len(), s.col_items_unit))
+                        .font(font_mono(11.0))
+                        .color(p.text_secondary),
+                );
             });
-        }
     });
 
-    ui.add_space(6.0);
+    ui.add_space(8.0);
     let has_active_filters = state.date_filter != DateFilterPreset::All
         || state.tag_filter.is_some()
         || state.select_filter.is_some()
@@ -359,12 +313,11 @@ fn render_collection_header(
         || state.tag_filter.is_some()
         || state.select_filter.is_some();
 
-    ui.horizontal_wrapped(|ui| {
-        ui.spacing_mut().item_spacing = vec2(8.0, 6.0);
+    let render_left_toolbar = |ui: &mut Ui, state: &mut CollectionEditorState| {
         let search_w = if is_mobile {
-            (ui.available_width() - 180.0).max(110.0)
+            (ui.available_width() - 150.0).max(110.0)
         } else {
-            240.0
+            210.0
         };
         if styled_text_input(
             ui,
@@ -400,13 +353,199 @@ fn render_collection_header(
             state.select_filter = None;
             state.active_saved_view_id = None;
         }
+    };
 
-        if is_mobile && secondary_button(ui, p, Some(Icon::Plus), s.col_add_field).clicked() {
+    let render_right_toolbar = |ui: &mut Ui, state: &mut CollectionEditorState, actions: &mut Vec<UiAction>| {
+        if secondary_button(ui, p, Some(Icon::Plus), s.col_add_field).clicked() {
             state.adding_field_open = true;
             state.new_field_name.clear();
             state.new_field_type = ColumnType::Text;
         }
-    });
+
+        let select_cols = state.doc.select_columns();
+        if state.active_view == CollectionViewKind::Board && select_cols.len() > 1 {
+            let current_gid = state
+                .doc
+                .effective_group_column_id()
+                .unwrap_or("")
+                .to_string();
+            let cur_name = select_cols
+                .iter()
+                .find(|c| c.id == current_gid)
+                .map(|c| c.name.as_str())
+                .unwrap_or("");
+            let gid_pop = ui.make_persistent_id("group_col_picker");
+            let g_btn = secondary_button(
+                ui,
+                p,
+                Some(Icon::ChevronDown),
+                &format!("{}: {}", s.col_group_by, cur_name),
+            );
+            if g_btn.clicked() {
+                ui.memory_mut(|m| m.toggle_popup(gid_pop));
+            }
+            let mut chosen_gid: Option<String> = None;
+            let opts: Vec<(String, String)> = select_cols
+                .iter()
+                .map(|c| (c.id.clone(), c.name.clone()))
+                .collect();
+            egui::popup_below_widget(
+                ui,
+                gid_pop,
+                &g_btn,
+                PopupCloseBehavior::CloseOnClickOutside,
+                |ui| {
+                    ui.set_min_width(160.0);
+                    for (cid, cname) in opts {
+                        let sel = cid == current_gid;
+                        if crate::ui::components::context_menu_row(
+                            ui,
+                            p,
+                            if sel { Icon::Check } else { Icon::List },
+                            &cname,
+                            false,
+                        )
+                        .clicked()
+                        {
+                            chosen_gid = Some(cid);
+                            ui.memory_mut(|m| m.close_popup());
+                        }
+                    }
+                },
+            );
+            if let Some(cid) = chosen_gid {
+                state.doc.group_by_column = Some(cid);
+                actions.push(UiAction::MarkCollectionDirty);
+            }
+        }
+
+        // Sort picker for both Board and Table views
+        {
+            let sort_pop = ui.make_persistent_id("collection_sort_picker");
+            let sort_lbl = match &state.sort {
+                None => {
+                    if lang == Lang::Ru {
+                        "Сортировка".to_string()
+                    } else {
+                        "Sort".to_string()
+                    }
+                }
+                Some(sr) => {
+                    let col_name = if sr.column_key == "__title" {
+                        s.table_col_name
+                    } else {
+                        state
+                            .doc
+                            .columns
+                            .iter()
+                            .find(|c| c.id == sr.column_key)
+                            .map(|c| c.name.as_str())
+                            .unwrap_or("")
+                    };
+                    let arrow = if sr.dir == CollectionSortDir::Asc { "↑" } else { "↓" };
+                    format!("{col_name} {arrow}")
+                }
+            };
+            if let Some(ref mut sr) = state.sort {
+                if icon_button(ui, p, Icon::Close, s.col_clear_filters, false).clicked() {
+                    state.sort = None;
+                } else {
+                    let dir_lbl = if sr.dir == CollectionSortDir::Asc { "↑" } else { "↓" };
+                    if secondary_button(ui, p, None, dir_lbl).clicked() {
+                        sr.dir = match sr.dir {
+                            CollectionSortDir::Asc => CollectionSortDir::Desc,
+                            CollectionSortDir::Desc => CollectionSortDir::Asc,
+                        };
+                    }
+                }
+            }
+            let s_btn = secondary_button(ui, p, Some(Icon::ChevronDown), &sort_lbl);
+            if s_btn.clicked() {
+                ui.memory_mut(|m| m.toggle_popup(sort_pop));
+            }
+            let mut chosen_sort: Option<Option<String>> = None;
+            let cols_list: Vec<(String, String)> = state
+                .doc
+                .columns
+                .iter()
+                .map(|c| (c.id.clone(), c.name.clone()))
+                .collect();
+            let cur_key = state.sort.as_ref().map(|sr| sr.column_key.clone());
+            egui::popup_below_widget(
+                ui,
+                sort_pop,
+                &s_btn,
+                PopupCloseBehavior::CloseOnClickOutside,
+                |ui| {
+                    ui.set_min_width(170.0);
+                    let manual_lbl = if lang == Lang::Ru { "Ручной порядок" } else { "Manual order" };
+                    if crate::ui::components::context_menu_row(
+                        ui,
+                        p,
+                        if cur_key.is_none() { Icon::Check } else { Icon::List },
+                        manual_lbl,
+                        false,
+                    )
+                    .clicked()
+                    {
+                        chosen_sort = Some(None);
+                        ui.memory_mut(|m| m.close_popup());
+                    }
+                    if crate::ui::components::context_menu_row(
+                        ui,
+                        p,
+                        if cur_key.as_deref() == Some("__title") { Icon::Check } else { Icon::Document },
+                        s.table_col_name,
+                        false,
+                    )
+                    .clicked()
+                    {
+                        chosen_sort = Some(Some("__title".to_string()));
+                        ui.memory_mut(|m| m.close_popup());
+                    }
+                    for (cid, cname) in cols_list {
+                        let sel = cur_key.as_deref() == Some(cid.as_str());
+                        if crate::ui::components::context_menu_row(
+                            ui,
+                            p,
+                            if sel { Icon::Check } else { Icon::List },
+                            &cname,
+                            false,
+                        )
+                        .clicked()
+                        {
+                            chosen_sort = Some(Some(cid));
+                            ui.memory_mut(|m| m.close_popup());
+                        }
+                    }
+                },
+            );
+            if let Some(pick) = chosen_sort {
+                state.sort = pick.map(|column_key| CollectionSort {
+                    column_key,
+                    dir: CollectionSortDir::Asc,
+                });
+            }
+        }
+    };
+
+    if !is_mobile && ui.available_width() >= 760.0 {
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = 8.0;
+            render_left_toolbar(ui, state);
+            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                ui.spacing_mut().item_spacing.x = 8.0;
+                render_right_toolbar(ui, state, actions);
+            });
+        });
+    } else {
+        ui.horizontal_wrapped(|ui| {
+            ui.spacing_mut().item_spacing = vec2(8.0, 6.0);
+            render_left_toolbar(ui, state);
+            render_right_toolbar(ui, state, actions);
+        });
+    }
+    ui.add_space(4.0);
 
     if !state.doc.saved_views.is_empty() {
         ui.add_space(6.0);
@@ -710,41 +849,18 @@ fn render_custom_table(
         .collect();
 
     if let Some(ref sort) = state.sort {
+        let dir = match sort.dir {
+            CollectionSortDir::Asc => krono_core::collection::SortDirection::Asc,
+            CollectionSortDir::Desc => krono_core::collection::SortDirection::Desc,
+        };
         visible_indices.sort_by(|&ai, &bi| {
-            let a = &state.doc.records[ai];
-            let b = &state.doc.records[bi];
-            let ord = if sort.column_key == "__title" {
-                a.title.to_lowercase().cmp(&b.title.to_lowercase())
-            } else {
-                let col_type = cols_snapshot
-                    .iter()
-                    .find(|c| c.id == sort.column_key)
-                    .map(|c| c.col_type)
-                    .unwrap_or(ColumnType::Text);
-                let va = a.values.get(&sort.column_key);
-                let vb = b.values.get(&sort.column_key);
-                match col_type {
-                    ColumnType::Number => {
-                        let na = va.and_then(FieldValue::as_number).unwrap_or(f64::MIN);
-                        let nb = vb.and_then(FieldValue::as_number).unwrap_or(f64::MIN);
-                        na.partial_cmp(&nb).unwrap_or(std::cmp::Ordering::Equal)
-                    }
-                    ColumnType::Checkbox => {
-                        let ba = va.map(FieldValue::as_bool).unwrap_or(false);
-                        let bb = vb.map(FieldValue::as_bool).unwrap_or(false);
-                        ba.cmp(&bb)
-                    }
-                    _ => {
-                        let sa = va.map(FieldValue::as_text).unwrap_or_default().to_lowercase();
-                        let sb = vb.map(FieldValue::as_text).unwrap_or_default().to_lowercase();
-                        sa.cmp(&sb)
-                    }
-                }
-            };
-            match sort.dir {
-                CollectionSortDir::Asc => ord,
-                CollectionSortDir::Desc => ord.reverse(),
-            }
+            krono_core::collection::compare_records(
+                &state.doc.records[ai],
+                &state.doc.records[bi],
+                &sort.column_key,
+                dir,
+                &cols_snapshot,
+            )
         });
     }
 
@@ -763,15 +879,18 @@ fn render_custom_table(
     }
 
     let avail_h = (ui.available_height() - 12.0).max(200.0);
-    let title_w = 210.0_f32;
+    let title_w = state.title_col_width.clamp(120.0, 560.0);
     let ops_w = 64.0_f32;
     let total_w: f32 =
-        title_w + ops_w + cols_snapshot.iter().map(|c| c.width.max(88.0)).sum::<f32>();
+        title_w + ops_w + cols_snapshot.iter().map(|c| c.width.clamp(90.0, 560.0)).sum::<f32>();
 
     let mut toggle_sort_col: Option<String> = None;
     let mut delete_rec_id: Option<String> = None;
     let mut open_rec_id: Option<String> = None;
     let mut dirty = false;
+    let mut title_width_delta: f32 = 0.0;
+    let mut col_width_delta: Option<(usize, f32)> = None;
+    let mut resize_stopped = false;
 
     egui::ScrollArea::horizontal()
         .id_salt("custom_table_h_scroll")
@@ -792,7 +911,7 @@ fn render_custom_table(
                         if render_table_header_cell(
                             ui,
                             p,
-                            title_w,
+                            title_w - 6.0,
                             Icon::Document,
                             s.table_col_name,
                             state.sort.as_ref().filter(|sr| sr.column_key == "__title"),
@@ -802,12 +921,16 @@ fn render_custom_table(
                         {
                             toggle_sort_col = Some("__title".to_string());
                         }
-                        for col in &cols_snapshot {
-                            let cw = col.width.max(88.0);
+                        let (tdx, tstop) = render_col_resize_handle(ui, p, "ctbl_resz_title", 34.0);
+                        title_width_delta += tdx;
+                        resize_stopped |= tstop;
+
+                        for (ci, col) in cols_snapshot.iter().enumerate() {
+                            let cw = col.width.clamp(90.0, 560.0);
                             let (sort_hit, cfg_hit) = render_table_header_cell(
                                 ui,
                                 p,
-                                cw,
+                                cw - 6.0,
                                 column_type_icon(col.col_type),
                                 &col.name,
                                 state.sort.as_ref().filter(|sr| sr.column_key == col.id),
@@ -819,6 +942,16 @@ fn render_custom_table(
                             if cfg_hit {
                                 state.editing_column_id = Some(col.id.clone());
                             }
+                            let (cdx, cstop) = render_col_resize_handle(
+                                ui,
+                                p,
+                                ("ctbl_resz", &col.id),
+                                34.0,
+                            );
+                            if cdx.abs() > 0.0 {
+                                col_width_delta = Some((ci, cdx));
+                            }
+                            resize_stopped |= cstop;
                         }
                         let (ar, aresp) = ui.allocate_exact_size(vec2(ops_w, 34.0), Sense::click());
                         let ig = Rect::from_center_size(ar.center(), vec2(14.0, 14.0));
@@ -871,7 +1004,7 @@ fn render_custom_table(
                                     );
 
                                     for col in &cols_snapshot {
-                                        let cw = col.width.max(88.0);
+                                        let cw = col.width.clamp(90.0, 560.0);
                                         ui.allocate_ui_with_layout(
                                             vec2(cw, 36.0),
                                             Layout::left_to_right(Align::Center),
@@ -959,9 +1092,44 @@ fn render_custom_table(
         state.modal_new_tag.clear();
         state.editing_record_id = Some(rid);
     }
+    if title_width_delta.abs() > 0.0 {
+        state.title_col_width = (state.title_col_width + title_width_delta).clamp(120.0, 560.0);
+    }
+    if let Some((ci, dx)) = col_width_delta {
+        if let Some(col) = state.doc.columns.get_mut(ci) {
+            col.width = (col.width + dx).clamp(90.0, 560.0);
+        }
+    }
+    if resize_stopped {
+        dirty = true;
+    }
     if dirty {
         actions.push(UiAction::MarkCollectionDirty);
     }
+}
+
+fn render_col_resize_handle(
+    ui: &mut Ui,
+    p: &ThemePalette,
+    id_salt: impl Hash,
+    height: f32,
+) -> (f32, bool) {
+    let (rect, _) = ui.allocate_exact_size(vec2(6.0, height), Sense::hover());
+    let resp = ui.interact(rect, ui.make_persistent_id(id_salt), Sense::drag());
+    let active = resp.hovered() || resp.dragged();
+    let line_col = if active { p.accent } else { p.border_hairline };
+    ui.painter().line_segment(
+        [
+            pos2(rect.center().x, rect.top() + 5.0),
+            pos2(rect.center().x, rect.bottom() - 5.0),
+        ],
+        Stroke::new(if active { 2.0_f32 } else { 1.0_f32 }, line_col),
+    );
+    if active {
+        resp.clone().on_hover_cursor(CursorIcon::ResizeHorizontal);
+    }
+    let dx = if resp.dragged() { resp.drag_delta().x } else { 0.0 };
+    (dx, resp.drag_stopped())
 }
 
 fn render_table_header_cell(
@@ -1600,6 +1768,13 @@ fn render_record_detail_modal(
                         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                             if icon_button(ui, p, Icon::Close, s.tooltip_close, false).clicked() {
                                 close_modal = true;
+                            }
+                            if icon_button(ui, p, Icon::FilePlus, s.tasks_convert_to_note, false)
+                                .clicked()
+                            {
+                                actions.push(UiAction::ConvertRecordToNote {
+                                    record_id: rec_id.clone(),
+                                });
                             }
                         });
                     });

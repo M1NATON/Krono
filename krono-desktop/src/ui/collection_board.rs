@@ -1,5 +1,8 @@
 use crate::i18n::{strings, Lang};
-use crate::ui::collection_view::{render_color_token_picker, CollectionEditorState};
+use crate::ui::board_dnd::{BoardDndState, ColumnGeometry};
+use crate::ui::collection_view::{
+    render_color_token_picker, CollectionEditorState, CollectionSortDir,
+};
 use crate::ui::components::{
     focus_once, icon_button, normalize_tag_input, primary_button, reset_focus_gate,
     secondary_button, styled_text_input, tag_autocomplete_input, tag_chip,
@@ -9,31 +12,18 @@ use crate::ui::motion::{anim_bool_eased, lerp_color, with_alpha};
 use crate::ui::theme::{font_body, font_medium, font_mono, font_semibold, ThemePalette};
 use crate::ui::{LayoutClass, UiAction};
 use eframe::egui::{
-    self, pos2, vec2, Color32, CursorIcon, DragAndDrop, LayerId, Margin, Order, PopupCloseBehavior,
-    Rect, Rounding, Sense, Stroke, Ui,
+    self, pos2, vec2, Color32, CursorIcon, Margin, Order, PopupCloseBehavior, Rect, Rounding,
+    Sense, Stroke, Ui,
 };
 use krono_core::{
     collection::{
-        record_matches_smart_filter, strip_link_target, ColorToken, ColumnDef, ColumnType,
-        RecordItem,
+        compare_records, record_matches_smart_filter, strip_link_target, ColorToken, ColumnDef,
+        ColumnType, RecordItem, SortDirection,
     },
     daily::SimpleDate,
+    markdown::card_preview_excerpt,
 };
 use std::collections::HashMap;
-
-#[derive(Clone, Debug)]
-struct CustomDragCard {
-    record_id: String,
-    from_opt_id: String,
-    height: f32,
-}
-
-#[derive(Clone, Debug)]
-struct ColumnMoveOp {
-    record_id: String,
-    target_opt_id: String,
-    insert_before_id: Option<String>,
-}
 
 #[allow(clippy::too_many_arguments)]
 pub fn render_custom_board(
@@ -81,6 +71,25 @@ pub fn render_custom_board(
         .map(|c| c.id.clone())
         .collect();
 
+    let tabbed_mode = layout.is_mobile() || ui.available_width() < 600.0;
+    let is_sorted = state.sort.is_some();
+    let dnd_id = ui.make_persistent_id(("cboard_dnd", &group_col_id));
+    let dnd = if !tabbed_mode {
+        let mut st = BoardDndState::load(ui.ctx(), dnd_id);
+        if let Some(drop_ev) = st.begin_frame(ui.ctx(), is_sorted) {
+            state.doc.move_record_to_group(
+                &drop_ev.card_id,
+                &group_col_id,
+                &drop_ev.to_col,
+                drop_ev.insert_before_id.as_deref(),
+            );
+            actions.push(UiAction::MarkCollectionDirty);
+        }
+        Some(st)
+    } else {
+        None
+    };
+
     // Group visible records by group option ID (defaulting unmatched records to first option).
     let fallback_opt = group_col
         .options
@@ -121,11 +130,21 @@ pub fn render_custom_board(
             grouped.entry(target_opt).or_default().push(rec.clone());
         }
     }
+    let is_sorted = state.sort.is_some();
     for list in grouped.values_mut() {
-        list.sort_by_key(|r| (r.order, r.created_at));
+        if let Some(ref sort) = state.sort {
+            let dir = match sort.dir {
+                CollectionSortDir::Asc => SortDirection::Asc,
+                CollectionSortDir::Desc => SortDirection::Desc,
+            };
+            list.sort_by(|a, b| {
+                compare_records(a, b, &sort.column_key, dir, &state.doc.columns)
+            });
+        } else {
+            list.sort_by_key(|r| (r.order, r.created_at));
+        }
     }
 
-    let tabbed_mode = layout.is_mobile() || ui.available_width() < 600.0;
     if tabbed_mode {
         render_mobile_custom_board(
             ui,
@@ -143,60 +162,76 @@ pub fn render_custom_board(
         return;
     }
 
-    let avail_h = ui.available_height().max(320.0);
-    let active_drag = DragAndDrop::payload::<CustomDragCard>(ui.ctx());
-    let mut pending_move: Option<ColumnMoveOp> = None;
+    let mut dnd = dnd.unwrap_or_default();
+    let board_bottom = ui.max_rect().bottom();
     let mut pending_reorder: Option<(String, isize)> = None;
     let mut rename_opt: Option<(String, String)> = None;
     let mut recolor_opt: Option<(String, ColorToken)> = None;
     let mut move_opt_dir: Option<(String, isize)> = None;
     let mut delete_opt_id: Option<String> = None;
     let mut clicked_note_link: Option<String> = None;
+    let mut convert_record_id: Option<String> = None;
 
-    egui::ScrollArea::horizontal()
+    let ptr_pos = ui.ctx().pointer_interact_pos();
+    let mut new_columns: HashMap<String, ColumnGeometry> = HashMap::new();
+    let prev_selectable = ui.style().interaction.selectable_labels;
+    if dnd.is_dragging() {
+        ui.style_mut().interaction.selectable_labels = false;
+    }
+
+    let mut h_sa = egui::ScrollArea::horizontal()
         .id_salt("custom_board_cols_scroll")
-        .auto_shrink([false, false])
-        .show(ui, |ui| {
+        .drag_to_scroll(!dnd.is_dragging())
+        .auto_shrink([false, false]);
+    if let Some(next_x) = dnd.horizontal_autoscroll_offset(ui.ctx()) {
+        h_sa = h_sa.horizontal_scroll_offset(next_x);
+    }
+
+    let h_out = h_sa.show(ui, |ui| {
             ui.horizontal_top(|ui| {
-                ui.spacing_mut().item_spacing.x = 10.0;
-                let col_w = 238.0_f32;
-                let ptr_pos = ui.ctx().pointer_interact_pos();
+                ui.spacing_mut().item_spacing.x = 14.0;
+                let col_w = 284.0_f32;
 
                 for (opt_idx, opt) in group_col.options.iter().enumerate() {
                     let (pill_bg, dot_col, text_col) = p.token_colors(opt.color);
                     let cards = grouped.get(&opt.id).map(Vec::as_slice).unwrap_or(&[]);
-                    let inner_w = col_w - 22.0;
+                    let inner_w = col_w - 20.0;
 
-                    let prev_col_rect: Option<Rect> = ui.data(|d| {
-                        d.get_temp(ui.make_persistent_id(("cboard_col_rect", &opt.id)))
-                    });
-                    let prev_card_rects: Vec<(String, f32, f32)> = ui
-                        .data(|d| d.get_temp(ui.make_persistent_id(("cboard_card_rects", &opt.id))))
-                        .unwrap_or_default();
+                    let prev_col_rect = dnd.columns.get(&opt.id).map(|c| c.drop_rect);
                     let is_adding_top = state.quick_add_col_opt.as_deref() == Some(opt.id.as_str())
                         && state.quick_add_at_top;
+                    let pop_id = ui.make_persistent_id(("stage_cfg_pop", &opt.id));
+                    let pop_open = ui.memory(|m| m.is_popup_open(pop_id));
+                    let col_ptr_inside = prev_col_rect
+                        .is_some_and(|r| ptr_pos.is_some_and(|pt| r.contains(pt)));
+                    let col_hov_t = anim_bool_eased(
+                        ui.ctx(),
+                        ui.make_persistent_id(("cboard_col_hov", &opt.id)),
+                        col_ptr_inside || is_adding_top || pop_open,
+                        0.12,
+                    );
 
                     ui.vertical(|ui| {
                         ui.set_width(col_w);
                         ui.set_max_width(col_w);
 
                         let mut col_frame = egui::Frame::none()
-                            .fill(p.bg_sidebar)
-                            .stroke(Stroke::new(1.0_f32, p.border_hairline))
-                            .rounding(Rounding::same(10.0))
-                            .inner_margin(Margin::same(11.0))
+                            .fill(Color32::TRANSPARENT)
+                            .stroke(Stroke::NONE)
+                            .rounding(Rounding::same(12.0))
+                            .inner_margin(Margin::symmetric(10.0, 8.0))
                             .begin(ui);
 
-                        let mut hovered_insert_before: Option<String> = None;
-                        let mut new_card_rects: Vec<(String, f32, f32)> =
+                        let mut col_base_cards: Vec<(String, f32, f32)> =
                             Vec::with_capacity(cards.len());
+                        let col_scroll_rect;
+                        let col_scroll_offset_y;
                         {
                             let cui = &mut col_frame.content_ui;
                             cui.set_width(inner_w);
                             cui.set_max_width(inner_w);
-                            cui.set_min_height((avail_h - 30.0).max(260.0));
 
-                            // Column header: colored pill + count + quick-add '+' + config popover
+                            // Column header: colored pill + count + muted '+' & edit (fade in on column hover)
                             cui.horizontal(|ui| {
                                 egui::Frame::none()
                                     .fill(pill_bg)
@@ -226,14 +261,14 @@ pub fn render_custom_board(
                                 ui.with_layout(
                                     egui::Layout::right_to_left(egui::Align::Center),
                                     |ui| {
-                                        let pop_id =
-                                            ui.make_persistent_id(("stage_cfg_pop", &opt.id));
-                                        let gear = icon_button(
+                                        let hdr_alpha = col_hov_t;
+                                        let gear = muted_icon_btn(
                                             ui,
                                             p,
                                             Icon::Edit,
                                             s.col_schema_title,
-                                            ui.memory(|m| m.is_popup_open(pop_id)),
+                                            pop_open,
+                                            hdr_alpha,
                                         );
                                         if gear.clicked() {
                                             ui.memory_mut(|m| m.toggle_popup(pop_id));
@@ -318,12 +353,14 @@ pub fn render_custom_board(
                                             },
                                         );
 
-                                        if icon_button(
+                                        let hdr_alpha = col_hov_t;
+                                        if muted_icon_btn(
                                             ui,
                                             p,
                                             Icon::Plus,
                                             s.col_new_card,
                                             is_adding_top,
+                                            hdr_alpha,
                                         )
                                         .clicked()
                                         {
@@ -345,6 +382,12 @@ pub fn render_custom_board(
                                 );
                             });
 
+                            cui.add_space(6.0);
+                            let (hr, _) = cui.allocate_exact_size(vec2(inner_w, 1.0), Sense::hover());
+                            cui.painter().line_segment(
+                                [hr.left_center(), hr.right_center()],
+                                Stroke::new(1.0_f32, with_alpha(p.border_hairline, 0.75)),
+                            );
                             cui.add_space(8.0);
                             if is_adding_top {
                                 render_column_quick_add(
@@ -367,166 +410,124 @@ pub fn render_custom_board(
                                 );
                             }
 
-                            let hovering_this_col = active_drag.is_some()
-                                && ptr_pos
-                                    .is_some_and(|pt| prev_col_rect.is_some_and(|r| r.contains(pt)));
-                            let drag_h = active_drag.as_ref().map(|d| d.height).unwrap_or(72.0);
-                            let drag_rec_id = active_drag.as_ref().map(|d| d.record_id.as_str());
-                            let others: Vec<&RecordItem> = cards
-                                .iter()
-                                .filter(|r| Some(r.id.as_str()) != drag_rec_id)
-                                .collect();
-                            let target_slot_idx: Option<usize> = if hovering_this_col {
-                                let pt = ptr_pos.unwrap();
-                                let mut count = 0usize;
-                                for rec in &others {
-                                    if let Some((_, cy, _)) =
-                                        prev_card_rects.iter().find(|(id, _, _)| id == &rec.id)
-                                    {
-                                        if *cy < pt.y {
-                                            count += 1;
-                                        }
-                                    }
-                                }
-                                hovered_insert_before = others.get(count).map(|r| r.id.clone());
-                                Some(count)
-                            } else {
-                                None
-                            };
-
-                            // Vertical card list with animated drag-reorder slots and FLIP settle
-                            let scroll_max_h = (avail_h - 142.0).max(160.0);
-                            egui::ScrollArea::vertical()
+                            // Vertical card list with deterministic unshifted D&D hit-testing
+                            let scroll_max_h = (board_bottom - cui.cursor().top() - 12.0).max(160.0);
+                            let mut v_sa = egui::ScrollArea::vertical()
                                 .id_salt(("custom_col_scroll", &opt.id))
+                                .drag_to_scroll(!dnd.is_dragging())
                                 .auto_shrink([false, true])
-                                .max_height(scroll_max_h)
-                                .show(cui, |ui| {
+                                .max_height(scroll_max_h);
+                            if let Some(next_y) = dnd.vertical_autoscroll_offset(cui.ctx(), &opt.id) {
+                                v_sa = v_sa.vertical_scroll_offset(next_y);
+                            }
+                            let dragged_id = dnd.dragged_card_id().map(str::to_string);
+                            let hidden_id = dnd.hidden_card_id().map(str::to_string);
+                            let drag_h = dnd.dragged_card_height();
+                            let dnd_active = dnd.is_active();
+                            let dnd_dragging = dnd.is_dragging();
+
+                            let v_out = v_sa.show(cui, |ui| {
                                     ui.set_width(inner_w);
                                     let scroll_origin_y = ui.cursor().top();
-                                    let scroll_clip = ui.clip_rect();
+                                    let others: Vec<(usize, &RecordItem)> = cards
+                                        .iter()
+                                        .enumerate()
+                                        .filter(|(_, r)| dragged_id.as_deref() != Some(r.id.as_str()))
+                                        .collect();
 
-                                    // Floating ghost for the currently dragged card (originating from this column)
-                                    for rec in cards {
-                                        let drag_id = ui.make_persistent_id(("c_card", &rec.id));
-                                        if ui.ctx().is_being_dragged(drag_id) {
-                                            let cur_h = prev_card_rects
-                                                .iter()
-                                                .find(|(id, _, _)| id == &rec.id)
-                                                .map(|(_, _, h)| *h)
-                                                .unwrap_or(72.0);
-                                            DragAndDrop::set_payload(
-                                                ui.ctx(),
-                                                CustomDragCard {
-                                                    record_id: rec.id.clone(),
-                                                    from_opt_id: opt.id.clone(),
-                                                    height: cur_h,
-                                                },
-                                            );
-                                            let layer_id = LayerId::new(Order::Tooltip, drag_id);
-                                            let mut dummy_link = None;
-                                            let mut dummy_reord = None;
-                                            let ir = ui.with_layer_id(layer_id, |ui| {
-                                                ui.set_width(inner_w);
-                                                paint_custom_card(
-                                                    ui,
-                                                    p,
-                                                    rec,
-                                                    &other_select_cols,
-                                                    date_col_id.as_deref(),
-                                                    &note_link_cols,
-                                                    inner_w,
-                                                    1.0,
-                                                    true,
-                                                    None,
-                                                    &mut dummy_link,
-                                                    &mut dummy_reord,
-                                                )
-                                            });
-                                            if let Some(ptr) = ptr_pos {
-                                                ui.ctx().set_cursor_icon(CursorIcon::Grabbing);
-                                                let delta = ptr - ir.response.rect.center();
-                                                ui.ctx().transform_layer_shapes(
-                                                    layer_id,
-                                                    egui::emath::TSTransform::from_translation(
-                                                        delta,
-                                                    ),
-                                                );
-                                                let ghost_top_y =
-                                                    ptr.y - ir.response.rect.height() * 0.5;
-                                                ui.data_mut(|d| {
-                                                    d.insert_temp(
-                                                        ui.make_persistent_id((
-                                                            "cboard_ghost_top_y",
-                                                            &rec.id,
-                                                        )),
-                                                        ghost_top_y,
-                                                    );
-                                                });
-                                            }
-                                        }
+                                    // Compute unshifted base card coords for stable hysteresis hit-testing
+                                    let mut base_y = scroll_origin_y;
+                                    for (_, rec) in &others {
+                                        let h = dnd.card_heights.get(&rec.id).copied().unwrap_or(80.0);
+                                        col_base_cards.push((rec.id.clone(), base_y, h));
+                                        base_y += h + 10.0;
                                     }
 
                                     let others_len = others.len();
                                     for slot_idx in 0..=others_len {
-                                        let gap_id =
-                                            ui.make_persistent_id(("cboard_slot_gap", &opt.id, slot_idx));
-                                        let gap_t = if active_drag.is_some() {
-                                            anim_bool_eased(
-                                                ui.ctx(),
-                                                gap_id,
-                                                hovering_this_col
-                                                    && target_slot_idx == Some(slot_idx),
-                                                0.14,
-                                            )
-                                        } else {
-                                            let _ = ui.ctx().animate_bool_with_time(
-                                                gap_id, false, 0.0,
-                                            );
-                                            0.0
-                                        };
+                                        let gap_t = dnd.slot_gap_factor(&opt.id, slot_idx);
                                         if gap_t > 0.01 {
                                             let (ph, _) = ui.allocate_exact_size(
-                                                vec2(inner_w, (drag_h * gap_t).max(6.0)),
+                                                vec2(inner_w, (drag_h * gap_t).max(4.0)),
                                                 Sense::hover(),
                                             );
-                                            ui.painter().rect_filled(
-                                                ph,
-                                                Rounding::same(8.0),
-                                                with_alpha(p.accent_soft, gap_t * 0.85),
-                                            );
-                                            ui.painter().rect_stroke(
-                                                ph,
-                                                Rounding::same(8.0),
-                                                Stroke::new(1.4_f32, with_alpha(p.accent, gap_t)),
-                                            );
-                                            ui.painter().line_segment(
-                                                [
-                                                    pos2(ph.left() + 14.0, ph.center().y),
-                                                    pos2(ph.right() - 14.0, ph.center().y),
-                                                ],
-                                                Stroke::new(
-                                                    2.0_f32,
-                                                    with_alpha(p.accent, gap_t * 0.7),
-                                                ),
-                                            );
-                                            ui.add_space(8.0 * gap_t);
+                                            if dnd.is_active_target_slot(&opt.id, slot_idx) {
+                                                ui.painter().rect_filled(
+                                                    ph,
+                                                    Rounding::same(10.0),
+                                                    with_alpha(p.accent, gap_t * 0.08),
+                                                );
+                                                let bar_y = ph.center().y;
+                                                ui.painter().line_segment(
+                                                    [
+                                                        pos2(ph.left() + 12.0, bar_y),
+                                                        pos2(ph.right() - 12.0, bar_y),
+                                                    ],
+                                                    Stroke::new(
+                                                        2.0_f32,
+                                                        with_alpha(p.accent, gap_t * 0.92),
+                                                    ),
+                                                );
+                                                ui.painter().circle_filled(
+                                                    pos2(ph.left() + 12.0, bar_y),
+                                                    3.5 * gap_t,
+                                                    with_alpha(p.accent, gap_t),
+                                                );
+                                                ui.painter().circle_filled(
+                                                    pos2(ph.right() - 12.0, bar_y),
+                                                    3.5 * gap_t,
+                                                    with_alpha(p.accent, gap_t),
+                                                );
+                                            } else {
+                                                ui.painter().rect_filled(
+                                                    ph,
+                                                    Rounding::same(10.0),
+                                                    with_alpha(p.bg_elevated, gap_t * 0.24),
+                                                );
+                                                draw_dashed_rect(
+                                                    ui.painter(),
+                                                    ph,
+                                                    10.0,
+                                                    Stroke::new(
+                                                        1.25_f32,
+                                                        with_alpha(p.border_strong, gap_t * 0.52),
+                                                    ),
+                                                    6.0,
+                                                    4.0,
+                                                );
+                                            }
+                                            ui.add_space(10.0 * gap_t);
                                         }
 
                                         if slot_idx < others_len {
-                                            let rec = others[slot_idx];
-                                            let drag_id =
-                                                ui.make_persistent_id(("c_card", &rec.id));
+                                            let (orig_idx, rec) = others[slot_idx];
+                                            let drag_id = ui.make_persistent_id(("c_card", &rec.id));
+                                            if hidden_id.as_deref() == Some(rec.id.as_str()) {
+                                                let h = dnd
+                                                    .card_heights
+                                                    .get(&rec.id)
+                                                    .copied()
+                                                    .unwrap_or(drag_h);
+                                                let (r, _) = ui.allocate_exact_size(
+                                                    vec2(inner_w, h),
+                                                    Sense::hover(),
+                                                );
+                                                dnd.resolve_settling_rect(&rec.id, r);
+                                                ui.add_space(10.0);
+                                                continue;
+                                            }
+
                                             let card_top = ui.next_widget_position();
-                                            let est_h = prev_card_rects
-                                                .iter()
-                                                .find(|(id, _, _)| id == &rec.id)
-                                                .map(|(_, _, h)| *h)
+                                            let est_h = dnd
+                                                .card_heights
+                                                .get(&rec.id)
+                                                .copied()
                                                 .unwrap_or(80.0);
                                             let est_rect = Rect::from_min_size(
                                                 card_top,
                                                 vec2(inner_w, est_h),
                                             );
-                                            let is_hov = active_drag.is_none()
+                                            let is_hov = !dnd_active
                                                 && ui.rect_contains_pointer(est_rect);
                                             let hov_t = anim_bool_eased(
                                                 ui.ctx(),
@@ -534,75 +535,8 @@ pub fn render_custom_board(
                                                 is_hov,
                                                 0.11,
                                             );
-
-                                            // FLIP settle animation after drop or up/down shift
-                                            let local_y = card_top.y - scroll_origin_y;
-                                            let settle_id = ui.make_persistent_id((
-                                                "cboard_settle_y",
-                                                &rec.id,
-                                            ));
-                                            let last_col: Option<String> = ui.data(|d| {
-                                                d.get_temp(ui.make_persistent_id((
-                                                    "cboard_last_col",
-                                                    &rec.id,
-                                                )))
-                                            });
-                                            let ghost_screen_y: Option<f32> = ui.data(|d| {
-                                                d.get_temp(ui.make_persistent_id((
-                                                    "cboard_ghost_top_y",
-                                                    &rec.id,
-                                                )))
-                                            });
-                                            let anim_local_y = if active_drag.is_none() {
-                                                if let Some(gsy) = ghost_screen_y {
-                                                    ui.data_mut(|d| {
-                                                        d.remove::<f32>(ui.make_persistent_id((
-                                                            "cboard_ghost_top_y",
-                                                            &rec.id,
-                                                        )));
-                                                    });
-                                                    let seed = (gsy - scroll_origin_y).clamp(
-                                                        local_y - 380.0,
-                                                        local_y + 380.0,
-                                                    );
-                                                    ui.ctx().animate_value_with_time(
-                                                        settle_id, seed, 0.0,
-                                                    );
-                                                    ui.ctx().animate_value_with_time(
-                                                        settle_id, local_y, 0.18,
-                                                    )
-                                                } else if last_col.as_deref()
-                                                    == Some(opt.id.as_str())
-                                                {
-                                                    ui.ctx().animate_value_with_time(
-                                                        settle_id, local_y, 0.18,
-                                                    )
-                                                } else {
-                                                    ui.ctx().animate_value_with_time(
-                                                        settle_id, local_y, 0.0,
-                                                    )
-                                                }
-                                            } else {
-                                                ui.ctx().animate_value_with_time(
-                                                    settle_id, local_y, 0.0,
-                                                )
-                                            };
-                                            ui.data_mut(|d| {
-                                                d.insert_temp(
-                                                    ui.make_persistent_id((
-                                                        "cboard_last_col",
-                                                        &rec.id,
-                                                    )),
-                                                    opt.id.clone(),
-                                                );
-                                            });
-                                            let settle_dy = if active_drag.is_none() {
-                                                (anim_local_y - local_y).clamp(-380.0, 380.0)
-                                            } else {
-                                                0.0
-                                            };
-
-                                            let reorder_caps = if active_drag.is_none()
+                                            let reorder_caps = if !is_sorted
+                                                && !dnd_active
                                                 && others_len > 1
                                                 && hov_t > 0.18
                                             {
@@ -617,64 +551,33 @@ pub fn render_custom_board(
 
                                             let mut link_hit = None;
                                             let mut reorder_hit = None;
-                                            let inner_resp = if settle_dy.abs() > 0.6 {
-                                                ui.ctx().request_repaint();
-                                                let settle_layer = LayerId::new(
-                                                    Order::Middle,
-                                                    drag_id.with("settle"),
-                                                );
-                                                let ir = ui.with_layer_id(settle_layer, |ui| {
-                                                    ui.set_clip_rect(scroll_clip);
-                                                    paint_custom_card(
-                                                        ui,
-                                                        p,
-                                                        rec,
-                                                        &other_select_cols,
-                                                        date_col_id.as_deref(),
-                                                        &note_link_cols,
-                                                        inner_w,
-                                                        hov_t,
-                                                        false,
-                                                        reorder_caps,
-                                                        &mut link_hit,
-                                                        &mut reorder_hit,
-                                                    )
-                                                });
-                                                ui.ctx().transform_layer_shapes(
-                                                    settle_layer,
-                                                    egui::emath::TSTransform::from_translation(
-                                                        vec2(0.0, settle_dy),
-                                                    ),
-                                                );
-                                                ir.inner
-                                            } else {
-                                                paint_custom_card(
-                                                    ui,
-                                                    p,
-                                                    rec,
-                                                    &other_select_cols,
-                                                    date_col_id.as_deref(),
-                                                    &note_link_cols,
-                                                    inner_w,
-                                                    hov_t,
-                                                    false,
-                                                    reorder_caps,
-                                                    &mut link_hit,
-                                                    &mut reorder_hit,
-                                                )
-                                            };
+                                            let mut convert_hit = false;
+                                            let inner_resp = paint_custom_card(
+                                                ui,
+                                                p,
+                                                rec,
+                                                &other_select_cols,
+                                                date_col_id.as_deref(),
+                                                &note_link_cols,
+                                                inner_w,
+                                                hov_t,
+                                                false,
+                                                reorder_caps,
+                                                s.tasks_convert_to_note,
+                                                &mut link_hit,
+                                                &mut reorder_hit,
+                                                &mut convert_hit,
+                                            );
+                                            dnd.card_heights
+                                                .insert(rec.id.clone(), inner_resp.rect.height());
 
-                                            new_card_rects.push((
-                                                rec.id.clone(),
-                                                inner_resp.rect.center().y,
-                                                inner_resp.rect.height(),
-                                            ));
-
-                                            if let Some(target) = link_hit {
+                                            if convert_hit {
+                                                convert_record_id = Some(rec.id.clone());
+                                            } else if let Some(target) = link_hit {
                                                 clicked_note_link = Some(target);
                                             } else if let Some(delta) = reorder_hit {
                                                 pending_reorder = Some((rec.id.clone(), delta));
-                                            } else {
+                                            } else if !dnd_dragging {
                                                 let card_resp = ui.interact(
                                                     inner_resp.rect,
                                                     drag_id,
@@ -685,19 +588,46 @@ pub fn render_custom_board(
                                                         .clone()
                                                         .on_hover_cursor(CursorIcon::Grab);
                                                 }
+                                                if card_resp.is_pointer_button_down_on()
+                                                    && ui.input(|i| i.pointer.primary_pressed())
+                                                {
+                                                    if let Some(press_pos) = ptr_pos {
+                                                        dnd.try_begin_pending(
+                                                            &rec.id,
+                                                            &opt.id,
+                                                            orig_idx,
+                                                            inner_resp.rect,
+                                                            press_pos,
+                                                        );
+                                                    }
+                                                }
                                                 if card_resp.clicked() {
                                                     state.modal_new_tag.clear();
                                                     state.editing_record_id = Some(rec.id.clone());
                                                 }
+                                                card_resp.context_menu(|ui| {
+                                                    if crate::ui::components::context_menu_row(
+                                                        ui,
+                                                        p,
+                                                        Icon::FilePlus,
+                                                        s.tasks_convert_to_note,
+                                                        false,
+                                                    )
+                                                    .clicked()
+                                                    {
+                                                        convert_record_id = Some(rec.id.clone());
+                                                        ui.close_menu();
+                                                    }
+                                                });
                                             }
 
-                                            ui.add_space(8.0);
+                                            ui.add_space(10.0);
                                         }
                                     }
 
                                     if others_len == 0
-                                        && active_drag.is_some()
-                                        && !hovering_this_col
+                                        && dnd_dragging
+                                        && !dnd.is_target_col(&opt.id)
                                     {
                                         let (hr, _) = ui.allocate_exact_size(
                                             vec2(inner_w, 52.0),
@@ -738,21 +668,34 @@ pub fn render_custom_board(
                                             actions,
                                         );
                                     }
+                                    ui.add_space(10.0);
                                 });
+                            col_scroll_rect = v_out.inner_rect;
+                            col_scroll_offset_y = v_out.state.offset.y;
                         }
 
                         let col_resp = col_frame.allocate_space(ui);
-                        ui.data_mut(|d| {
-                            d.insert_temp(
-                                ui.make_persistent_id(("cboard_col_rect", &opt.id)),
-                                col_resp.rect,
-                            );
-                            d.insert_temp(
-                                ui.make_persistent_id(("cboard_card_rects", &opt.id)),
-                                new_card_rects,
-                            );
-                        });
-                        let can_drop = active_drag.is_some() && col_resp.contains_pointer();
+                        let drop_zone_rect = Rect::from_min_max(
+                            col_resp.rect.min,
+                            pos2(
+                                col_resp.rect.right(),
+                                board_bottom.max(col_resp.rect.bottom()),
+                            ),
+                        );
+                        new_columns.insert(
+                            opt.id.clone(),
+                            ColumnGeometry {
+                                col_id: opt.id.clone(),
+                                drop_rect: drop_zone_rect,
+                                scroll_rect: col_scroll_rect,
+                                scroll_offset_y: col_scroll_offset_y,
+                                base_cards: col_base_cards,
+                            },
+                        );
+
+                        let can_drop = dnd.is_dragging()
+                            && dnd.is_target_col(&opt.id)
+                            && !dnd.is_same_col_sorted_locked(&opt.id, is_sorted);
                         let drop_t = anim_bool_eased(
                             ui.ctx(),
                             ui.make_persistent_id(("custom_col_drop", &opt.id)),
@@ -761,22 +704,12 @@ pub fn render_custom_board(
                         );
                         if drop_t > 0.01 {
                             col_frame.frame.stroke = Stroke::new(
-                                1.0 + drop_t * 0.6,
-                                lerp_color(p.border_hairline, p.accent, drop_t),
+                                1.25_f32,
+                                with_alpha(dot_col, 0.55 * drop_t),
                             );
-                            col_frame.frame.fill =
-                                lerp_color(p.bg_sidebar, p.bg_elevated, drop_t);
+                            col_frame.frame.fill = with_alpha(dot_col, 0.07 * drop_t);
                         }
                         col_frame.paint(ui);
-
-                        if let Some(dropped) = col_resp.dnd_release_payload::<CustomDragCard>() {
-                            pending_move = Some(ColumnMoveOp {
-                                record_id: dropped.record_id.clone(),
-                                target_opt_id: opt.id.clone(),
-                                insert_before_id: hovered_insert_before,
-                            });
-                            let _ = dropped.from_opt_id;
-                        }
                     });
                 }
 
@@ -787,22 +720,53 @@ pub fn render_custom_board(
             });
         });
 
+    ui.style_mut().interaction.selectable_labels = prev_selectable;
+    dnd.board_scroll_rect = Some(h_out.inner_rect);
+    dnd.board_scroll_offset_x = h_out.state.offset.x;
+    dnd.columns = new_columns;
+
+    if let Some((ghost_id, ghost_min, ghost_size)) = dnd.active_ghost() {
+        if let Some(rec) = state.doc.records.iter().find(|r| r.id == ghost_id) {
+            let mut dummy_link = None;
+            let mut dummy_reord = None;
+            let mut dummy_conv = false;
+            egui::Area::new(ui.make_persistent_id(("cboard_ghost_area", ghost_id)))
+                .order(Order::Tooltip)
+                .interactable(false)
+                .fixed_pos(ghost_min)
+                .show(ui.ctx(), |ui| {
+                    ui.set_width(ghost_size.x);
+                    paint_custom_card(
+                        ui,
+                        p,
+                        rec,
+                        &other_select_cols,
+                        date_col_id.as_deref(),
+                        &note_link_cols,
+                        ghost_size.x,
+                        1.0,
+                        true,
+                        None,
+                        s.tasks_convert_to_note,
+                        &mut dummy_link,
+                        &mut dummy_reord,
+                        &mut dummy_conv,
+                    );
+                });
+        }
+    }
+    dnd.store(ui.ctx(), dnd_id);
+
     if let Some(target) = clicked_note_link {
         actions.push(UiAction::OpenOrCreateWikilink(target));
+    }
+    if let Some(rec_id) = convert_record_id {
+        actions.push(UiAction::ConvertRecordToNote { record_id: rec_id });
     }
     if let Some((rec_id, delta)) = pending_reorder {
         if state.doc.shift_record_in_group(&rec_id, &group_col_id, delta) {
             actions.push(UiAction::MarkCollectionDirty);
         }
-    }
-    if let Some(mv) = pending_move {
-        state.doc.move_record_to_group(
-            &mv.record_id,
-            &group_col_id,
-            &mv.target_opt_id,
-            mv.insert_before_id.as_deref(),
-        );
-        actions.push(UiAction::MarkCollectionDirty);
     }
     if let Some((opt_id, new_lbl)) = rename_opt {
         if let Some(col) = state.doc.columns.iter_mut().find(|c| c.id == group_col_id) {
@@ -956,7 +920,8 @@ fn render_mobile_custom_board(
             for (cidx, rec) in cards.iter().enumerate() {
                 let mut dummy_link = None;
                 let mut reord_hit = None;
-                let rcaps = if cards_len > 1 {
+                let mut conv_hit = false;
+                let rcaps = if state.sort.is_none() && cards_len > 1 {
                     Some((cidx > 0, cidx + 1 < cards_len, 1.0))
                 } else {
                     None
@@ -972,10 +937,16 @@ fn render_mobile_custom_board(
                     0.0,
                     false,
                     rcaps,
+                    strings(lang).tasks_convert_to_note,
                     &mut dummy_link,
                     &mut reord_hit,
+                    &mut conv_hit,
                 );
-                if let Some(target) = dummy_link {
+                if conv_hit {
+                    actions.push(UiAction::ConvertRecordToNote {
+                        record_id: rec.id.clone(),
+                    });
+                } else if let Some(target) = dummy_link {
                     actions.push(UiAction::OpenOrCreateWikilink(target));
                 } else if let Some(delta) = reord_hit {
                     mob_reorder = Some((rec.id.clone(), delta));
@@ -983,7 +954,7 @@ fn render_mobile_custom_board(
                     state.modal_new_tag.clear();
                     state.editing_record_id = Some(rec.id.clone());
                 }
-                ui.add_space(8.0);
+                ui.add_space(10.0);
             }
             if let Some((rid, delta)) = mob_reorder {
                 if state.doc.shift_record_in_group(&rid, &group_col.id, delta) {
@@ -1019,31 +990,39 @@ fn paint_custom_card(
     hover_t: f32,
     floating: bool,
     reorder_caps: Option<(bool, bool, f32)>,
+    convert_label: &str,
     clicked_link_out: &mut Option<String>,
     reorder_out: &mut Option<isize>,
+    convert_out: &mut bool,
 ) -> egui::Response {
     let bg = if floating {
         p.bg_elevated
     } else {
-        lerp_color(p.bg_card, p.bg_elevated, hover_t)
+        lerp_color(p.bg_card, p.bg_elevated, hover_t * 0.55)
     };
     let border = if floating {
         p.accent
     } else {
-        lerp_color(p.border_hairline, p.border_subtle, hover_t)
+        lerp_color(p.border_subtle, with_alpha(p.accent, 0.78), hover_t)
+    };
+    let rest_shadow = egui::Shadow {
+        offset: p.shadow_elevated.offset,
+        blur: p.shadow_elevated.blur,
+        spread: p.shadow_elevated.spread,
+        color: with_alpha(p.shadow_elevated.color, 0.55 + 0.45 * hover_t),
     };
 
     let mut frame = egui::Frame::none()
         .fill(bg)
-        .stroke(Stroke::new(if floating { 1.25_f32 } else { 1.0_f32 }, border))
-        .rounding(Rounding::same(8.0))
-        .shadow(if floating { p.shadow_floating } else { p.shadow_elevated })
-        .inner_margin(Margin::same(11.0))
+        .stroke(Stroke::new(if floating { 1.5_f32 } else { 1.0_f32 }, border))
+        .rounding(Rounding::same(10.0))
+        .shadow(if floating { p.shadow_floating } else { rest_shadow })
+        .inner_margin(Margin::symmetric(14.0, 12.0))
         .begin(ui);
 
     {
         let cui = &mut frame.content_ui;
-        let content_w = (width - 22.0).max(80.0);
+        let content_w = (width - 28.0).max(80.0);
         cui.set_width(content_w);
         let top_right_x = cui.cursor().left() + content_w;
         let top_y = cui.cursor().top();
@@ -1054,23 +1033,31 @@ fn paint_custom_card(
                 } else {
                     rec.title.trim()
                 })
-                .font(font_medium(13.5))
+                .font(font_semibold(13.5))
                 .color(p.text_primary),
             )
             .wrap(),
         );
 
-        let desc_line = rec.description.lines().next().unwrap_or("").trim();
-        if !desc_line.is_empty() {
-            cui.add_space(4.0);
-            cui.add(
-                egui::Label::new(
-                    egui::RichText::new(desc_line)
-                        .font(font_body(11.5))
-                        .color(p.text_muted),
-                )
-                .truncate(),
+        let preview = card_preview_excerpt(&rec.description, 2, 72);
+        if !preview.is_empty() {
+            cui.add_space(5.0);
+            let mut job = egui::text::LayoutJob::single_section(
+                preview,
+                egui::TextFormat {
+                    font_id: font_body(12.0),
+                    color: p.text_secondary,
+                    line_height: Some(17.0),
+                    ..Default::default()
+                },
             );
+            job.wrap = egui::text::TextWrapping {
+                max_width: content_w,
+                max_rows: 2,
+                break_anywhere: false,
+                overflow_character: Some('…'),
+            };
+            cui.label(job);
         }
 
         // Metadata pills row: non-group selects, date, checklist count, tags, NoteLink
@@ -1083,16 +1070,16 @@ fn paint_custom_card(
                 .any(|id| rec.values.get(id).is_some_and(|v| !v.is_empty()));
 
         if has_meta {
-            cui.add_space(7.0);
+            cui.add_space(9.0);
             cui.horizontal_wrapped(|ui| {
-                ui.spacing_mut().item_spacing = vec2(5.0, 4.0);
+                ui.spacing_mut().item_spacing = vec2(6.0, 5.0);
 
                 for col in other_select_cols {
                     if let Some(val) = rec.values.get(&col.id) {
                         let oid = val.as_text();
                         if let Some(opt) = col.options.iter().find(|o| o.id == oid) {
                             let (pbg, dot, ptxt) = p.token_colors(opt.color);
-                            draw_mini_badge(ui, pbg, ptxt, Some(dot), &opt.label);
+                            draw_mini_badge_bordered(ui, pbg, ptxt, Some(dot), &opt.label);
                         }
                     }
                 }
@@ -1160,39 +1147,168 @@ fn paint_custom_card(
             });
         }
 
-        if let Some((can_up, can_down, alpha)) = reorder_caps {
-            if !floating && (can_up || can_down) {
-                let mut rx = top_right_x + 2.0;
-                let pill_y = top_y - 2.0;
-                let btn_w = 18.0_f32;
-                let pill_w = if can_up && can_down { 38.0 } else { 18.0 };
-                let backdrop = Rect::from_min_size(pos2(rx - pill_w - 2.0, pill_y - 2.0), vec2(pill_w + 4.0, 22.0));
-                cui.painter().rect_filled(backdrop, Rounding::same(6.0), with_alpha(p.bg_elevated, 0.92 * alpha));
-                cui.painter().rect_stroke(backdrop, Rounding::same(6.0), Stroke::new(1.0_f32, with_alpha(p.border_subtle, 0.75 * alpha)));
+        if !floating && hover_t > 0.18 {
+            let mut rx = top_right_x + 2.0;
+            let pill_y = top_y - 2.0;
+            let btn_w = 18.0_f32;
+            let (has_up, has_down) = reorder_caps
+                .map(|(u, d, _)| (u, d))
+                .unwrap_or((false, false));
+            let btn_count = 1 + usize::from(has_up) + usize::from(has_down);
+            let pill_w = (btn_count as f32) * btn_w + ((btn_count.saturating_sub(1)) as f32) * 2.0;
+            let backdrop = Rect::from_min_size(pos2(rx - pill_w - 2.0, pill_y - 2.0), vec2(pill_w + 4.0, 22.0));
+            cui.painter().rect_filled(backdrop, Rounding::same(6.0), with_alpha(p.bg_elevated, 0.92 * hover_t));
+            cui.painter().rect_stroke(backdrop, Rounding::same(6.0), Stroke::new(1.0_f32, with_alpha(p.border_subtle, 0.75 * hover_t)));
 
-                for &(enabled, delta, lbl) in &[(can_down, 1isize, "↓"), (can_up, -1isize, "↑")] {
-                    if !enabled {
-                        continue;
-                    }
-                    rx -= btn_w;
-                    let br = Rect::from_min_size(pos2(rx, pill_y), vec2(btn_w, 18.0));
-                    let bresp = cui.interact(br, cui.make_persistent_id(("c_reord", &rec.id, delta)), Sense::click());
-                    if bresp.hovered() {
-                        cui.painter().rect_filled(br, Rounding::same(4.5), p.accent_soft);
-                    }
-                    let fg = if bresp.hovered() { p.accent_text } else { with_alpha(p.text_secondary, alpha) };
-                    let g = cui.painter().layout_no_wrap(lbl.to_string(), font_mono(11.0), fg);
-                    cui.painter().galley(pos2(br.center().x - g.size().x * 0.5, br.center().y - g.size().y * 0.5), g, fg);
-                    if bresp.on_hover_cursor(CursorIcon::PointingHand).clicked() {
-                        *reorder_out = Some(delta);
-                    }
-                    rx -= 2.0;
+            // Convert to note quick button
+            rx -= btn_w;
+            let cr = Rect::from_min_size(pos2(rx, pill_y), vec2(btn_w, 18.0));
+            let cresp = cui.interact(cr, cui.make_persistent_id(("c_conv", &rec.id)), Sense::click());
+            if cresp.hovered() {
+                cui.painter().rect_filled(cr, Rounding::same(4.5), p.accent_soft);
+            }
+            draw_icon(
+                cui.painter(),
+                Rect::from_center_size(cr.center(), vec2(11.0, 11.0)),
+                Icon::FilePlus,
+                if cresp.hovered() { p.accent_text } else { with_alpha(p.text_secondary, hover_t) },
+            );
+            if cresp.on_hover_cursor(CursorIcon::PointingHand).on_hover_text(convert_label).clicked() {
+                *convert_out = true;
+            }
+            rx -= 2.0;
+
+            for &(enabled, delta, lbl) in &[(has_down, 1isize, "↓"), (has_up, -1isize, "↑")] {
+                if !enabled {
+                    continue;
                 }
+                rx -= btn_w;
+                let br = Rect::from_min_size(pos2(rx, pill_y), vec2(btn_w, 18.0));
+                let bresp = cui.interact(br, cui.make_persistent_id(("c_reord", &rec.id, delta)), Sense::click());
+                if bresp.hovered() {
+                    cui.painter().rect_filled(br, Rounding::same(4.5), p.accent_soft);
+                }
+                let fg = if bresp.hovered() { p.accent_text } else { with_alpha(p.text_secondary, hover_t) };
+                let g = cui.painter().layout_no_wrap(lbl.to_string(), font_mono(11.0), fg);
+                cui.painter().galley(pos2(br.center().x - g.size().x * 0.5, br.center().y - g.size().y * 0.5), g, fg);
+                if bresp.on_hover_cursor(CursorIcon::PointingHand).clicked() {
+                    *reorder_out = Some(delta);
+                }
+                rx -= 2.0;
             }
         }
     }
 
-    frame.end(ui)
+    let resp = frame.end(ui);
+    if p.is_dark {
+        let sheen_alpha = if floating { 28 } else { (14.0 + 12.0 * hover_t) as u8 };
+        let r = resp.rect;
+        ui.painter().line_segment(
+            [pos2(r.left() + 10.0, r.top() + 1.0), pos2(r.right() - 10.0, r.top() + 1.0)],
+            Stroke::new(1.0_f32, Color32::from_rgba_unmultiplied(255, 255, 255, sheen_alpha)),
+        );
+    }
+    resp
+}
+
+fn muted_icon_btn(
+    ui: &mut Ui,
+    p: &ThemePalette,
+    icon: Icon,
+    tooltip: &str,
+    active: bool,
+    vis_alpha: f32,
+) -> egui::Response {
+    let (rect, resp) = ui.allocate_exact_size(vec2(24.0, 24.0), Sense::click());
+    let hov = anim_bool_eased(ui.ctx(), resp.id.with("hov"), resp.hovered(), 0.10);
+    if active || hov > 0.01 {
+        let fill = if active {
+            p.accent_soft
+        } else {
+            with_alpha(p.bg_hover, hov)
+        };
+        ui.painter().rect_filled(rect, Rounding::same(6.0), fill);
+    }
+    let alpha = vis_alpha.max(hov);
+    if active || alpha >= 0.02 {
+        let fg = if active {
+            p.accent_text
+        } else {
+            with_alpha(lerp_color(p.text_muted, p.text_primary, hov), alpha)
+        };
+        draw_icon(
+            ui.painter(),
+            Rect::from_center_size(rect.center(), vec2(13.5, 13.5)),
+            icon,
+            fg,
+        );
+    }
+    resp.on_hover_cursor(CursorIcon::PointingHand)
+        .on_hover_text(tooltip)
+}
+
+fn draw_dashed_rect(
+    painter: &egui::Painter,
+    rect: Rect,
+    rounding: f32,
+    stroke: Stroke,
+    dash_len: f32,
+    gap_len: f32,
+) {
+    let r = rect.shrink(0.5);
+    let ins = (rounding * 0.45).min(6.0);
+    let edges = [
+        (pos2(r.left() + ins, r.top()), pos2(r.right() - ins, r.top())),
+        (pos2(r.right(), r.top() + ins), pos2(r.right(), r.bottom() - ins)),
+        (pos2(r.right() - ins, r.bottom()), pos2(r.left() + ins, r.bottom())),
+        (pos2(r.left(), r.bottom() - ins), pos2(r.left(), r.top() + ins)),
+    ];
+    let step = dash_len + gap_len;
+    for (a, b) in edges {
+        let diff = b - a;
+        let len = diff.length();
+        if len < 1.0 {
+            continue;
+        }
+        let dir = diff / len;
+        let mut t = 0.0_f32;
+        while t < len {
+            let t_end = (t + dash_len).min(len);
+            painter.line_segment([a + dir * t, a + dir * t_end], stroke);
+            t += step;
+        }
+    }
+}
+
+fn draw_mini_badge_bordered(
+    ui: &mut Ui,
+    _bg: Color32,
+    fg: Color32,
+    dot: Option<Color32>,
+    text: &str,
+) {
+    let g = ui
+        .painter()
+        .layout_no_wrap(text.to_string(), font_medium(11.0), fg);
+    let pad_l = if dot.is_some() { 17.0 } else { 7.0 };
+    let w = (g.size().x + pad_l + 7.0).min(156.0);
+    let (r, _) = ui.allocate_exact_size(vec2(w, 20.0), Sense::hover());
+    if let Some(dcol) = dot {
+        ui.painter()
+            .rect_filled(r, Rounding::same(6.0), with_alpha(dcol, 0.11));
+        ui.painter().rect_stroke(
+            r,
+            Rounding::same(6.0),
+            Stroke::new(1.0_f32, with_alpha(dcol, 0.34)),
+        );
+        ui.painter()
+            .circle_filled(pos2(r.left() + 8.5, r.center().y), 2.6, dcol);
+    }
+    ui.painter().galley(
+        pos2(r.left() + pad_l, r.center().y - g.size().y * 0.5),
+        g,
+        fg,
+    );
 }
 
 fn draw_mini_badge(ui: &mut Ui, bg: Color32, fg: Color32, dot: Option<Color32>, text: &str) {
@@ -1334,7 +1450,7 @@ fn render_column_quick_add(
         }
     } else {
         reset_focus_gate(ui.ctx(), qa_gate_id);
-        let (rect, resp) = ui.allocate_exact_size(vec2(width, 28.0), Sense::click());
+        let (rect, resp) = ui.allocate_exact_size(vec2(width, 32.0), Sense::click());
         let hov = anim_bool_eased(
             ui.ctx(),
             ui.make_persistent_id(("col_qa", opt_id, slot_tag)),
@@ -1342,18 +1458,31 @@ fn render_column_quick_add(
             0.10,
         );
         if hov > 0.01 {
-            ui.painter()
-                .rect_filled(rect, Rounding::same(7.0), with_alpha(p.bg_hover, hov));
+            ui.painter().rect_filled(
+                rect,
+                Rounding::same(8.0),
+                with_alpha(p.bg_elevated, 0.75 * hov),
+            );
+            ui.painter().rect_stroke(
+                rect,
+                Rounding::same(8.0),
+                Stroke::new(1.0_f32, with_alpha(p.border_subtle, hov)),
+            );
         }
-        let g = ui.painter().layout_no_wrap(
-            s.col_new_card.to_string(),
-            font_medium(12.0),
-            if resp.hovered() { p.text_primary } else { p.text_muted },
+        let fg = lerp_color(p.text_muted, p.text_primary, hov);
+        draw_icon(
+            ui.painter(),
+            Rect::from_center_size(pos2(rect.left() + 14.0, rect.center().y), vec2(12.0, 12.0)),
+            Icon::Plus,
+            fg,
         );
+        let g = ui
+            .painter()
+            .layout_no_wrap(s.col_new_card.to_string(), font_medium(12.0), fg);
         ui.painter().galley(
-            pos2(rect.left() + 8.0, rect.center().y - g.size().y * 0.5),
+            pos2(rect.left() + 26.0, rect.center().y - g.size().y * 0.5),
             g,
-            if resp.hovered() { p.text_primary } else { p.text_muted },
+            fg,
         );
         if resp.on_hover_cursor(CursorIcon::PointingHand).clicked() {
             state.quick_add_col_opt = Some(opt_id.to_string());

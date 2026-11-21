@@ -59,6 +59,7 @@ pub fn render_editor_view(
         return actions;
     };
 
+    let is_today_daily = krono_core::daily::parse_daily_note_path(rel_path) == Some(today);
     let effective_mode = if editor_mode == EditorMode::Split
         && (!layout.is_desktop() || ui.available_width() < 640.0)
     {
@@ -83,6 +84,7 @@ pub fn render_editor_view(
                     lang,
                     layout,
                     today,
+                    is_today_daily,
                     doc.title,
                     doc.status,
                     doc.tags,
@@ -199,6 +201,7 @@ pub fn render_editor_view(
                         lang,
                         layout,
                         today,
+                        is_today_daily,
                         doc.title,
                         doc.status,
                         doc.tags,
@@ -348,6 +351,7 @@ fn render_document_header(
     lang: Lang,
     layout: LayoutClass,
     today: SimpleDate,
+    is_today_daily: bool,
     note_title: &mut String,
     note_status: &mut Option<NoteStatus>,
     note_tags: &mut Vec<String>,
@@ -500,6 +504,12 @@ fn render_document_header(
                 note_extra_lines.push(("date".to_string(), today.format_iso()));
                 actions.push(UiAction::MarkDirty);
                 actions.push(UiAction::SaveCurrentNote);
+            }
+        }
+
+        if is_today_daily {
+            if secondary_button(ui, p, Some(Icon::CalendarDays), s.tasks_carry_over_btn).clicked() {
+                actions.push(UiAction::CarryOverDailyTasks);
             }
         }
 

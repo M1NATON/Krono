@@ -5,14 +5,16 @@ mod frame;
 mod notes;
 mod shortcuts;
 mod sync;
+mod tasks;
 mod vault_ops;
 
 use crate::config::AppConfig;
 use crate::i18n::strings;
+use crate::notifications::TaskNotificationTracker;
 #[cfg(debug_assertions)]
 use crate::shot_runner::ShotRunner;
 use crate::storage::{
-    index::{BacklinkHit, CollectionMeta, RawLinkEdge, SearchHit, VaultIndex},
+    index::{BacklinkHit, CollectionMeta, RawLinkEdge, SearchHit, VaultIndex, VaultTaskRow},
     vault::{
         ensure_starter_vault, list_vault_folders, migrate_diary_hierarchy, AssetAuditEntry,
     },
@@ -33,9 +35,10 @@ use crate::ui::{
     inspector::OutgoingLinkInfo,
     motion::ease_in_out_cubic,
     theme::{apply_palette, setup_fonts, ThemePalette},
+    tasks_view::TasksViewState,
     vault_map_view::VaultMapState,
-    EditorMode, LayoutClass, NavTarget, PagesKindFilter, PagesSortOrder, SettingsTab, TableSort,
-    VaultCounts, ViewMode,
+    EditorMode, LayoutClass, NavTarget, PagesKindFilter, PagesSortOrder, SettingsTab,
+    BoardSort, TableColumnWidths, TableSort, VaultCounts, ViewMode,
 };
 use chrono::Datelike;
 use eframe::egui;
@@ -81,6 +84,7 @@ pub struct KronoApp {
 
     pub(crate) notes: Vec<NoteMeta>,
     pub(crate) collections: Vec<CollectionMeta>,
+    pub(crate) vault_tasks: Vec<VaultTaskRow>,
     pub(crate) all_links: Vec<RawLinkEdge>,
     tag_counts: Vec<(String, usize)>,
     cached_link_count: usize,
@@ -132,6 +136,10 @@ pub struct KronoApp {
     table_filter_query: String,
     table_status_filter: Option<NoteStatus>,
     table_sort: TableSort,
+    table_col_widths: TableColumnWidths,
+    board_sort: BoardSort,
+    pub(crate) tasks_view_state: TasksViewState,
+    task_notifier: TaskNotificationTracker,
     quick_add_board_status: Option<NoteStatus>,
     quick_add_board_title: String,
     quick_add_board_tags: Vec<String>,
@@ -312,6 +320,7 @@ impl KronoApp {
             sync_worker,
             notes: Vec::new(),
             collections: Vec::new(),
+            vault_tasks: Vec::new(),
             all_links: Vec::new(),
             tag_counts: Vec::new(),
             cached_link_count: 0,
@@ -356,6 +365,10 @@ impl KronoApp {
             table_filter_query: String::new(),
             table_status_filter: None,
             table_sort: TableSort::ModifiedDesc,
+            table_col_widths: TableColumnWidths::default(),
+            board_sort: BoardSort::Manual,
+            tasks_view_state: TasksViewState::default(),
+            task_notifier: TaskNotificationTracker::default(),
             quick_add_board_status: None,
             quick_add_board_title: String::new(),
             quick_add_board_tags: Vec::new(),
@@ -452,6 +465,7 @@ impl KronoApp {
     pub(crate) fn reload_index_caches(&mut self) {
         self.notes = self.index.list_notes().unwrap_or_default();
         self.collections = self.index.list_collections().unwrap_or_default();
+        self.vault_tasks = self.index.list_tasks().unwrap_or_default();
         self.vault_folders = if self.first_run_open {
             Vec::new()
         } else {
@@ -594,6 +608,7 @@ impl eframe::App for KronoApp {
         }
 
         // Debounced auto-save (~1.4s after last keystroke)
+        self.tick_task_notifications();
         if self.dirty && self.config.auto_save_enabled {
             if let Some(t) = self.last_edit_at {
                 if t.elapsed() >= Duration::from_millis(1400) {

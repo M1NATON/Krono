@@ -4,7 +4,7 @@ use crate::i18n::{strings, Lang};
 use crate::sync::secrets::{delete_github_token, load_github_token, save_github_token};
 use crate::ui::{
     components::ToastKind,
-    markdown_preview::{hash_str, toggle_markdown_task},
+    markdown_preview::hash_str,
     CreateItemKind, NavTarget, SettingsTab, UiAction, ViewMode,
 };
 use eframe::egui;
@@ -176,7 +176,11 @@ impl KronoApp {
                     self.drawer_inspector_open = false;
                     if matches!(
                         mode,
-                        ViewMode::Table | ViewMode::Board | ViewMode::Graph | ViewMode::Overview
+                        ViewMode::Tasks
+                            | ViewMode::Table
+                            | ViewMode::Board
+                            | ViewMode::Graph
+                            | ViewMode::Overview
                     ) {
                         self.record_nav(NavTarget::View(mode));
                     }
@@ -362,12 +366,36 @@ impl KronoApp {
                     }
                 }
                 UiAction::ToggleTask(task_idx) => {
-                    if let Some(updated) = toggle_markdown_task(&self.current_doc.body, task_idx) {
+                    let ref_date = self
+                        .selected_path
+                        .as_deref()
+                        .and_then(krono_core::daily::parse_daily_note_path)
+                        .unwrap_or_else(super::today_local);
+                    if let Some(updated) = krono_core::tasks::toggle_task_in_markdown(
+                        &self.current_doc.body,
+                        task_idx,
+                        ref_date,
+                    ) {
                         self.current_doc.body = updated;
                         self.dirty = true;
                         self.last_edit_at = Some(Instant::now());
                         self.save_current_note();
                     }
+                }
+                UiAction::ToggleVaultTask { path, task_idx } => {
+                    self.toggle_vault_task(&path, task_idx);
+                }
+                UiAction::CarryOverDailyTasks => {
+                    self.carry_over_daily_tasks();
+                }
+                UiAction::ConvertTaskToNote {
+                    source_path,
+                    task_idx,
+                } => {
+                    self.convert_task_to_note(&source_path, task_idx);
+                }
+                UiAction::ConvertRecordToNote { record_id } => {
+                    self.convert_record_to_note(&record_id);
                 }
                 UiAction::CopyText(text) => {
                     self.copied_code_hash = Some(hash_str(&text));

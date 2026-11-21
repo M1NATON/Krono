@@ -1,13 +1,14 @@
 use super::{today_local, KronoApp};
 use crate::i18n::{strings, Lang};
 use crate::storage::vault::{
-    create_collection, create_collection_preset, read_collection, save_collection,
+    create_collection, create_collection_preset, create_note_with_tags, read_collection,
+    save_collection,
 };
 use crate::ui::{
     components::ToastKind, embedded_board::EmbeddedBoardAction, NavTarget, ViewMode,
 };
 use krono_core::{
-    collection::{CollectionViewKind, ColumnType, FieldValue},
+    collection::{CollectionViewKind, ColumnDef, ColumnType, FieldValue},
     daily::parse_daily_note_path,
     markdown::{
         extract_embedded_boards, extract_nth_task_line, parse_inline_task_meta,
@@ -518,4 +519,117 @@ impl KronoApp {
         }
     }
 
+    pub(super) fn convert_record_to_note(&mut self, record_id: &str) {
+        let Some(col_path) = self.active_collection.path.clone() else {
+            return;
+        };
+        let Some(rec_snap) = self
+            .active_collection
+            .doc
+            .records
+            .iter()
+            .find(|r| r.id == record_id)
+            .cloned()
+        else {
+            return;
+        };
+
+        let s = strings(self.config.language);
+        let fallback_title = if self.config.language == Lang::Ru {
+            "Новая заметка"
+        } else {
+            "New Note"
+        };
+        let title = if rec_snap.title.trim().is_empty() {
+            fallback_title.to_string()
+        } else {
+            rec_snap.title.trim().to_string()
+        };
+        let folder_prefix = col_path
+            .rsplit_once('/')
+            .map(|(dir, _)| dir)
+            .filter(|dir| !dir.starts_with("daily"));
+        let raw_title_or_path = match folder_prefix {
+            Some(dir) if !dir.is_empty() => format!("{dir}/{title}"),
+            _ => title.clone(),
+        };
+
+        let mut body = String::new();
+        let desc = rec_snap.description.trim();
+        if !desc.is_empty() {
+            body.push_str(desc);
+            body.push_str("\n\n");
+        }
+        if !rec_snap.checklist.is_empty() {
+            for item in &rec_snap.checklist {
+                let mark = if item.done { 'x' } else { ' ' };
+                body.push_str(&format!("- [{}] {}\n", mark, item.text.trim()));
+            }
+        }
+
+        let existing: std::collections::HashSet<String> =
+            self.notes.iter().map(|n| n.path.clone()).collect();
+        match create_note_with_tags(
+            &self.config.vault_dir,
+            &raw_title_or_path,
+            None,
+            rec_snap.tags.clone(),
+            &body,
+            &existing,
+        ) {
+            Ok((new_rel_path, new_doc, modified, size)) => {
+                self.last_local_save_at = Some(Instant::now());
+                let _ = self.index.upsert_note(&new_rel_path, &new_doc, modified, size);
+
+                // Ensure collection has a NoteLink column and populate it for this record
+                let note_link_col_id = if let Some(col) = self
+                    .active_collection
+                    .doc
+                    .columns
+                    .iter()
+                    .find(|c| c.col_type == ColumnType::NoteLink)
+                {
+                    col.id.clone()
+                } else {
+                    let id = "note_link".to_string();
+                    self.active_collection.doc.columns.push(ColumnDef {
+                        id: id.clone(),
+                        name: if self.config.language == Lang::Ru {
+                            "Заметка".to_string()
+                        } else {
+                            "Note".to_string()
+                        },
+                        col_type: ColumnType::NoteLink,
+                        width: 170.0,
+                        options: Vec::new(),
+                    });
+                    id
+                };
+
+                if let Some(rec) = self
+                    .active_collection
+                    .doc
+                    .records
+                    .iter_mut()
+                    .find(|r| r.id == record_id)
+                {
+                    rec.values.insert(
+                        note_link_col_id,
+                        FieldValue::Text(new_doc.frontmatter.title.clone()),
+                    );
+                }
+                self.active_collection.dirty = true;
+                self.active_collection.editing_record_id = None;
+                self.save_current_collection();
+
+                self.reload_index_caches();
+                self.open_note(&new_rel_path);
+                self.view_mode = ViewMode::Editor;
+                self.previous_view_mode = ViewMode::Editor;
+                self.last_notes_tab_mode = ViewMode::Editor;
+                self.push_toast(s.tasks_converted_toast, ToastKind::Success);
+            }
+            Err(e) => self.push_toast(e, ToastKind::Error),
+        }
+    }
 }

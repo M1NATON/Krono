@@ -76,7 +76,9 @@ jobs:
             libxinerama-dev \
             libgl1-mesa-dev \
             libegl1-mesa-dev \
-            libdbus-1-dev
+            libdbus-1-dev \
+            lld
+          echo "RUSTFLAGS=-C link-arg=-fuse-ld=lld" >> "$GITHUB_ENV"
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable

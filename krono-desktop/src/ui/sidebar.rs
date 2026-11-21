@@ -143,6 +143,8 @@ pub fn render_sidebar(
     selected_canvas_path: Option<&str>,
     active_tag: Option<&str>,
     expanded_folders: &HashSet<String>,
+    pinned_folders: &[String],
+    folder_order: &[String],
     view_mode: ViewMode,
     pages_ui: &mut PagesTreeUiState<'_>,
     cal: &mut CalendarUiState<'_>,
@@ -188,6 +190,8 @@ pub fn render_sidebar(
             selected_canvas_path,
             active_tag,
             expanded_folders,
+            pinned_folders,
+            folder_order,
             view_mode,
             pages_ui,
             cal,
@@ -220,6 +224,8 @@ pub fn render_sidebar_drawer(
     selected_canvas_path: Option<&str>,
     active_tag: Option<&str>,
     expanded_folders: &HashSet<String>,
+    _pinned_folders: &[String],
+    _folder_order: &[String],
     view_mode: ViewMode,
     pages_ui: &mut PagesTreeUiState<'_>,
     cal: &mut CalendarUiState<'_>,
@@ -280,6 +286,8 @@ pub fn render_sidebar_drawer(
                             selected_canvas_path,
                             active_tag,
                             expanded_folders,
+                            &[],
+                            &[],
                             view_mode,
                             pages_ui,
                             cal,
@@ -342,6 +350,8 @@ fn render_sidebar_contents(
     selected_canvas_path: Option<&str>,
     active_tag: Option<&str>,
     expanded_folders: &HashSet<String>,
+    pinned_folders: &[String],
+    folder_order: &[String],
     view_mode: ViewMode,
     pages_ui: &mut PagesTreeUiState<'_>,
     cal: &mut CalendarUiState<'_>,
@@ -403,14 +413,17 @@ fn render_sidebar_contents(
         let mut active_rect: Option<Rect> = None;
         ui.spacing_mut().item_spacing.y = 2.0;
 
-        for (mode, icon, label) in [
-            (ViewMode::Editor, Icon::Notes, s.nav_notes),
-            (ViewMode::Tasks, Icon::Task, s.nav_tasks),
-            (ViewMode::Table, Icon::Table, s.nav_table),
-            (ViewMode::Board, Icon::Board, s.nav_board),
-            (ViewMode::Graph, Icon::Graph, s.nav_graph),
-            (ViewMode::Overview, Icon::LayoutGrid, s.nav_overview),
+        for (mode, icon, label, visible) in [
+            (ViewMode::Editor, Icon::Notes, s.nav_notes, true),
+            (ViewMode::Tasks, Icon::Task, s.nav_tasks, modules.nav_tasks),
+            (ViewMode::Table, Icon::Table, s.nav_table, modules.nav_table),
+            (ViewMode::Board, Icon::Board, s.nav_board, modules.nav_board),
+            (ViewMode::Graph, Icon::Graph, s.nav_graph, modules.nav_graph),
+            (ViewMode::Overview, Icon::LayoutGrid, s.nav_overview, modules.nav_overview),
         ] {
+            if !visible {
+                continue;
+            }
             let (rect, resp) = ui.allocate_exact_size(vec2(nav_w, 28.0), Sense::click());
             let active = view_mode == mode
                 || (mode == ViewMode::Editor
@@ -659,6 +672,8 @@ fn render_sidebar_contents(
                 selected_canvas_path,
                 active_tag,
                 expanded_folders,
+                pinned_folders,
+                folder_order,
                 view_mode,
                 true,
                 false,
@@ -894,6 +909,8 @@ pub(crate) fn render_pages_and_tags_tree(
     selected_canvas_path: Option<&str>,
     active_tag: Option<&str>,
     expanded_folders: &HashSet<String>,
+    pinned_folders: &[String],
+    folder_order: &[String],
     view_mode: ViewMode,
     show_tags_cloud: bool,
     compact_touch: bool,
@@ -1084,12 +1101,73 @@ pub(crate) fn render_pages_and_tags_tree(
                 };
             }
 
+            if !expanded_folders.is_empty() {
+                let (cr, cresp) = ui.allocate_exact_size(vec2(18.0, 18.0), Sense::click());
+                if cresp.hovered() {
+                    ui.painter()
+                        .rect_filled(cr, Rounding::same(4.0), p.bg_hover);
+                }
+                let cc = cr.center();
+                let col = if cresp.hovered() {
+                    p.text_primary
+                } else {
+                    p.text_muted
+                };
+                // Two inward chevrons ("collapse all")
+                ui.painter().line_segment(
+                    [pos2(cc.x - 3.5, cc.y - 3.5), pos2(cc.x, cc.y - 0.8)],
+                    Stroke::new(1.3_f32, col),
+                );
+                ui.painter().line_segment(
+                    [pos2(cc.x + 3.5, cc.y - 3.5), pos2(cc.x, cc.y - 0.8)],
+                    Stroke::new(1.3_f32, col),
+                );
+                ui.painter().line_segment(
+                    [pos2(cc.x - 3.5, cc.y + 3.5), pos2(cc.x, cc.y + 0.8)],
+                    Stroke::new(1.3_f32, col),
+                );
+                ui.painter().line_segment(
+                    [pos2(cc.x + 3.5, cc.y + 3.5), pos2(cc.x, cc.y + 0.8)],
+                    Stroke::new(1.3_f32, col),
+                );
+                let col_tip = if lang == Lang::Ru {
+                    "Свернуть все папки"
+                } else {
+                    "Collapse all folders"
+                };
+                if cresp
+                    .on_hover_cursor(CursorIcon::PointingHand)
+                    .on_hover_text(col_tip)
+                    .clicked()
+                {
+                    actions.push(UiAction::CollapseAllFolders);
+                }
+            }
+
             ui.label(
                 egui::RichText::new(filtered_count.to_string())
                     .font(font_mono(11.0))
                     .color(p.text_muted),
             )
             .on_hover_text(&counts_breakdown);
+
+            let (pr, presp) = ui.allocate_exact_size(vec2(18.0, 18.0), Sense::click());
+            if presp.hovered() {
+                ui.painter().rect_filled(pr, Rounding::same(4.0), p.bg_hover);
+            }
+            draw_icon(
+                ui.painter(),
+                Rect::from_center_size(pr.center(), vec2(12.0, 12.0)),
+                Icon::Plus,
+                if presp.hovered() { p.accent_text } else { p.text_secondary },
+            );
+            if presp
+                .on_hover_cursor(CursorIcon::PointingHand)
+                .on_hover_text(s.action_new_note)
+                .clicked()
+            {
+                actions.push(UiAction::OpenCreateModal(Some(CreateItemKind::Note)));
+            }
         });
     });
 
@@ -1149,6 +1227,8 @@ pub(crate) fn render_pages_and_tags_tree(
         selected_canvas_path,
         view_mode,
         expanded_folders,
+        pinned_folders,
+        folder_order,
         *pages_ui.sort,
         compact_touch,
         actions,
@@ -1195,9 +1275,30 @@ pub(crate) fn render_pages_and_tags_tree(
                         actions.push(UiAction::SetTagFilter(Some(tag.clone())));
                     }
                 }
+                let tag_ctx = tag.clone();
+                resp.context_menu(|ui| {
+                    if context_menu_row(ui, p, Icon::Sparkles, s.tag_rename_ctx, false).clicked() {
+                        actions.push(UiAction::OpenTagRename(Some(tag_ctx)));
+                        ui.close_menu();
+                    }
+                });
             }
         });
     }
+}
+
+#[derive(Clone, Debug)]
+struct FolderDragState {
+    parent_prefix: String,
+    folder_path: String,
+    label: String,
+    is_daily_root: bool,
+    is_pinned: bool,
+    start_pos: egui::Pos2,
+    grab_offset_y: f32,
+    row_rect: Rect,
+    target_in_group: usize,
+    active: bool,
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1213,6 +1314,8 @@ fn render_folder_node(
     selected_canvas_path: Option<&str>,
     view_mode: ViewMode,
     expanded_folders: &HashSet<String>,
+    pinned_folders: &[String],
+    folder_order: &[String],
     pages_sort: PagesSortOrder,
     compact_touch: bool,
     actions: &mut Vec<UiAction>,
@@ -1235,9 +1338,65 @@ fn render_folder_node(
         });
     } else if in_daily_notes || is_diary_boards_lvl {
         subfolders.reverse();
+    } else {
+        subfolders.sort_by(|(a, _), (b, _)| {
+            let pa = if prefix.is_empty() {
+                (*a).clone()
+            } else {
+                format!("{prefix}/{a}")
+            };
+            let pb = if prefix.is_empty() {
+                (*b).clone()
+            } else {
+                format!("{prefix}/{b}")
+            };
+            let a_pin = pinned_folders.contains(&pa);
+            let b_pin = pinned_folders.contains(&pb);
+            let a_ord = folder_order.iter().position(|x| x == &pa).unwrap_or(usize::MAX);
+            let b_ord = folder_order.iter().position(|x| x == &pb).unwrap_or(usize::MAX);
+            b_pin
+                .cmp(&a_pin)
+                .then_with(|| a_ord.cmp(&b_ord))
+                .then_with(|| a.to_lowercase().cmp(&b.to_lowercase()))
+        });
     }
 
-    for (folder_name, child) in subfolders {
+    let folder_drag_id = egui::Id::new("krono_folder_drag");
+    let mut drag_state = ui
+        .ctx()
+        .data(|d| d.get_temp::<FolderDragState>(folder_drag_id));
+    let mut sibling_rects: Vec<(usize, String, bool, Rect)> = Vec::new();
+    let active_drag = drag_state
+        .as_ref()
+        .filter(|st| st.active && st.parent_prefix == prefix)
+        .cloned();
+    let src_group_pos = active_drag.as_ref().map(|st| {
+        subfolders
+            .iter()
+            .take_while(|(fname, _)| {
+                let fp = if prefix.is_empty() {
+                    (*fname).clone()
+                } else {
+                    format!("{prefix}/{fname}")
+                };
+                fp != st.folder_path
+            })
+            .filter(|(fname, _)| {
+                let fp = if prefix.is_empty() {
+                    (*fname).clone()
+                } else {
+                    format!("{prefix}/{fname}")
+                };
+                let is_inner = is_diary_root_lvl && fname.eq_ignore_ascii_case("boards")
+                    || in_daily_notes
+                    || is_diary_boards_lvl;
+                !is_inner && pinned_folders.contains(&fp) == st.is_pinned
+            })
+            .count()
+    });
+    let mut group_idx_counter = [0usize, 0usize];
+
+    for (sib_idx, (folder_name, child)) in subfolders.into_iter().enumerate() {
         let folder_path = if prefix.is_empty() {
             folder_name.clone()
         } else {
@@ -1246,6 +1405,16 @@ fn render_folder_node(
         let is_open = expanded_folders.contains(&folder_path);
         let is_daily_root = prefix.is_empty() && folder_name.eq_ignore_ascii_case("daily");
         let is_daily_boards = is_diary_root_lvl && folder_name.eq_ignore_ascii_case("boards");
+        let is_daily_inner = is_daily_boards || in_daily_notes || is_diary_boards_lvl;
+        let is_pinned = !is_daily_inner && pinned_folders.contains(&folder_path);
+        let my_g_idx = if !is_daily_inner {
+            let slot = usize::from(is_pinned);
+            let cur = group_idx_counter[slot];
+            group_idx_counter[slot] += 1;
+            cur
+        } else {
+            0
+        };
         let display_folder_name = if is_daily_root {
             s.diary_section.to_string()
         } else if is_daily_boards {
@@ -1265,111 +1434,191 @@ fn render_folder_node(
         };
 
         let w = ui.available_width().max(60.0);
-        let (rect, resp) = ui.allocate_exact_size(vec2(w, folder_h), Sense::click());
-        let hov = anim_bool_eased(ui.ctx(), resp.id.with("hov"), resp.hovered(), 0.10);
-        if hov > 0.01 {
-            ui.painter().rect_filled(
-                rect,
-                Rounding::same(6.0),
-                with_alpha(p.bg_hover, hov),
-            );
+        let sense = if is_daily_inner || compact_touch {
+            Sense::click()
+        } else {
+            Sense::click_and_drag()
+        };
+        let (base_rect, resp) = ui.allocate_exact_size(vec2(w, folder_h), sense);
+        if !is_daily_inner {
+            sibling_rects.push((sib_idx, folder_path.clone(), is_pinned, base_rect));
+            if resp.drag_started() {
+                if let Some(pos) = ui.ctx().pointer_interact_pos() {
+                    drag_state = Some(FolderDragState {
+                        parent_prefix: prefix.to_string(),
+                        folder_path: folder_path.clone(),
+                        label: display_folder_name.clone(),
+                        is_daily_root,
+                        is_pinned,
+                        start_pos: pos,
+                        grab_offset_y: (pos.y - base_rect.top()).clamp(4.0, folder_h - 4.0),
+                        row_rect: base_rect,
+                        target_in_group: my_g_idx,
+                        active: false,
+                    });
+                }
+            }
         }
-        let chev_center = pos2(rect.left() + 8.0 + indent, rect.center().y);
+        let is_dragging_this = active_drag
+            .as_ref()
+            .is_some_and(|st| st.folder_path == folder_path);
+        let target_shift_y = if let (Some(st), Some(src_g)) = (&active_drag, src_group_pos) {
+            if !is_daily_inner && is_pinned == st.is_pinned && !is_dragging_this {
+                let shift_amt = folder_h + ui.spacing().item_spacing.y;
+                if st.target_in_group > src_g && my_g_idx > src_g && my_g_idx <= st.target_in_group {
+                    -shift_amt
+                } else if st.target_in_group < src_g && my_g_idx >= st.target_in_group && my_g_idx < src_g {
+                    shift_amt
+                } else {
+                    0.0
+                }
+            } else {
+                0.0
+            }
+        } else {
+            0.0
+        };
+        let shift_y = crate::ui::motion::anim_value_smooth(
+            ui.ctx(),
+            ui.make_persistent_id(("fld_shift_y", &folder_path)),
+            target_shift_y,
+            0.11,
+        );
+        let rect = base_rect.translate(vec2(0.0, shift_y));
+
         let open_t = anim_bool_eased(
             ui.ctx(),
             ui.make_persistent_id(("fld_open", &folder_path)),
             is_open,
             0.12,
         );
-        let angle = open_t * std::f32::consts::FRAC_PI_2;
-        let (sin_a, cos_a) = angle.sin_cos();
-        let rot_pt = |lx: f32, ly: f32| -> egui::Pos2 {
-            pos2(
-                chev_center.x + lx * cos_a - ly * sin_a,
-                chev_center.y + lx * sin_a + ly * cos_a,
-            )
-        };
-        let chev_col = lerp_color(p.text_muted, p.text_secondary, hov);
-        ui.painter().add(egui::Shape::line(
-            vec![rot_pt(-1.8, -3.2), rot_pt(1.8, 0.0), rot_pt(-1.8, 3.2)],
-            Stroke::new(1.4_f32, chev_col),
-        ));
-        let f_rect = Rect::from_center_size(
-            pos2(rect.left() + 23.0 + indent, rect.center().y),
-            vec2(14.0, 14.0),
-        );
-        let f_icon = if is_daily_root {
-            Icon::CalendarDays
-        } else if is_daily_boards {
-            Icon::Board
-        } else if open_t >= 0.45 {
-            Icon::FolderOpen
-        } else {
-            Icon::Folder
-        };
-        draw_icon(
-            ui.painter(),
-            f_rect,
-            f_icon,
-            if is_daily_root || is_daily_boards {
-                p.accent_text
+        if !is_dragging_this {
+            let hov = anim_bool_eased(ui.ctx(), resp.id.with("hov"), resp.hovered(), 0.10);
+            if hov > 0.01 {
+                ui.painter().rect_filled(
+                    rect,
+                    Rounding::same(6.0),
+                    with_alpha(p.bg_hover, hov),
+                );
+            }
+            let chev_center = pos2(rect.left() + 8.0 + indent, rect.center().y);
+            let angle = open_t * std::f32::consts::FRAC_PI_2;
+            let (sin_a, cos_a) = angle.sin_cos();
+            let rot_pt = |lx: f32, ly: f32| -> egui::Pos2 {
+                pos2(
+                    chev_center.x + lx * cos_a - ly * sin_a,
+                    chev_center.y + lx * sin_a + ly * cos_a,
+                )
+            };
+            let chev_col = lerp_color(p.text_muted, p.text_secondary, hov);
+            ui.painter().add(egui::Shape::line(
+                vec![rot_pt(-1.8, -3.2), rot_pt(1.8, 0.0), rot_pt(-1.8, 3.2)],
+                Stroke::new(1.4_f32, chev_col),
+            ));
+            let f_rect = Rect::from_center_size(
+                pos2(rect.left() + 23.0 + indent, rect.center().y),
+                vec2(14.0, 14.0),
+            );
+            let f_icon = if is_daily_root {
+                Icon::CalendarDays
+            } else if is_daily_boards {
+                Icon::Board
+            } else if open_t >= 0.45 {
+                Icon::FolderOpen
             } else {
-                p.text_secondary
-            },
-        );
-        let txt_col = lerp_color(p.text_secondary, p.text_primary, hov);
-        let g = ui
-            .painter()
-            .layout_no_wrap(display_folder_name, font_medium(12.5), txt_col);
-        ui.painter().galley(
-            pos2(rect.left() + 35.0 + indent, rect.center().y - g.size().y * 0.5),
-            g,
-            txt_col,
-        );
-        let resp = resp.on_hover_cursor(CursorIcon::PointingHand);
+                Icon::Folder
+            };
+            draw_icon(
+                ui.painter(),
+                f_rect,
+                f_icon,
+                if is_daily_root || is_daily_boards {
+                    p.accent_text
+                } else {
+                    p.text_secondary
+                },
+            );
+            let txt_col = lerp_color(p.text_secondary, p.text_primary, hov);
+            let g = ui
+                .painter()
+                .layout_no_wrap(display_folder_name, font_medium(12.5), txt_col);
+            ui.painter().galley(
+                pos2(rect.left() + 35.0 + indent, rect.center().y - g.size().y * 0.5),
+                g,
+                txt_col,
+            );
+            if is_pinned {
+                draw_icon(
+                    ui.painter(),
+                    Rect::from_center_size(pos2(rect.right() - 10.0, rect.center().y), vec2(11.0, 11.0)),
+                    Icon::Pin,
+                    p.accent_text,
+                );
+            }
+        }
+        let resp = resp.on_hover_cursor(if is_dragging_this {
+            CursorIcon::Grabbing
+        } else {
+            CursorIcon::PointingHand
+        });
         if resp.clicked() {
             actions.push(UiAction::ToggleFolder(folder_path.clone()));
         }
-        if !is_daily_root && !is_daily_boards && !in_daily_notes && !is_diary_boards_lvl {
+        if !is_daily_inner {
             let folder_ctx = folder_path.clone();
             resp.context_menu(|ui| {
                 ui.set_min_width(172.0);
-                if context_menu_row(ui, p, Icon::Document, s.folder_ctx_new_note, false).clicked() {
-                    actions.push(UiAction::CreateInFolder {
-                        folder: folder_ctx.clone(),
-                        kind: CreateItemKind::Note,
-                    });
+                let pin_lbl = if is_pinned {
+                    s.folder_ctx_unpin
+                } else {
+                    s.folder_ctx_pin
+                };
+                let pin_ic = if is_pinned { Icon::PinOff } else { Icon::Pin };
+                if context_menu_row(ui, p, pin_ic, pin_lbl, false).clicked() {
+                    actions.push(UiAction::TogglePinFolder(folder_ctx.clone()));
                     ui.close_menu();
                 }
-                if context_menu_row(ui, p, Icon::Board, s.folder_ctx_new_board, false).clicked() {
-                    actions.push(UiAction::CreateInFolder {
-                        folder: folder_ctx.clone(),
-                        kind: CreateItemKind::Board,
-                    });
-                    ui.close_menu();
-                }
-                if context_menu_row(ui, p, Icon::Table, s.folder_ctx_new_table, false).clicked() {
-                    actions.push(UiAction::CreateInFolder {
-                        folder: folder_ctx.clone(),
-                        kind: CreateItemKind::Table,
-                    });
-                    ui.close_menu();
-                }
-                if context_menu_row(ui, p, Icon::Canvas, s.folder_ctx_new_canvas, false).clicked() {
-                    actions.push(UiAction::CreateInFolder {
-                        folder: folder_ctx.clone(),
-                        kind: CreateItemKind::Canvas,
-                    });
-                    ui.close_menu();
-                }
-                ui.add_space(3.0);
-                hairline_h(ui, p);
-                ui.add_space(3.0);
-                if context_menu_row(ui, p, Icon::Folder, s.folder_ctx_new_subfolder, false)
-                    .clicked()
-                {
-                    actions.push(UiAction::StartCreateSubfolder(folder_ctx));
-                    ui.close_menu();
+                if !is_daily_root {
+                    ui.add_space(3.0);
+                    hairline_h(ui, p);
+                    ui.add_space(3.0);
+                    if context_menu_row(ui, p, Icon::Document, s.folder_ctx_new_note, false).clicked() {
+                        actions.push(UiAction::CreateInFolder {
+                            folder: folder_ctx.clone(),
+                            kind: CreateItemKind::Note,
+                        });
+                        ui.close_menu();
+                    }
+                    if context_menu_row(ui, p, Icon::Board, s.folder_ctx_new_board, false).clicked() {
+                        actions.push(UiAction::CreateInFolder {
+                            folder: folder_ctx.clone(),
+                            kind: CreateItemKind::Board,
+                        });
+                        ui.close_menu();
+                    }
+                    if context_menu_row(ui, p, Icon::Table, s.folder_ctx_new_table, false).clicked() {
+                        actions.push(UiAction::CreateInFolder {
+                            folder: folder_ctx.clone(),
+                            kind: CreateItemKind::Table,
+                        });
+                        ui.close_menu();
+                    }
+                    if context_menu_row(ui, p, Icon::Canvas, s.folder_ctx_new_canvas, false).clicked() {
+                        actions.push(UiAction::CreateInFolder {
+                            folder: folder_ctx.clone(),
+                            kind: CreateItemKind::Canvas,
+                        });
+                        ui.close_menu();
+                    }
+                    ui.add_space(3.0);
+                    hairline_h(ui, p);
+                    ui.add_space(3.0);
+                    if context_menu_row(ui, p, Icon::Folder, s.folder_ctx_new_subfolder, false)
+                        .clicked()
+                    {
+                        actions.push(UiAction::StartCreateSubfolder(folder_ctx));
+                        ui.close_menu();
+                    }
                 }
             });
         }
@@ -1392,6 +1641,8 @@ fn render_folder_node(
                         selected_canvas_path,
                         view_mode,
                         expanded_folders,
+                        pinned_folders,
+                        folder_order,
                         pages_sort,
                         compact_touch,
                         actions,
@@ -1443,6 +1694,8 @@ fn render_folder_node(
                         selected_canvas_path,
                         view_mode,
                         expanded_folders,
+                        pinned_folders,
+                        folder_order,
                         pages_sort,
                         compact_touch,
                         actions,
@@ -1461,6 +1714,136 @@ fn render_folder_node(
                         );
                     }
                 }
+            }
+        }
+    }
+
+    if let Some(mut st) = drag_state.take() {
+        if st.parent_prefix == prefix && !sibling_rects.is_empty() {
+            let primary_down = ui.input(|i| i.pointer.primary_down());
+            let ptr_pos = ui
+                .ctx()
+                .pointer_interact_pos()
+                .or_else(|| ui.ctx().pointer_hover_pos());
+            if primary_down {
+                if let Some(pos) = ptr_pos {
+                    if !st.active && (pos - st.start_pos).length() >= 5.0 {
+                        st.active = true;
+                    }
+                    if st.active {
+                        ui.ctx().set_cursor_icon(CursorIcon::Grabbing);
+                        ui.ctx().request_repaint();
+                        let group: Vec<(usize, Rect)> = sibling_rects
+                            .iter()
+                            .filter(|&&(_, _, pin, _)| pin == st.is_pinned)
+                            .map(|&(i, _, _, r)| (i, r))
+                            .collect();
+                        if !group.is_empty() {
+                            let mut new_target = 0usize;
+                            for (g_idx, &(_, r)) in group.iter().enumerate() {
+                                let thresh = if g_idx < st.target_in_group {
+                                    r.center().y - 8.0
+                                } else {
+                                    r.center().y + 8.0
+                                };
+                                if pos.y >= thresh {
+                                    new_target = g_idx + 1;
+                                }
+                            }
+                            st.target_in_group = new_target.min(group.len().saturating_sub(1));
+
+                            // Target slot placeholder in the vacated gap
+                            if let Some((_, target_r)) = group.get(st.target_in_group) {
+                                let ph_y = crate::ui::motion::anim_value_smooth(
+                                    ui.ctx(),
+                                    egui::Id::new("fld_ph_y"),
+                                    target_r.top(),
+                                    0.11,
+                                );
+                                let ph_r = Rect::from_min_size(
+                                    pos2(st.row_rect.left(), ph_y),
+                                    st.row_rect.size(),
+                                );
+                                ui.painter().rect_filled(
+                                    ph_r,
+                                    Rounding::same(6.0),
+                                    with_alpha(p.accent, 0.10),
+                                );
+                                ui.painter().rect_stroke(
+                                    ph_r,
+                                    Rounding::same(6.0),
+                                    Stroke::new(1.0_f32, with_alpha(p.accent, 0.45)),
+                                );
+                            }
+
+                            // Floating lifted ghost folder row under cursor
+                            let min_y = group.first().map(|(_, r)| r.top()).unwrap_or(st.row_rect.top());
+                            let max_y = group.last().map(|(_, r)| r.top()).unwrap_or(st.row_rect.top());
+                            let ghost_y = (pos.y - st.grab_offset_y).clamp(min_y - 4.0, max_y + 4.0);
+                            let ghost_r = Rect::from_min_size(
+                                pos2(st.row_rect.left() + 2.0, ghost_y),
+                                st.row_rect.size(),
+                            );
+                            let gp = ui.ctx().layer_painter(egui::LayerId::new(
+                                egui::Order::Tooltip,
+                                egui::Id::new("krono_folder_drag_ghost"),
+                            ));
+                            gp.rect_filled(
+                                ghost_r.translate(vec2(0.0, 3.0)),
+                                Rounding::same(7.0),
+                                Color32::from_rgba_unmultiplied(0, 0, 0, 55),
+                            );
+                            gp.rect_filled(ghost_r, Rounding::same(6.0), p.bg_elevated);
+                            gp.rect_stroke(
+                                ghost_r,
+                                Rounding::same(6.0),
+                                Stroke::new(1.2_f32, p.accent),
+                            );
+                            draw_icon(
+                                &gp,
+                                Rect::from_center_size(
+                                    pos2(ghost_r.left() + 23.0 + indent, ghost_r.center().y),
+                                    vec2(14.0, 14.0),
+                                ),
+                                if st.is_daily_root {
+                                    Icon::CalendarDays
+                                } else {
+                                    Icon::Folder
+                                },
+                                p.accent_text,
+                            );
+                            let gg = ui.ctx().fonts(|f| {
+                                f.layout_no_wrap(st.label.clone(), font_medium(12.5), p.text_primary)
+                            });
+                            gp.galley(
+                                pos2(
+                                    ghost_r.left() + 35.0 + indent,
+                                    ghost_r.center().y - gg.size().y * 0.5,
+                                ),
+                                gg,
+                                p.text_primary,
+                            );
+                        }
+                    }
+                }
+                ui.ctx().data_mut(|d| d.insert_temp(folder_drag_id, st));
+            } else {
+                if st.active {
+                    let group: Vec<(usize, Rect)> = sibling_rects
+                        .iter()
+                        .filter(|&&(_, _, pin, _)| pin == st.is_pinned)
+                        .map(|&(i, _, _, r)| (i, r))
+                        .collect();
+                    if let Some(&(global_to_index, _)) = group.get(st.target_in_group) {
+                        actions.push(UiAction::ReorderFolder {
+                            parent_prefix: st.parent_prefix,
+                            folder_path: st.folder_path,
+                            to_index: global_to_index,
+                        });
+                    }
+                }
+                ui.ctx()
+                    .data_mut(|d| d.remove::<FolderDragState>(folder_drag_id));
             }
         }
     }
@@ -1549,6 +1932,19 @@ fn render_entry_row_with_menu(
         if context_menu_row(ui, p, entry.icon(false), s.open_btn, false).clicked() {
             entry.push_open(actions);
             ui.close_menu();
+        }
+        let split_target = match entry {
+            TreeEntry::Note(n) => Some(crate::ui::NavTarget::Note(n.path.clone())),
+            TreeEntry::Collection(c) if c.kind != VaultFileKind::Canvas => {
+                Some(crate::ui::NavTarget::Collection(c.path.clone()))
+            }
+            _ => None,
+        };
+        if let Some(st) = split_target {
+            if context_menu_row(ui, p, Icon::Split, s.sidebar_ctx_open_right, false).clicked() {
+                actions.push(UiAction::OpenInSplit(st));
+                ui.close_menu();
+            }
         }
         let pinned = entry.pinned();
         if context_menu_row(

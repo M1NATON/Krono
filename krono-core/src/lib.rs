@@ -1,3 +1,4 @@
+pub mod bulk_edit;
 pub mod canvas;
 pub mod capture;
 pub mod collection;
@@ -6,6 +7,7 @@ pub mod hash;
 pub mod markdown;
 pub mod note;
 pub mod path;
+pub mod search;
 pub mod smart_text;
 pub mod sync_plan;
 pub mod tasks;

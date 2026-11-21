@@ -404,6 +404,103 @@ fn render_tab_scroll(
                                 }
                             },
                         );
+
+                        ui.add_space(12.0);
+                        hairline_h(ui, p);
+                        ui.add_space(12.0);
+
+                        setting_row(
+                            ui,
+                            p,
+                            s.settings_ui_zoom,
+                            s.settings_ui_zoom_desc,
+                            210.0,
+                            |ui| {
+                                ui.horizontal(|ui| {
+                                    if secondary_button(ui, p, None, "−").clicked() {
+                                        cfg.ui_zoom = crate::config::AppConfig::clamp_ui_zoom(
+                                            cfg.ui_zoom - 0.10,
+                                        );
+                                        actions.push(UiAction::ConfigChanged);
+                                    }
+                                    let pct = (cfg.ui_zoom * 100.0).round() as i32;
+                                    ui.label(
+                                        egui::RichText::new(format!("{pct}%"))
+                                            .font(font_mono(12.5))
+                                            .color(p.text_primary),
+                                    );
+                                    if secondary_button(ui, p, None, "+").clicked() {
+                                        cfg.ui_zoom = crate::config::AppConfig::clamp_ui_zoom(
+                                            cfg.ui_zoom + 0.10,
+                                        );
+                                        actions.push(UiAction::ConfigChanged);
+                                    }
+                                    if secondary_button(ui, p, None, s.settings_ui_zoom_reset).clicked() {
+                                        cfg.ui_zoom = 1.0;
+                                        actions.push(UiAction::ConfigChanged);
+                                    }
+                                });
+                            },
+                        );
+
+                        ui.add_space(12.0);
+                        hairline_h(ui, p);
+                        ui.add_space(12.0);
+
+                        setting_row(
+                            ui,
+                            p,
+                            s.settings_custom_titlebar,
+                            s.settings_custom_titlebar_desc,
+                            56.0,
+                            |ui| {
+                                if toggle_switch(
+                                    ui,
+                                    p,
+                                    "sw_custom_titlebar",
+                                    &mut cfg.custom_titlebar,
+                                ) {
+                                    actions.push(UiAction::ConfigChanged);
+                                }
+                            },
+                        );
+                    });
+
+                    ui.add_space(14.0);
+
+                    settings_card(ui, p, |ui| {
+                        let nav_hdr = if lang == Lang::Ru {
+                            "Пункты боковой панели"
+                        } else {
+                            "Sidebar Navigation Items"
+                        };
+                        ui.label(
+                            egui::RichText::new(nav_hdr)
+                                .font(font_medium(13.5))
+                                .color(p.text_primary),
+                        );
+                        ui.add_space(8.0);
+                        for (id, lbl, val) in [
+                            ("sw_nav_tasks", s.nav_tasks, &mut cfg.nav_show_tasks),
+                            ("sw_nav_table", s.nav_table, &mut cfg.nav_show_table),
+                            ("sw_nav_board", s.nav_board, &mut cfg.nav_show_board),
+                            ("sw_nav_graph", s.nav_graph, &mut cfg.nav_show_graph),
+                            ("sw_nav_overview", s.nav_overview, &mut cfg.nav_show_overview),
+                        ] {
+                            ui.horizontal(|ui| {
+                                ui.label(
+                                    egui::RichText::new(lbl)
+                                        .font(font_body(13.0))
+                                        .color(p.text_secondary),
+                                );
+                                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                                    if toggle_switch(ui, p, id, val) {
+                                        actions.push(UiAction::ConfigChanged);
+                                    }
+                                });
+                            });
+                            ui.add_space(4.0);
+                        }
                     });
                 }
 
@@ -788,6 +885,38 @@ fn render_tab_scroll(
                                 ) {
                                     actions.push(UiAction::ConfigChanged);
                                 }
+                            },
+                        );
+                        ui.add_space(12.0);
+                        hairline_h(ui, p);
+                        ui.add_space(12.0);
+
+                        setting_row(
+                            ui,
+                            p,
+                            s.settings_zen_goal,
+                            s.settings_zen_goal_desc,
+                            210.0,
+                            |ui| {
+                                ui.horizontal(|ui| {
+                                    if ui
+                                        .add(
+                                            egui::DragValue::new(&mut cfg.zen_daily_word_goal)
+                                                .range(0..=20000)
+                                                .speed(25.0),
+                                        )
+                                        .changed()
+                                    {
+                                        actions.push(UiAction::ConfigChanged);
+                                    }
+                                    for preset in [300usize, 500, 1000] {
+                                        let label = format!("{preset}");
+                                        if ui.small_button(&label).clicked() {
+                                            cfg.zen_daily_word_goal = preset;
+                                            actions.push(UiAction::ConfigChanged);
+                                        }
+                                    }
+                                });
                             },
                         );
                         ui.add_space(12.0);

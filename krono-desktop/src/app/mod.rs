@@ -1,4 +1,5 @@
 mod actions;
+mod bulk;
 mod canvas;
 mod capture;
 mod collections;
@@ -6,6 +7,7 @@ pub(crate) mod english;
 mod frame;
 mod notes;
 mod shortcuts;
+mod split;
 mod sync;
 mod tasks;
 mod vault_ops;
@@ -31,6 +33,7 @@ use crate::sync::{
 };
 use crate::tray::SystemTrayHandle;
 use crate::ui::{
+    bulk_modals::{GlobalReplaceState, TagRenameState},
     canvas_view::CanvasEditorState,
     collection_view::CollectionEditorState,
     components::{render_toasts, Toast, ToastKind},
@@ -226,6 +229,15 @@ pub struct KronoApp {
     pub(crate) scratchpad: ScratchpadState,
     tray: SystemTrayHandle,
 
+    // Stage 5.1 bulk edit modals
+    pub(crate) global_replace: GlobalReplaceState,
+    pub(crate) tag_rename: TagRenameState,
+
+    // Stage 5.2 / 5.3 shell state
+    pub(crate) zen_mode: bool,
+    pub(crate) applied_custom_titlebar: bool,
+    pub(crate) split: split::SplitViewState,
+
     // TMDB background channel
     pub(crate) tmdb_tx: mpsc::Sender<TmdbEvent>,
     pub(crate) tmdb_rx: mpsc::Receiver<TmdbEvent>,
@@ -237,6 +249,9 @@ pub struct KronoApp {
 impl KronoApp {
     pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
         let (mut config, config_existed) = AppConfig::load_with_existed();
+        config.ui_zoom = AppConfig::clamp_ui_zoom(config.ui_zoom);
+        cc.egui_ctx.options_mut(|o| o.zoom_with_keyboard = false);
+        cc.egui_ctx.set_zoom_factor(config.ui_zoom);
         setup_fonts(&cc.egui_ctx);
         let palette = ThemePalette::for_preset(config.theme, config.accent);
         apply_palette(&cc.egui_ctx, &palette);
@@ -337,6 +352,7 @@ impl KronoApp {
         let cover_cache = CoverCache::new(config.vault_dir.clone());
         let spellchecker = crate::spellcheck::SpellChecker::new(&config.vault_dir);
         let (tmdb_tx, tmdb_rx) = mpsc::channel::<TmdbEvent>();
+        let applied_custom_titlebar = config.custom_titlebar;
         let mut app = Self {
             config,
             palette_from: palette,
@@ -460,6 +476,11 @@ impl KronoApp {
             update_status_msg: None,
             scratchpad: ScratchpadState::default(),
             tray,
+            global_replace: GlobalReplaceState::default(),
+            tag_rename: TagRenameState::default(),
+            zen_mode: false,
+            applied_custom_titlebar,
+            split: split::SplitViewState::default(),
             tmdb_tx,
             tmdb_rx,
             #[cfg(debug_assertions)]
@@ -467,6 +488,7 @@ impl KronoApp {
         };
 
         app.reload_index_caches();
+        app.sync_pinned_tabs_into_recent();
         if let Some(err) = startup_migration_err {
             app.push_toast(err, ToastKind::Error);
         }
@@ -584,6 +606,7 @@ impl KronoApp {
         if self.active_canvas.dirty {
             self.save_current_canvas();
         }
+        self.save_split_pane();
     }
 
 
@@ -615,6 +638,13 @@ impl eframe::App for KronoApp {
         if self.first_run_open {
             let palette = self.palette;
             let lang = self.config.language;
+            crate::ui::titlebar::render_custom_titlebar(
+                ctx,
+                &palette,
+                lang,
+                "",
+                self.config.custom_titlebar,
+            );
             let mut first_run_action = None;
             egui::CentralPanel::default()
                 .frame(egui::Frame::none().fill(palette.bg_canvas))
@@ -679,6 +709,17 @@ impl eframe::App for KronoApp {
             if let Some(t) = self.active_canvas.last_edit_at {
                 if t.elapsed() >= Duration::from_millis(1200) {
                     self.save_current_canvas();
+                } else {
+                    ctx.request_repaint_after(Duration::from_millis(350));
+                }
+            }
+        }
+        if self.config.auto_save_enabled
+            && self.split.right.as_ref().is_some_and(|r| r.is_dirty())
+        {
+            if let Some(t) = self.split.right.as_ref().and_then(|r| r.last_edit_at()) {
+                if t.elapsed() >= Duration::from_millis(1200) {
+                    self.save_split_pane();
                 } else {
                     ctx.request_repaint_after(Duration::from_millis(350));
                 }

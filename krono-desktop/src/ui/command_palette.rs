@@ -174,7 +174,29 @@ pub fn render_command_palette(
             label: s.action_open_settings,
             action: UiAction::OpenSettings(SettingsTab::Appearance),
         },
+        PaletteCommand {
+            icon: Icon::Search,
+            label: s.action_global_replace,
+            action: UiAction::OpenGlobalReplace,
+        },
+        PaletteCommand {
+            icon: Icon::Sparkles,
+            label: s.action_rename_tag,
+            action: UiAction::OpenTagRename(None),
+        },
+        PaletteCommand {
+            icon: Icon::Maximize,
+            label: s.action_toggle_zen,
+            action: UiAction::ToggleZenMode,
+        },
+        PaletteCommand {
+            icon: Icon::Split,
+            label: s.action_toggle_split,
+            action: UiAction::ToggleSplitRight,
+        },
     ];
+
+    let parsed_query = krono_core::search::parse_search_query(query);
 
     let q_lower = query.trim().to_lowercase();
     let matching_cmds: Vec<PaletteCommand> = all_commands
@@ -231,6 +253,7 @@ pub fn render_command_palette(
                     egui::Frame::none()
                         .inner_margin(Margin::symmetric(14.0, 12.0))
                         .show(ui, |ui| {
+                            let mut palette_input_id: Option<egui::Id> = None;
                             ui.horizontal(|ui| {
                                 let (ir, _) =
                                     ui.allocate_exact_size(vec2(16.0, 18.0), Sense::hover());
@@ -247,6 +270,7 @@ pub fn render_command_palette(
                                         .font(font_body(15.0))
                                         .desired_width(ui.available_width() - 44.0),
                                 );
+                                palette_input_id = Some(input_resp.id);
                                 focus_once(
                                     ui.ctx(),
                                     egui::Id::new("palette_foc_gate"),
@@ -263,6 +287,39 @@ pub fn render_command_palette(
                                         keycap_badge(ui, p, "ESC");
                                     },
                                 );
+                            });
+
+                            ui.add_space(6.0);
+                            ui.horizontal(|ui| {
+                                ui.spacing_mut().item_spacing.x = 5.0;
+                                ui.label(
+                                    egui::RichText::new(s.palette_ops_hint)
+                                        .font(font_body(11.0))
+                                        .color(p.text_muted),
+                                );
+                                for op in ["tag:", "status:", "path:"] {
+                                    let chip = ui.add(
+                                        egui::Button::new(
+                                            egui::RichText::new(op)
+                                                .font(font_mono(11.0))
+                                                .color(p.accent_text),
+                                        )
+                                        .fill(with_alpha(p.accent, 0.10))
+                                        .rounding(Rounding::same(5.0))
+                                        .min_size(vec2(0.0, 18.0)),
+                                    );
+                                    if chip.on_hover_cursor(CursorIcon::PointingHand).clicked() {
+                                        if !query.is_empty() && !query.ends_with(char::is_whitespace) {
+                                            query.push(' ');
+                                        }
+                                        query.push_str(op);
+                                        query_changed = true;
+                                        *selected_idx = 0;
+                                        if let Some(id) = palette_input_id {
+                                            ctx.memory_mut(|m| m.request_focus(id));
+                                        }
+                                    }
+                                }
                             });
                         });
 
@@ -500,15 +557,32 @@ pub fn render_command_palette(
                                                     );
                                                 }
                                                 if !hit.snippet.is_empty() {
-                                                    let mut sjob =
-                                                        egui::text::LayoutJob::single_section(
-                                                            hit.snippet.clone(),
-                                                            egui::TextFormat {
-                                                                font_id: font_body(11.5),
-                                                                color: p.text_secondary,
-                                                                ..Default::default()
+                                                    let mut sjob = egui::text::LayoutJob::default();
+                                                    let normal_fmt = egui::TextFormat {
+                                                        font_id: font_body(11.5),
+                                                        color: p.text_secondary,
+                                                        ..Default::default()
+                                                    };
+                                                    let hl_fmt = egui::TextFormat {
+                                                        font_id: font_medium(11.5),
+                                                        color: p.accent_text,
+                                                        background: with_alpha(p.accent, 0.18),
+                                                        ..Default::default()
+                                                    };
+                                                    for part in krono_core::search::highlight_snippet(
+                                                        &hit.snippet,
+                                                        &parsed_query.terms,
+                                                    ) {
+                                                        sjob.append(
+                                                            &part.text,
+                                                            0.0,
+                                                            if part.highlighted {
+                                                                hl_fmt.clone()
+                                                            } else {
+                                                                normal_fmt.clone()
                                                             },
                                                         );
+                                                    }
                                                     sjob.wrap = egui::text::TextWrapping {
                                                         max_width: (rect.width() - 48.0).max(40.0),
                                                         max_rows: 1,

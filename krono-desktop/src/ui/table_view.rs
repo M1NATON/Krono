@@ -576,15 +576,26 @@ fn render_desktop_table(
             let avail_w = (ui.available_width() - 28.0).max(460.0);
             let show_path = avail_w >= 680.0;
             let col_del = 32.0;
-            let col_name = col_widths.name.clamp(120.0, 560.0);
+            let base_name = col_widths.name.clamp(120.0, 560.0);
             let col_status = col_widths.status.clamp(100.0, 320.0);
-            let col_tags = col_widths.tags.clamp(90.0, 420.0);
-            let col_path = if show_path {
+            let base_tags = col_widths.tags.clamp(90.0, 420.0);
+            let base_path = if show_path {
                 col_widths.path.clamp(90.0, 480.0)
             } else {
                 0.0
             };
             let col_mod = col_widths.modified.clamp(84.0, 240.0);
+            let base_sum = base_name + col_status + base_tags + base_path + col_mod + col_del + 16.0;
+            let extra = (avail_w - base_sum).max(0.0);
+            let (col_name, col_tags, col_path) = if show_path {
+                (
+                    base_name + extra * 0.50,
+                    base_tags + extra * 0.25,
+                    base_path + extra * 0.25,
+                )
+            } else {
+                (base_name + extra * 0.65, base_tags + extra * 0.35, 0.0)
+            };
 
             egui::Frame::none()
                 .fill(p.bg_sidebar)

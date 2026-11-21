@@ -8,6 +8,8 @@ impl KronoApp {
         let editor_focused = ctx.memory(|m| {
             m.has_focus(egui::Id::new("krono_md_editor_main"))
                 || m.has_focus(egui::Id::new("krono_md_editor_split"))
+                || m.has_focus(egui::Id::new("krono_md_editor_right_main"))
+                || m.has_focus(egui::Id::new("krono_md_editor_right_split"))
         });
         let title_focused = ctx.memory(|m| m.has_focus(egui::Id::new("krono_doc_title_input")));
         let canvas_paste_ready = self.view_mode == ViewMode::Canvas
@@ -123,10 +125,16 @@ impl KronoApp {
                 }
             }
             if cmd && !shift && i.key_pressed(egui::Key::S) {
-                match self.view_mode {
-                    ViewMode::Collection => actions.push(UiAction::SaveCurrentCollection),
-                    ViewMode::Canvas => actions.push(UiAction::SaveCurrentCanvas),
-                    _ => actions.push(UiAction::SaveCurrentNote),
+                if self.split.right.is_some()
+                    && self.split.active_pane == super::split::SplitPane::Right
+                {
+                    self.save_split_pane();
+                } else {
+                    match self.view_mode {
+                        ViewMode::Collection => actions.push(UiAction::SaveCurrentCollection),
+                        ViewMode::Canvas => actions.push(UiAction::SaveCurrentCanvas),
+                        _ => actions.push(UiAction::SaveCurrentNote),
+                    }
                 }
             }
             if cmd && !shift && i.key_pressed(egui::Key::G) {
@@ -138,6 +146,9 @@ impl KronoApp {
             }
             if cmd && shift && i.key_pressed(egui::Key::S) {
                 actions.push(UiAction::SyncNow);
+            }
+            if cmd && shift && i.key_pressed(egui::Key::H) {
+                actions.push(UiAction::OpenGlobalReplace);
             }
             let canvas_duplicating = self.view_mode == ViewMode::Canvas
                 && !self.active_canvas.selected_node_ids_vec().is_empty()
@@ -168,13 +179,29 @@ impl KronoApp {
                     actions.push(UiAction::OpenSettings(self.settings_tab));
                 }
             }
+            if cmd && !shift && (i.key_pressed(egui::Key::Plus) || i.key_pressed(egui::Key::Equals)) {
+                actions.push(UiAction::AdjustUiZoom(0.10));
+            }
+            if cmd && !shift && i.key_pressed(egui::Key::Minus) {
+                actions.push(UiAction::AdjustUiZoom(-0.10));
+            }
+            if cmd && !shift && i.key_pressed(egui::Key::Num0) {
+                actions.push(UiAction::ResetUiZoom);
+            }
+            if i.key_pressed(egui::Key::F11) || (cmd && shift && i.key_pressed(egui::Key::Z)) {
+                actions.push(UiAction::ToggleZenMode);
+            }
             if !self.palette_open
                 && !self.create_modal.open
+                && !self.global_replace.open
+                && !self.tag_rename.open
                 && self.rename_target.is_none()
                 && self.delete_target.is_none()
                 && i.key_pressed(egui::Key::Escape)
             {
-                if self.drawer_sidebar_open || self.drawer_inspector_open {
+                if self.zen_mode {
+                    self.zen_mode = false;
+                } else if self.drawer_sidebar_open || self.drawer_inspector_open {
                     self.drawer_sidebar_open = false;
                     self.drawer_inspector_open = false;
                 } else if self.view_mode == ViewMode::Settings {

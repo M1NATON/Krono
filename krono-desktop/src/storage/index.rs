@@ -956,7 +956,8 @@ impl VaultIndex {
     }
 
     pub fn search(&self, raw_query: &str) -> Result<Vec<SearchHit>, String> {
-        let Some(fts_query) = build_fts_query(raw_query) else {
+        let parsed = krono_core::search::parse_search_query(raw_query);
+        if parsed.is_empty() {
             let mut combined: Vec<(bool, i64, SearchHit)> = Vec::new();
             for meta in self.list_notes()? {
                 combined.push((
@@ -988,6 +989,121 @@ impl VaultIndex {
                     .then_with(|| a.2.title.to_lowercase().cmp(&b.2.title.to_lowercase()))
             });
             return Ok(combined.into_iter().map(|(_, _, h)| h).collect());
+        }
+
+        let matches_filters = |path: &str, status_raw: &str, tags_raw: &str| -> bool {
+            if !parsed.paths.is_empty() {
+                let path_lower = path.to_lowercase();
+                if !parsed.paths.iter().all(|pf| path_lower.contains(pf.as_str())) {
+                    return false;
+                }
+            }
+            if !parsed.statuses.is_empty() {
+                let norm_status = status_raw.trim().to_lowercase().replace([' ', '-'], "_");
+                if norm_status.is_empty()
+                    || !parsed.statuses.iter().any(|sf| sf == &norm_status)
+                {
+                    return false;
+                }
+            }
+            if !parsed.tags.is_empty() {
+                let note_tags = parse_tags_value(tags_raw);
+                for req_tag in &parsed.tags {
+                    if !note_tags.iter().any(|nt| nt.eq_ignore_ascii_case(req_tag)) {
+                        return false;
+                    }
+                }
+            }
+            true
+        };
+
+        let fts_query_opt = if parsed.terms.is_empty() {
+            None
+        } else {
+            build_fts_query(&parsed.terms.join(" "))
+        };
+
+        let Some(fts_query) = fts_query_opt else {
+            let mut combined: Vec<(bool, i64, SearchHit)> = Vec::new();
+            let mut n_stmt = self
+                .conn
+                .prepare(
+                    "SELECT path, title, status, tags, excerpt, modified, pinned
+                     FROM notes",
+                )
+                .map_err(|e| e.to_string())?;
+            let n_rows = n_stmt
+                .query_map([], |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                        row.get::<_, String>(3)?,
+                        row.get::<_, String>(4)?,
+                        row.get::<_, i64>(5)?,
+                        row.get::<_, i64>(6).unwrap_or(0) != 0,
+                    ))
+                })
+                .map_err(|e| e.to_string())?;
+            for r in n_rows.flatten() {
+                if matches_filters(&r.0, &r.2, &r.3) {
+                    combined.push((
+                        r.6,
+                        r.5,
+                        SearchHit {
+                            path: r.0,
+                            title: r.1,
+                            kind: VaultFileKind::Markdown,
+                            snippet: r.4,
+                        },
+                    ));
+                }
+            }
+
+            if parsed.statuses.is_empty() {
+                let mut c_stmt = self
+                    .conn
+                    .prepare(
+                        "SELECT c.path, c.title, c.kind, c.excerpt, c.modified, c.pinned, COALESCE(f.tags, '')
+                         FROM collections c
+                         LEFT JOIN notes_fts f ON f.path = c.path",
+                    )
+                    .map_err(|e| e.to_string())?;
+                let c_rows = c_stmt
+                    .query_map([], |row| {
+                        Ok((
+                            row.get::<_, String>(0)?,
+                            row.get::<_, String>(1)?,
+                            row.get::<_, String>(2)?,
+                            row.get::<_, String>(3)?,
+                            row.get::<_, i64>(4)?,
+                            row.get::<_, i64>(5).unwrap_or(0) != 0,
+                            row.get::<_, String>(6)?,
+                        ))
+                    })
+                    .map_err(|e| e.to_string())?;
+                for r in c_rows.flatten() {
+                    if matches_filters(&r.0, "", &r.6) {
+                        combined.push((
+                            r.5,
+                            r.4,
+                            SearchHit {
+                                path: r.0,
+                                title: r.1,
+                                kind: db_str_to_kind(&r.2),
+                                snippet: r.3,
+                            },
+                        ));
+                    }
+                }
+            }
+
+            combined.sort_by(|a, b| {
+                b.0.cmp(&a.0)
+                    .then_with(|| b.1.cmp(&a.1))
+                    .then_with(|| a.2.title.to_lowercase().cmp(&b.2.title.to_lowercase()))
+            });
+            return Ok(combined.into_iter().take(50).map(|(_, _, h)| h).collect());
         };
 
         let mut stmt = self
@@ -998,13 +1114,15 @@ impl VaultIndex {
                         COALESCE(c.kind, 'markdown'),
                         COALESCE(n.excerpt, c.excerpt, ''),
                         snippet(notes_fts, 3, '', '', '…', 16),
+                        COALESCE(n.status, ''),
+                        COALESCE(n.tags, f.tags, ''),
                         bm25(notes_fts, 5.0, 2.5, 1.0) AS rank_score
                  FROM notes_fts f
                  LEFT JOIN notes n ON n.path = f.path
                  LEFT JOIN collections c ON c.path = f.path
                  WHERE notes_fts MATCH ?1 AND (n.path IS NOT NULL OR c.path IS NOT NULL)
                  ORDER BY rank_score
-                 LIMIT 50",
+                 LIMIT 200",
             )
             .map_err(|e| e.to_string())?;
 
@@ -1015,21 +1133,36 @@ impl VaultIndex {
                 let kind_str: String = row.get(2)?;
                 let fallback_excerpt: String = row.get(3)?;
                 let snippet: String = row.get(4)?;
+                let status_raw: String = row.get(5)?;
+                let tags_raw: String = row.get(6)?;
                 let final_snippet = if snippet.trim().is_empty() {
                     fallback_excerpt
                 } else {
                     snippet.split_whitespace().collect::<Vec<_>>().join(" ")
                 };
-                Ok(SearchHit {
-                    path,
-                    title,
-                    kind: db_str_to_kind(&kind_str),
-                    snippet: final_snippet,
-                })
+                Ok((
+                    status_raw,
+                    tags_raw,
+                    SearchHit {
+                        path,
+                        title,
+                        kind: db_str_to_kind(&kind_str),
+                        snippet: final_snippet,
+                    },
+                ))
             })
             .map_err(|e| e.to_string())?;
 
-        Ok(rows.flatten().collect())
+        let mut out = Vec::new();
+        for (status_raw, tags_raw, hit) in rows.flatten() {
+            if matches_filters(&hit.path, &status_raw, &tags_raw) {
+                out.push(hit);
+                if out.len() >= 50 {
+                    break;
+                }
+            }
+        }
+        Ok(out)
     }
 
     /// O(1) SQLite lookup for incoming backlinks to `(target_path, target_title)`.
@@ -1331,6 +1464,22 @@ mod tests {
 
         let tags = idx.tag_counts().unwrap();
         assert_eq!(tags.len(), 2);
+
+        // Operator search tests: tag:, status:, path:, and combined with text
+        let by_tag = idx.search("tag:rust").unwrap();
+        assert_eq!(by_tag.len(), 1);
+        assert_eq!(by_tag[0].path, "arch.md");
+
+        let by_status = idx.search("status:doing").unwrap();
+        assert_eq!(by_status.len(), 1);
+        assert_eq!(by_status[0].path, "arch.md");
+
+        let by_path_and_text = idx.search("path:\"road\" Дорожная").unwrap();
+        assert_eq!(by_path_and_text.len(), 1);
+        assert_eq!(by_path_and_text[0].path, "road.md");
+
+        let no_match = idx.search("tag:rust status:done").unwrap();
+        assert!(no_match.is_empty());
     }
 
     #[test]

@@ -281,6 +281,8 @@ pub fn render_mobile_notes_list(
                 selected_canvas_path,
                 active_tag,
                 expanded_folders,
+                &[],
+                &[],
                 ViewMode::Editor,
                 false,
                 true,

@@ -55,11 +55,13 @@ fn main() -> eframe::Result<()> {
         prev_hook(info);
     }));
 
+    let initial_cfg = config::AppConfig::load();
     let options = eframe::NativeOptions {
         renderer: eframe::Renderer::Glow,
         viewport: egui::ViewportBuilder::default()
             .with_inner_size([1280.0, 800.0])
             .with_min_inner_size([360.0, 560.0])
+            .with_decorations(!initial_cfg.custom_titlebar)
             .with_icon(ui::icons::build_window_icon())
             .with_title("Krono"),
         ..Default::default()

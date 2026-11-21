@@ -165,9 +165,43 @@ pub struct AppConfig {
     pub tmdb_language: String,
     #[serde(default = "default_study_language")]
     pub study_language: String,
+    #[serde(default = "default_ui_zoom")]
+    pub ui_zoom: f32,
+    #[serde(default = "default_zen_word_goal")]
+    pub zen_daily_word_goal: usize,
+    #[serde(default)]
+    pub pinned_folders: Vec<String>,
+    #[serde(default)]
+    pub folder_order: Vec<String>,
+    #[serde(default)]
+    pub pinned_tabs: Vec<String>,
+    #[serde(default = "default_true")]
+    pub custom_titlebar: bool,
+    #[serde(default = "default_true")]
+    pub nav_show_tasks: bool,
+    #[serde(default = "default_true")]
+    pub nav_show_table: bool,
+    #[serde(default = "default_true")]
+    pub nav_show_board: bool,
+    #[serde(default = "default_true")]
+    pub nav_show_graph: bool,
+    #[serde(default = "default_true")]
+    pub nav_show_overview: bool,
+}
+
+fn default_ui_zoom() -> f32 {
+    1.0
+}
+
+fn default_zen_word_goal() -> usize {
+    500
 }
 
 impl AppConfig {
+    pub fn clamp_ui_zoom(z: f32) -> f32 {
+        ((z.clamp(0.75, 1.50) * 100.0).round()) / 100.0
+    }
+
     pub fn effective_tmdb_language(&self) -> &'static str {
         match self.tmdb_language.trim() {
             "ru-RU" => "ru-RU",
@@ -248,6 +282,17 @@ impl Default for AppConfig {
             show_module_english: true,
             tmdb_language: String::new(),
             study_language: default_study_language(),
+            ui_zoom: default_ui_zoom(),
+            zen_daily_word_goal: default_zen_word_goal(),
+            pinned_folders: Vec::new(),
+            folder_order: Vec::new(),
+            pinned_tabs: Vec::new(),
+            custom_titlebar: true,
+            nav_show_tasks: true,
+            nav_show_table: true,
+            nav_show_board: true,
+            nav_show_graph: true,
+            nav_show_overview: true,
         }
     }
 }

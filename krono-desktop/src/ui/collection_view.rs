@@ -928,10 +928,13 @@ fn render_custom_table(
     }
 
     let avail_h = (ui.available_height() - 12.0).max(200.0);
-    let title_w = state.title_col_width.clamp(120.0, 560.0);
+    let base_title_w = state.title_col_width.clamp(120.0, 560.0);
     let ops_w = 64.0_f32;
-    let total_w: f32 =
-        title_w + ops_w + cols_snapshot.iter().map(|c| c.width.clamp(90.0, 560.0)).sum::<f32>();
+    let cols_sum: f32 = cols_snapshot.iter().map(|c| c.width.clamp(90.0, 560.0)).sum();
+    let base_total_w = base_title_w + ops_w + cols_sum;
+    let extra_w = (ui.available_width() - base_total_w - 8.0).max(0.0);
+    let title_w = base_title_w + extra_w;
+    let total_w = base_total_w + extra_w;
 
     let mut toggle_sort_col: Option<String> = None;
     let mut delete_rec_id: Option<String> = None;

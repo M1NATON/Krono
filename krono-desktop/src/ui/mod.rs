@@ -1,5 +1,6 @@
 pub mod board_dnd;
 pub mod board_view;
+pub mod bulk_modals;
 pub mod calendar_widget;
 pub mod canvas_view;
 pub mod code_highlight;
@@ -26,6 +27,7 @@ pub mod sidebar;
 pub mod table_view;
 pub mod tasks_view;
 pub mod theme;
+pub mod titlebar;
 pub mod topbar;
 pub mod vault_map_view;
 pub mod viewport_2d;
@@ -89,6 +91,7 @@ pub struct RecentTabItem {
     pub kind: krono_core::path::VaultFileKind,
     pub dirty: bool,
     pub active: bool,
+    pub pinned: bool,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -186,6 +189,11 @@ pub struct SidebarModulesState {
     pub show_media_library: bool,
     pub show_english: bool,
     pub study_language: String,
+    pub nav_tasks: bool,
+    pub nav_table: bool,
+    pub nav_board: bool,
+    pub nav_graph: bool,
+    pub nav_overview: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -211,6 +219,8 @@ pub struct EditorPrefs {
     pub spellcheck: bool,
     pub md_show_toolbar: bool,
     pub md_slash_trigger: SlashTrigger,
+    pub zen_mode: bool,
+    pub pane_salt: &'static str,
 }
 
 pub struct CalendarUiState<'a> {
@@ -428,6 +438,26 @@ pub enum UiAction {
         end_char: usize,
     },
     AddWordToDictionary(String),
+    OpenGlobalReplace,
+    OpenTagRename(Option<String>),
+    AdjustUiZoom(f32),
+    ResetUiZoom,
+    ToggleZenMode,
+    TogglePinFolder(String),
+    CollapseAllFolders,
+    ReorderFolder {
+        parent_prefix: String,
+        folder_path: String,
+        to_index: usize,
+    },
+    TogglePinTab(NavTarget),
+    ReorderRecentTab {
+        target: NavTarget,
+        to_index: usize,
+    },
+    OpenInSplit(NavTarget),
+    ToggleSplitRight,
+    CloseSplit,
     EmbeddedBoard(embedded_board::EmbeddedBoardAction),
     CheckForUpdates,
     InstallUpdate,

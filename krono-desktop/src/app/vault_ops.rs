@@ -17,7 +17,160 @@ use krono_core::{
 };
 use std::{path::PathBuf, time::Instant};
 
+pub(super) fn nav_target_key(t: &NavTarget) -> Option<String> {
+    match t {
+        NavTarget::Note(p) => Some(format!("note:{p}")),
+        NavTarget::Collection(p) => Some(format!("col:{p}")),
+        NavTarget::Canvas(p) => Some(format!("canvas:{p}")),
+        NavTarget::View(_) => None,
+    }
+}
+
+pub(super) fn nav_target_from_key(k: &str) -> Option<NavTarget> {
+    if let Some(p) = k.strip_prefix("note:") {
+        Some(NavTarget::Note(p.to_string()))
+    } else if let Some(p) = k.strip_prefix("col:") {
+        Some(NavTarget::Collection(p.to_string()))
+    } else if let Some(p) = k.strip_prefix("canvas:") {
+        Some(NavTarget::Canvas(p.to_string()))
+    } else {
+        None
+    }
+}
+
 impl KronoApp {
+    pub(super) fn is_tab_pinned(&self, t: &NavTarget) -> bool {
+        nav_target_key(t).is_some_and(|k| self.config.pinned_tabs.contains(&k))
+    }
+
+    pub(super) fn sync_pinned_tabs_into_recent(&mut self) {
+        let mut pinned_targets = Vec::new();
+        for key in &self.config.pinned_tabs {
+            if let Some(t) = nav_target_from_key(key) {
+                pinned_targets.push(t);
+            }
+        }
+        let unpinned: Vec<NavTarget> = self
+            .recent_tabs
+            .iter()
+            .filter(|t| !pinned_targets.contains(t))
+            .cloned()
+            .collect();
+        self.recent_tabs = pinned_targets;
+        self.recent_tabs.extend(unpinned);
+    }
+
+    pub(super) fn toggle_pin_tab(&mut self, target: &NavTarget) {
+        let Some(key) = nav_target_key(target) else {
+            return;
+        };
+        if let Some(pos) = self.config.pinned_tabs.iter().position(|k| k == &key) {
+            self.config.pinned_tabs.remove(pos);
+        } else {
+            self.config.pinned_tabs.push(key);
+            if !self.recent_tabs.contains(target) {
+                self.recent_tabs.push(target.clone());
+            }
+        }
+        self.sync_pinned_tabs_into_recent();
+        let _ = self.config.save();
+    }
+
+    pub(super) fn reorder_recent_tab(&mut self, target: &NavTarget, to_index: usize) {
+        let Some(from_idx) = self.recent_tabs.iter().position(|t| t == target) else {
+            return;
+        };
+        let is_pinned = self.is_tab_pinned(target);
+        let pinned_count = self
+            .recent_tabs
+            .iter()
+            .filter(|t| self.is_tab_pinned(t))
+            .count();
+        let (min_idx, max_idx) = if is_pinned {
+            (0usize, pinned_count.saturating_sub(1))
+        } else {
+            (pinned_count, self.recent_tabs.len().saturating_sub(1))
+        };
+        if min_idx > max_idx {
+            return;
+        }
+        let target_idx = to_index.clamp(min_idx, max_idx);
+        if target_idx == from_idx {
+            return;
+        }
+        let item = self.recent_tabs.remove(from_idx);
+        self.recent_tabs.insert(target_idx, item);
+        if is_pinned {
+            self.config.pinned_tabs = self
+                .recent_tabs
+                .iter()
+                .take(pinned_count)
+                .filter_map(nav_target_key)
+                .collect();
+            let _ = self.config.save();
+        }
+    }
+
+    pub(super) fn reorder_folder_in_config(
+        &mut self,
+        parent_prefix: &str,
+        folder_path: &str,
+        to_index: usize,
+    ) {
+        let mut siblings: Vec<String> = Vec::new();
+        for f in &self.vault_folders {
+            let parent = f.rsplit_once('/').map(|(p, _)| p).unwrap_or("");
+            if parent == parent_prefix && !f.starts_with("daily/") {
+                siblings.push(f.clone());
+            }
+        }
+        if !siblings.contains(&folder_path.to_string()) {
+            return;
+        }
+        siblings.sort_by(|a, b| {
+            let ap = self.config.pinned_folders.contains(a);
+            let bp = self.config.pinned_folders.contains(b);
+            let ao = self
+                .config
+                .folder_order
+                .iter()
+                .position(|x| x == a)
+                .unwrap_or(usize::MAX);
+            let bo = self
+                .config
+                .folder_order
+                .iter()
+                .position(|x| x == b)
+                .unwrap_or(usize::MAX);
+            bp.cmp(&ap)
+                .then_with(|| ao.cmp(&bo))
+                .then_with(|| a.to_lowercase().cmp(&b.to_lowercase()))
+        });
+        let Some(from_idx) = siblings.iter().position(|s| s == folder_path) else {
+            return;
+        };
+        let is_pinned = self.config.pinned_folders.contains(&folder_path.to_string());
+        let pinned_cnt = siblings
+            .iter()
+            .filter(|s| self.config.pinned_folders.contains(s))
+            .count();
+        let (min_i, max_i) = if is_pinned {
+            (0usize, pinned_cnt.saturating_sub(1))
+        } else {
+            (pinned_cnt, siblings.len().saturating_sub(1))
+        };
+        let dest = to_index.clamp(min_i, max_i);
+        if dest != from_idx {
+            let item = siblings.remove(from_idx);
+            siblings.insert(dest, item);
+        }
+        self.config
+            .folder_order
+            .retain(|x| !siblings.iter().any(|s| s == x));
+        self.config.folder_order.extend(siblings);
+        let _ = self.config.save();
+    }
+
     pub(super) fn record_nav(&mut self, target: NavTarget) {
         if matches!(
             target,
@@ -25,8 +178,16 @@ impl KronoApp {
         ) && !self.recent_tabs.contains(&target)
         {
             self.recent_tabs.push(target.clone());
-            if self.recent_tabs.len() > 10 {
-                self.recent_tabs.remove(0);
+            self.sync_pinned_tabs_into_recent();
+            let unpinned_count = self
+                .recent_tabs
+                .iter()
+                .filter(|t| !self.is_tab_pinned(t))
+                .count();
+            if unpinned_count > 10 {
+                if let Some(idx) = self.recent_tabs.iter().position(|t| !self.is_tab_pinned(t)) {
+                    self.recent_tabs.remove(idx);
+                }
             }
         }
         if self.nav_suppress_push {
@@ -106,6 +267,7 @@ impl KronoApp {
                         kind: VaultFileKind::Markdown,
                         dirty: is_cur && self.dirty,
                         active: self.view_mode == ViewMode::Editor && is_cur,
+                        pinned: self.is_tab_pinned(t),
                     });
                 }
                 NavTarget::Collection(p) => {
@@ -125,6 +287,7 @@ impl KronoApp {
                         kind,
                         dirty: is_cur && self.active_collection.dirty,
                         active: self.view_mode == ViewMode::Collection && is_cur,
+                        pinned: self.is_tab_pinned(t),
                     });
                 }
                 NavTarget::Canvas(p) => {
@@ -142,6 +305,7 @@ impl KronoApp {
                         kind: VaultFileKind::Canvas,
                         dirty: is_cur && self.active_canvas.dirty,
                         active: self.view_mode == ViewMode::Canvas && is_cur,
+                        pinned: self.is_tab_pinned(t),
                     });
                 }
                 NavTarget::View(_) => {}

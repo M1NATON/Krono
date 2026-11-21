@@ -65,7 +65,9 @@ pub fn render_editor_view(
     };
 
     let is_today_daily = krono_core::daily::parse_daily_note_path(rel_path) == Some(today);
-    let effective_mode = if editor_mode == EditorMode::Split
+    let effective_mode = if prefs.zen_mode {
+        EditorMode::Edit
+    } else if editor_mode == EditorMode::Split
         && (!layout.is_desktop() || ui.available_width() < 640.0)
     {
         EditorMode::Edit
@@ -74,8 +76,13 @@ pub fn render_editor_view(
     };
 
     if effective_mode == EditorMode::Split {
+        let scroll_salt = if prefs.pane_salt.is_empty() {
+            "editor_split_scroll"
+        } else {
+            "editor_split_scroll_right"
+        };
         egui::ScrollArea::vertical()
-            .id_salt("editor_split_scroll")
+            .id_salt(scroll_salt)
             .drag_to_scroll(false)
             .show(ui, |ui| {
                 ui.add_space(6.0 + (1.0 - entrance_t) * 6.0);
@@ -103,6 +110,7 @@ pub fn render_editor_view(
                     new_tag_input,
                     adding_tag,
                     prefs.heading_serif,
+                    prefs.pane_salt,
                     focus_title,
                     focus_body,
                     &mut actions,
@@ -115,7 +123,11 @@ pub fn render_editor_view(
                 ui.horizontal_top(|ui| {
                     ui.vertical(|ui| {
                         ui.set_width(col_w);
-                        let ed_id = egui::Id::new("krono_md_editor_split");
+                        let ed_id = if prefs.pane_salt.is_empty() {
+                            egui::Id::new("krono_md_editor_split")
+                        } else {
+                            egui::Id::new("krono_md_editor_right_split")
+                        };
                         let fb = *focus_body;
                         *focus_body = false;
                         let (changed, extra) = render_markdown_editor(
@@ -186,13 +198,23 @@ pub fn render_editor_view(
     }
 
     // Centered single-column page (configured reading measure)
+    let main_scroll_salt = if prefs.pane_salt.is_empty() {
+        "editor_main_scroll"
+    } else {
+        "editor_main_scroll_right"
+    };
     egui::ScrollArea::vertical()
-        .id_salt("editor_main_scroll")
+        .id_salt(main_scroll_salt)
         .drag_to_scroll(false)
         .show(ui, |ui| {
             let avail = ui.available_width();
             let edge = if layout.is_mobile() { 4.0 } else { 24.0 };
-            let max_w = prefs.max_width.min((avail - edge).max(260.0));
+            let max_w = if prefs.zen_mode {
+                prefs.max_width.min(720.0)
+            } else {
+                prefs.max_width
+            }
+            .min((avail - edge).max(260.0));
             let side_pad = ((avail - max_w) * 0.5).max(edge * 0.5);
 
             ui.horizontal(|ui| {
@@ -207,36 +229,56 @@ pub fn render_editor_view(
                         ui.add_space(10.0);
                     }
 
-                    if crate::app::english::is_english_lesson_path(rel_path) {
+                    if !prefs.zen_mode && crate::app::english::is_english_lesson_path(rel_path) {
                         render_english_lesson_nav_bar(ui, p, lang, rel_path, all_notes, &mut actions);
                         ui.add_space(10.0);
                     }
 
-                    render_document_header(
-                        ui,
-                        p,
-                        lang,
-                        layout,
-                        today,
-                        is_today_daily,
-                        doc.title,
-                        doc.status,
-                        doc.tags,
-                        doc.pinned,
-                        doc.extra_lines,
-                        doc.modified,
-                        new_tag_input,
-                        adding_tag,
-                        prefs.heading_serif,
-                        focus_title,
-                        focus_body,
-                        &mut actions,
-                    );
+                    if !prefs.zen_mode {
+                        render_document_header(
+                            ui,
+                            p,
+                            lang,
+                            layout,
+                            today,
+                            is_today_daily,
+                            doc.title,
+                            doc.status,
+                            doc.tags,
+                            doc.pinned,
+                            doc.extra_lines,
+                            doc.modified,
+                            new_tag_input,
+                            adding_tag,
+                            prefs.heading_serif,
+                            prefs.pane_salt,
+                            focus_title,
+                            focus_body,
+                            &mut actions,
+                        );
+                    } else {
+                        let title_font = if prefs.heading_serif {
+                            font_serif_bold(26.0)
+                        } else {
+                            font_bold(24.0)
+                        };
+                        ui.add(
+                            egui::TextEdit::singleline(doc.title)
+                                .hint_text(s.untitled_hint)
+                                .font(title_font)
+                                .frame(false)
+                                .desired_width(f32::INFINITY),
+                        );
+                    }
 
                     ui.add_space(16.0);
                     match effective_mode {
                         EditorMode::Edit => {
-                            let ed_id = egui::Id::new("krono_md_editor_main");
+                            let ed_id = if prefs.pane_salt.is_empty() {
+                                egui::Id::new("krono_md_editor_main")
+                            } else {
+                                egui::Id::new("krono_md_editor_right_main")
+                            };
                             let fb = *focus_body;
                             *focus_body = false;
                             let (changed, extra) = render_markdown_editor(
@@ -309,7 +351,7 @@ pub fn render_editor_view(
                         EditorMode::Split => {}
                     }
 
-                    if prefs.show_footer {
+                    if prefs.show_footer && !prefs.zen_mode {
                         ui.add_space(if layout.is_mobile() { 28.0 } else { 40.0 });
                         render_editor_footer(ui, p, lang, layout, rel_path, doc.body, effective_mode);
                     }
@@ -441,6 +483,7 @@ fn render_document_header(
     new_tag_input: &mut String,
     adding_tag: &mut bool,
     heading_serif: bool,
+    pane_salt: &'static str,
     focus_title: &mut bool,
     focus_body: &mut bool,
     actions: &mut Vec<UiAction>,
@@ -452,9 +495,14 @@ fn render_document_header(
         font_bold(if layout.is_mobile() { 23.0 } else { 29.0 })
     };
 
+    let title_id = if pane_salt.is_empty() {
+        egui::Id::new("krono_doc_title_input")
+    } else {
+        egui::Id::new(("krono_doc_title_input", pane_salt))
+    };
     let title_resp = ui.add(
         egui::TextEdit::singleline(note_title)
-            .id(egui::Id::new("krono_doc_title_input"))
+            .id(title_id)
             .frame(false)
             .font(title_font)
             .text_color(p.text_primary)
@@ -607,7 +655,11 @@ fn render_document_header(
             actions.push(UiAction::MarkDirty);
         }
 
-        let tag_gate_id = egui::Id::new("editor_add_tag_foc_gate");
+        let tag_gate_id = if pane_salt.is_empty() {
+            egui::Id::new("editor_add_tag_foc_gate")
+        } else {
+            egui::Id::new(("editor_add_tag_foc_gate", pane_salt))
+        };
         if *adding_tag {
             egui::Frame::none()
                 .fill(p.bg_elevated)

@@ -1,14 +1,14 @@
 use crate::i18n::{strings, Lang};
 use crate::ui::components::{
-    compact_sync_icon_button, draw_outer_bottom_border, ghost_sync_button, icon_button,
-    paint_badge_dot, segmented_control,
+    compact_sync_icon_button, context_menu_row, draw_outer_bottom_border, ghost_sync_button,
+    hairline_h, icon_button, paint_badge_dot, segmented_control,
 };
 use crate::ui::icons::{draw_icon, Icon};
 use crate::ui::motion::{anim_bool_eased, with_alpha};
 use crate::ui::theme::{font_body, font_medium, ThemePalette};
 use crate::ui::{
-    EditorMode, LayoutClass, RecentTabItem, SettingsTab, SyncUiState, TopbarDocContext, UiAction,
-    ViewMode,
+    EditorMode, LayoutClass, NavTarget, RecentTabItem, SettingsTab, SyncUiState, TopbarDocContext,
+    UiAction, ViewMode,
 };
 use eframe::egui::{self, pos2, vec2, Align, CursorIcon, Layout, Margin, Rect, Rounding, Sense};
 use krono_core::{collection::CollectionViewKind, path::VaultFileKind};
@@ -76,7 +76,7 @@ pub fn render_topbar(
 
             let right_reserve = match view_mode {
                 ViewMode::Editor => {
-                    let base = 28.0 + 110.0 + 24.0;
+                    let base = 28.0 + 110.0 + 24.0 + 64.0;
                     let save_w = if active_dirty { 82.0 } else { 0.0 };
                     let mode_w = if doc.selected_note_path.is_some() {
                         if layout.is_desktop() { 228.0 } else { 148.0 }
@@ -86,7 +86,7 @@ pub fn render_topbar(
                     base + save_w + mode_w
                 }
                 ViewMode::Collection => {
-                    let base = 110.0 + 24.0;
+                    let base = 110.0 + 24.0 + 32.0;
                     let save_w = if active_dirty { 82.0 } else { 0.0 };
                     base + save_w + 158.0
                 }
@@ -316,6 +316,16 @@ pub fn render_topbar(
                         .clicked()
                         {
                             actions.push(UiAction::ToggleInspector);
+                        }
+                        if icon_button(ui, p, Icon::Maximize, s.action_toggle_zen, false).clicked()
+                        {
+                            actions.push(UiAction::ToggleZenMode);
+                        }
+                    }
+                    if matches!(view_mode, ViewMode::Editor | ViewMode::Collection) {
+                        if icon_button(ui, p, Icon::Split, s.action_toggle_split, false).clicked()
+                        {
+                            actions.push(UiAction::ToggleSplitRight);
                         }
                     }
 
@@ -839,17 +849,48 @@ fn nav_arrow_button(
     r.on_hover_text(tooltip)
 }
 
+#[derive(Clone, Debug)]
+struct TabDragState {
+    src_idx: usize,
+    pinned: bool,
+    start_pos: egui::Pos2,
+    grab_offset_x: f32,
+    tab_w: f32,
+    target_in_group: usize,
+    active: bool,
+}
+
 pub fn render_recent_tabs_bar(
     ctx: &egui::Context,
     p: &ThemePalette,
+    lang: Lang,
     layout: LayoutClass,
     recent_tabs: &[RecentTabItem],
     view_mode: ViewMode,
 ) -> Vec<UiAction> {
     let mut actions = Vec::new();
-    if layout.is_mobile() || view_mode == ViewMode::Settings || recent_tabs.len() < 2 {
+    let has_pinned = recent_tabs.iter().any(|t| t.pinned);
+    if layout.is_mobile()
+        || view_mode == ViewMode::Settings
+        || (recent_tabs.len() < 2 && !has_pinned)
+    {
         return actions;
     }
+
+    let s = strings(lang);
+    let drag_id = egui::Id::new("krono_tab_drag");
+    let mut drag_state = ctx.data(|d| d.get_temp::<TabDragState>(drag_id));
+    let mut tab_rects: Vec<(usize, bool, Rect)> = Vec::with_capacity(recent_tabs.len());
+
+    // Precompute smooth horizontal shift for each tab when drag is active
+    let active_drag = drag_state.as_ref().filter(|st| st.active).cloned();
+    let src_group_pos = active_drag.as_ref().map(|st| {
+        recent_tabs
+            .iter()
+            .take(st.src_idx)
+            .filter(|t| t.pinned == st.pinned)
+            .count()
+    });
 
     let panel_resp = egui::TopBottomPanel::top("krono_recent_tabs")
         .show_separator_line(false)
@@ -866,7 +907,12 @@ pub fn render_recent_tabs_bar(
                 .show(ui, |ui| {
                     ui.horizontal_centered(|ui| {
                         ui.spacing_mut().item_spacing.x = 5.0;
+                        let mut group_idx_counter = [0usize, 0usize]; // [unpinned, pinned]
                         for (idx, tab) in recent_tabs.iter().enumerate() {
+                            let g_slot = usize::from(tab.pinned);
+                            let my_g_idx = group_idx_counter[g_slot];
+                            group_idx_counter[g_slot] += 1;
+
                             let icon = match tab.kind {
                                 VaultFileKind::Board => Icon::Board,
                                 VaultFileKind::Table => Icon::Table,
@@ -874,8 +920,9 @@ pub fn render_recent_tabs_bar(
                                 _ => Icon::Document,
                             };
                             let fg = if tab.active { p.text_primary } else { p.text_secondary };
-                            let label: String = tab.title.chars().take(24).collect();
-                            let title_show = if tab.title.chars().count() > 24 {
+                            let max_chars = if tab.pinned { 14 } else { 24 };
+                            let label: String = tab.title.chars().take(max_chars).collect();
+                            let title_show = if tab.title.chars().count() > max_chars {
                                 format!("{label}…")
                             } else {
                                 label
@@ -886,91 +933,356 @@ pub fn render_recent_tabs_bar(
                                 fg,
                             );
                             let dot_w = if tab.dirty { 9.0 } else { 0.0 };
-                            let pill_w = (22.0 + dot_w + g.size().x + 22.0).max(76.0);
-                            let (rect, resp) = ui.allocate_exact_size(vec2(pill_w, 23.0), Sense::click());
-                            let hov = anim_bool_eased(
-                                ctx,
-                                ui.make_persistent_id(("rtab_hov", idx)),
-                                resp.hovered(),
-                                0.09,
-                            );
-                            let bg = if tab.active {
-                                p.bg_elevated
-                            } else if hov > 0.01 {
-                                with_alpha(p.bg_hover, hov)
-                            } else {
-                                egui::Color32::TRANSPARENT
-                            };
-                            if bg.a() > 0 {
-                                ui.painter().rect_filled(rect, Rounding::same(6.0), bg);
-                            }
-                            if tab.active {
-                                ui.painter().rect_stroke(
-                                    rect,
-                                    Rounding::same(6.0),
-                                    egui::Stroke::new(1.0_f32, p.border_subtle),
-                                );
-                            }
-                            draw_icon(
-                                ui.painter(),
-                                Rect::from_center_size(
-                                    pos2(rect.left() + 11.0, rect.center().y),
-                                    vec2(12.0, 12.0),
-                                ),
-                                icon,
-                                if tab.active { p.accent_text } else { p.text_muted },
-                            );
-                            let mut text_x = rect.left() + 21.0;
-                            if tab.dirty {
-                                paint_badge_dot(
-                                    ui.painter(),
-                                    pos2(text_x + 3.0, rect.center().y),
-                                    p.warning,
-                                );
-                                text_x += 9.0;
-                            }
-                            ui.painter().galley(
-                                pos2(text_x, rect.center().y - g.size().y * 0.5),
-                                g,
-                                fg,
-                            );
+                            let pin_w = if tab.pinned { 13.0 } else { 0.0 };
+                            let right_pad = if tab.pinned { 10.0 } else { 22.0 };
+                            let min_w = if tab.pinned { 56.0 } else { 76.0 };
+                            let pill_w = (22.0 + pin_w + dot_w + g.size().x + right_pad).max(min_w);
+                            let (base_rect, resp) =
+                                ui.allocate_exact_size(vec2(pill_w, 23.0), Sense::click_and_drag());
+                            tab_rects.push((idx, tab.pinned, base_rect));
 
-                            let close_r = Rect::from_center_size(
-                                pos2(rect.right() - 10.0, rect.center().y),
-                                vec2(15.0, 15.0),
+                            if resp.drag_started() {
+                                if let Some(pos) = ctx.pointer_interact_pos() {
+                                    drag_state = Some(TabDragState {
+                                        src_idx: idx,
+                                        pinned: tab.pinned,
+                                        start_pos: pos,
+                                        grab_offset_x: (pos.x - base_rect.left()).clamp(8.0, pill_w - 8.0),
+                                        tab_w: pill_w,
+                                        target_in_group: my_g_idx,
+                                        active: false,
+                                    });
+                                }
+                            }
+
+                            let is_dragging_this = active_drag
+                                .as_ref()
+                                .is_some_and(|st| st.src_idx == idx);
+
+                            // Smooth slot shift animation like board_dnd
+                            let target_shift_x = if let (Some(st), Some(src_g)) = (&active_drag, src_group_pos) {
+                                if tab.pinned == st.pinned && !is_dragging_this {
+                                    let shift_amt = st.tab_w + 5.0;
+                                    if st.target_in_group > src_g && my_g_idx > src_g && my_g_idx <= st.target_in_group {
+                                        -shift_amt
+                                    } else if st.target_in_group < src_g && my_g_idx >= st.target_in_group && my_g_idx < src_g {
+                                        shift_amt
+                                    } else {
+                                        0.0
+                                    }
+                                } else {
+                                    0.0
+                                }
+                            } else {
+                                0.0
+                            };
+                            let shift_x = crate::ui::motion::anim_value_smooth(
+                                ctx,
+                                ui.make_persistent_id(("rtab_shift_x", idx)),
+                                target_shift_x,
+                                0.11,
                             );
-                            let ptr = ui.ctx().pointer_hover_pos();
-                            let close_hov = ptr.is_some_and(|mp| close_r.contains(mp));
-                            if tab.active || resp.hovered() || close_hov {
-                                if close_hov {
-                                    ui.painter().rect_filled(
-                                        close_r,
-                                        Rounding::same(4.0),
-                                        p.bg_hover,
+                            let rect = base_rect.translate(vec2(shift_x, 0.0));
+
+                            if !is_dragging_this {
+                                let hov = anim_bool_eased(
+                                    ctx,
+                                    ui.make_persistent_id(("rtab_hov", idx)),
+                                    resp.hovered(),
+                                    0.09,
+                                );
+                                let bg = if tab.active {
+                                    p.bg_elevated
+                                } else if hov > 0.01 {
+                                    with_alpha(p.bg_hover, hov)
+                                } else {
+                                    egui::Color32::TRANSPARENT
+                                };
+                                if bg.a() > 0 {
+                                    ui.painter().rect_filled(rect, Rounding::same(6.0), bg);
+                                }
+                                if tab.active {
+                                    ui.painter().rect_stroke(
+                                        rect,
+                                        Rounding::same(6.0),
+                                        egui::Stroke::new(1.0_f32, p.border_subtle),
                                     );
                                 }
                                 draw_icon(
                                     ui.painter(),
-                                    Rect::from_center_size(close_r.center(), vec2(9.5, 9.5)),
-                                    Icon::Close,
-                                    if close_hov { p.text_primary } else { p.text_muted },
+                                    Rect::from_center_size(
+                                        pos2(rect.left() + 11.0, rect.center().y),
+                                        vec2(12.0, 12.0),
+                                    ),
+                                    icon,
+                                    if tab.active { p.accent_text } else { p.text_muted },
                                 );
+                                let mut text_x = rect.left() + 21.0;
+                                if tab.pinned {
+                                    draw_icon(
+                                        ui.painter(),
+                                        Rect::from_center_size(
+                                            pos2(text_x + 4.0, rect.center().y),
+                                            vec2(10.0, 10.0),
+                                        ),
+                                        Icon::Pin,
+                                        p.accent_text,
+                                    );
+                                    text_x += 13.0;
+                                }
+                                if tab.dirty {
+                                    paint_badge_dot(
+                                        ui.painter(),
+                                        pos2(text_x + 3.0, rect.center().y),
+                                        p.warning,
+                                    );
+                                    text_x += 9.0;
+                                }
+                                ui.painter().galley(
+                                    pos2(text_x, rect.center().y - g.size().y * 0.5),
+                                    g,
+                                    fg,
+                                );
+
+                                let close_r = Rect::from_center_size(
+                                    pos2(rect.right() - 10.0, rect.center().y),
+                                    vec2(15.0, 15.0),
+                                );
+                                let ptr = ui.ctx().pointer_hover_pos();
+                                let close_hov = !tab.pinned && ptr.is_some_and(|mp| close_r.contains(mp));
+                                if !tab.pinned && (tab.active || resp.hovered() || close_hov) {
+                                    if close_hov {
+                                        ui.painter().rect_filled(
+                                            close_r,
+                                            Rounding::same(4.0),
+                                            p.bg_hover,
+                                        );
+                                    }
+                                    draw_icon(
+                                        ui.painter(),
+                                        Rect::from_center_size(close_r.center(), vec2(9.5, 9.5)),
+                                        Icon::Close,
+                                        if close_hov { p.text_primary } else { p.text_muted },
+                                    );
+                                }
+
+                                if resp.clicked() {
+                                    if close_hov {
+                                        actions.push(UiAction::CloseRecentTab(tab.target.clone()));
+                                    } else {
+                                        actions.push(UiAction::OpenNavTarget(tab.target.clone()));
+                                    }
+                                } else if !tab.pinned && resp.middle_clicked() {
+                                    actions.push(UiAction::CloseRecentTab(tab.target.clone()));
+                                }
                             }
 
-                            if resp.clicked() {
-                                if close_hov {
-                                    actions.push(UiAction::CloseRecentTab(tab.target.clone()));
+                            let tab_target_ctx = tab.target.clone();
+                            let is_pinned = tab.pinned;
+                            let can_split = matches!(
+                                tab.target,
+                                NavTarget::Note(_) | NavTarget::Collection(_)
+                            );
+                            resp.context_menu(|ui| {
+                                ui.set_min_width(160.0);
+                                let pin_lbl = if is_pinned {
+                                    s.tab_ctx_unpin
                                 } else {
-                                    actions.push(UiAction::OpenNavTarget(tab.target.clone()));
+                                    s.tab_ctx_pin
+                                };
+                                let pin_icon = if is_pinned { Icon::PinOff } else { Icon::Pin };
+                                if context_menu_row(ui, p, pin_icon, pin_lbl, false).clicked() {
+                                    actions.push(UiAction::TogglePinTab(tab_target_ctx.clone()));
+                                    ui.close_menu();
                                 }
-                            } else if resp.middle_clicked() {
-                                actions.push(UiAction::CloseRecentTab(tab.target.clone()));
-                            }
-                            let _ = resp.on_hover_cursor(CursorIcon::PointingHand);
+                                if can_split
+                                    && context_menu_row(
+                                        ui,
+                                        p,
+                                        Icon::Split,
+                                        s.tab_ctx_open_right,
+                                        false,
+                                    )
+                                    .clicked()
+                                {
+                                    actions.push(UiAction::OpenInSplit(tab_target_ctx.clone()));
+                                    ui.close_menu();
+                                }
+                                if !is_pinned {
+                                    ui.add_space(3.0);
+                                    hairline_h(ui, p);
+                                    ui.add_space(3.0);
+                                    if context_menu_row(
+                                        ui,
+                                        p,
+                                        Icon::Close,
+                                        s.tab_ctx_close,
+                                        false,
+                                    )
+                                    .clicked()
+                                    {
+                                        actions.push(UiAction::CloseRecentTab(tab_target_ctx));
+                                        ui.close_menu();
+                                    }
+                                }
+                            });
+
+                            let _ = resp.on_hover_cursor(if is_dragging_this {
+                                CursorIcon::Grabbing
+                            } else {
+                                CursorIcon::PointingHand
+                            });
                         }
                     });
                 });
         });
+
+    // Drag-reorder with 5px threshold, hysteresis, and lifted floating ghost pill
+    if let Some(mut st) = drag_state {
+        let primary_down = ctx.input(|i| i.pointer.primary_down());
+        let ptr_pos = ctx.pointer_interact_pos().or_else(|| ctx.pointer_hover_pos());
+        if primary_down {
+            if let Some(pos) = ptr_pos {
+                if !st.active && (pos - st.start_pos).length() >= 5.0 {
+                    st.active = true;
+                }
+                if st.active {
+                    ctx.set_cursor_icon(CursorIcon::Grabbing);
+                    ctx.request_repaint();
+
+                    let group: Vec<(usize, Rect)> = tab_rects
+                        .iter()
+                        .filter(|&&(_, pin, _)| pin == st.pinned)
+                        .map(|&(i, _, r)| (i, r))
+                        .collect();
+
+                    if !group.is_empty() {
+                        // Compute target insertion index with 8px hysteresis
+                        let mut new_target = 0usize;
+                        for (g_idx, &(_, r)) in group.iter().enumerate() {
+                            let thresh = if g_idx < st.target_in_group {
+                                r.center().x - 8.0
+                            } else {
+                                r.center().x + 8.0
+                            };
+                            if pos.x >= thresh {
+                                new_target = g_idx + 1;
+                            }
+                        }
+                        st.target_in_group = new_target.min(group.len().saturating_sub(1));
+
+                        // Draw target slot placeholder in the exact vacated gap
+                        if let Some(src_g) = src_group_pos {
+                            let target_ph_x = if st.target_in_group > src_g {
+                                group[st.target_in_group].1.right() - st.tab_w
+                            } else {
+                                group[st.target_in_group].1.left()
+                            };
+                            let ph_x = crate::ui::motion::anim_value_smooth(
+                                ctx,
+                                egui::Id::new("rtab_ph_x"),
+                                target_ph_x,
+                                0.11,
+                            );
+                            let ph_r = Rect::from_min_size(
+                                pos2(ph_x, panel_resp.response.rect.top() + 4.0),
+                                vec2(st.tab_w, 23.0),
+                            );
+                            let ph_p = ctx.layer_painter(egui::LayerId::new(
+                                egui::Order::Foreground,
+                                egui::Id::new("krono_tab_ph_layer"),
+                            ));
+                            ph_p.rect_filled(
+                                ph_r,
+                                Rounding::same(6.0),
+                                with_alpha(p.accent, 0.10),
+                            );
+                            ph_p.rect_stroke(
+                                ph_r,
+                                Rounding::same(6.0),
+                                egui::Stroke::new(1.0_f32, with_alpha(p.accent, 0.45)),
+                            );
+                        }
+
+                        // Draw floating lifted ghost pill following cursor horizontally
+                        if let Some(tab) = recent_tabs.get(st.src_idx) {
+                            let bar_r = panel_resp.response.rect;
+                            let ghost_x = (pos.x - st.grab_offset_x)
+                                .clamp(bar_r.left() + 6.0, (bar_r.right() - st.tab_w - 6.0).max(bar_r.left() + 6.0));
+                            let ghost_y = bar_r.top() + 2.0; // lifted 2px
+                            let ghost_r = Rect::from_min_size(pos2(ghost_x, ghost_y), vec2(st.tab_w, 23.0));
+                            let gp = ctx.layer_painter(egui::LayerId::new(
+                                egui::Order::Tooltip,
+                                egui::Id::new("krono_tab_drag_ghost"),
+                            ));
+                            // Soft shadow under lifted pill
+                            gp.rect_filled(
+                                ghost_r.translate(vec2(0.0, 3.0)),
+                                Rounding::same(7.0),
+                                egui::Color32::from_rgba_unmultiplied(0, 0, 0, 55),
+                            );
+                            gp.rect_filled(ghost_r, Rounding::same(6.0), p.bg_elevated);
+                            gp.rect_stroke(
+                                ghost_r,
+                                Rounding::same(6.0),
+                                egui::Stroke::new(1.2_f32, p.accent),
+                            );
+
+                            let icon = match tab.kind {
+                                VaultFileKind::Board => Icon::Board,
+                                VaultFileKind::Table => Icon::Table,
+                                VaultFileKind::Canvas => Icon::Canvas,
+                                _ => Icon::Document,
+                            };
+                            draw_icon(
+                                &gp,
+                                Rect::from_center_size(
+                                    pos2(ghost_r.left() + 11.0, ghost_r.center().y),
+                                    vec2(12.0, 12.0),
+                                ),
+                                icon,
+                                p.accent_text,
+                            );
+                            let max_chars = if tab.pinned { 14 } else { 24 };
+                            let label: String = tab.title.chars().take(max_chars).collect();
+                            let title_show = if tab.title.chars().count() > max_chars {
+                                format!("{label}…")
+                            } else {
+                                label
+                            };
+                            let gg = ctx.fonts(|f| {
+                                f.layout_no_wrap(title_show, font_medium(11.5), p.text_primary)
+                            });
+                            let text_x = ghost_r.left() + if tab.pinned { 34.0 } else { 21.0 };
+                            gp.galley(
+                                pos2(text_x, ghost_r.center().y - gg.size().y * 0.5),
+                                gg,
+                                p.text_primary,
+                            );
+                        }
+                    }
+                }
+            }
+            ctx.data_mut(|d| d.insert_temp(drag_id, st));
+        } else {
+            if st.active {
+                let group: Vec<(usize, Rect)> = tab_rects
+                    .iter()
+                    .filter(|&&(_, pin, _)| pin == st.pinned)
+                    .map(|&(i, _, r)| (i, r))
+                    .collect();
+                if let Some(&(global_to_index, _)) = group.get(st.target_in_group) {
+                    if let Some(item) = recent_tabs.get(st.src_idx) {
+                        actions.push(UiAction::ReorderRecentTab {
+                            target: item.target.clone(),
+                            to_index: global_to_index,
+                        });
+                    }
+                }
+            }
+            ctx.data_mut(|d| d.remove::<TabDragState>(drag_id));
+        }
+    }
 
     draw_outer_bottom_border(ctx, panel_resp.response.rect, p);
     actions

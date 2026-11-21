@@ -20,6 +20,9 @@ impl KronoApp {
         for act in actions {
             match act {
                 UiAction::OpenNote(path) => {
+                    if self.split.right.as_ref().and_then(|r| r.path()) == Some(path.as_str()) {
+                        self.close_split();
+                    }
                     match VaultFileKind::from_path(&path) {
                         Some(VaultFileKind::Board | VaultFileKind::Table) => {
                             self.open_collection(&path);
@@ -520,6 +523,15 @@ impl KronoApp {
                     }
                 }
                 UiAction::ConfigChanged => {
+                    self.config.ui_zoom =
+                        crate::config::AppConfig::clamp_ui_zoom(self.config.ui_zoom);
+                    ctx.set_zoom_factor(self.config.ui_zoom);
+                    if self.applied_custom_titlebar != self.config.custom_titlebar {
+                        self.applied_custom_titlebar = self.config.custom_titlebar;
+                        ctx.send_viewport_cmd(egui::ViewportCommand::Decorations(
+                            !self.config.custom_titlebar,
+                        ));
+                    }
                     self.set_target_palette(ctx, false);
                     let _ = self.config.save();
                     if self.active_collection.path.is_some()
@@ -677,6 +689,85 @@ impl KronoApp {
                     {
                         self.push_toast(e, ToastKind::Error);
                     }
+                }
+                UiAction::OpenGlobalReplace => {
+                    self.open_global_replace_modal();
+                }
+                UiAction::OpenTagRename(tag_opt) => {
+                    self.open_tag_rename_modal(tag_opt);
+                }
+                UiAction::AdjustUiZoom(delta) => {
+                    self.config.ui_zoom =
+                        crate::config::AppConfig::clamp_ui_zoom(self.config.ui_zoom + delta);
+                    ctx.set_zoom_factor(self.config.ui_zoom);
+                    let _ = self.config.save();
+                    let pct = (self.config.ui_zoom * 100.0).round() as i32;
+                    let label = if self.config.language == Lang::Ru {
+                        format!("Масштаб: {pct}%")
+                    } else {
+                        format!("Zoom: {pct}%")
+                    };
+                    self.push_toast(label, ToastKind::Info);
+                }
+                UiAction::ResetUiZoom => {
+                    self.config.ui_zoom = 1.0;
+                    ctx.set_zoom_factor(1.0);
+                    let _ = self.config.save();
+                    let label = if self.config.language == Lang::Ru {
+                        "Масштаб: 100%"
+                    } else {
+                        "Zoom: 100%"
+                    };
+                    self.push_toast(label, ToastKind::Info);
+                }
+                UiAction::ToggleZenMode => {
+                    self.zen_mode = !self.zen_mode;
+                    if self.zen_mode {
+                        if self.selected_path.is_none() {
+                            if let Some(first) = self.notes.first().map(|n| n.path.clone()) {
+                                self.open_note(&first);
+                            }
+                        }
+                        self.view_mode = ViewMode::Editor;
+                    }
+                }
+                UiAction::TogglePinFolder(folder_path) => {
+                    if let Some(pos) = self
+                        .config
+                        .pinned_folders
+                        .iter()
+                        .position(|f| f == &folder_path)
+                    {
+                        self.config.pinned_folders.remove(pos);
+                    } else {
+                        self.config.pinned_folders.push(folder_path);
+                    }
+                    let _ = self.config.save();
+                }
+                UiAction::CollapseAllFolders => {
+                    self.expanded_folders.clear();
+                }
+                UiAction::ReorderFolder {
+                    parent_prefix,
+                    folder_path,
+                    to_index,
+                } => {
+                    self.reorder_folder_in_config(&parent_prefix, &folder_path, to_index);
+                }
+                UiAction::TogglePinTab(target) => {
+                    self.toggle_pin_tab(&target);
+                }
+                UiAction::ReorderRecentTab { target, to_index } => {
+                    self.reorder_recent_tab(&target, to_index);
+                }
+                UiAction::OpenInSplit(target) => {
+                    self.open_in_split(target);
+                }
+                UiAction::ToggleSplitRight => {
+                    self.toggle_split_right();
+                }
+                UiAction::CloseSplit => {
+                    self.close_split();
                 }
                 UiAction::EmbeddedBoard(eb) => {
                     self.handle_embedded_board_action(eb);

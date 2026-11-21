@@ -1,4 +1,4 @@
-use crate::i18n::{status_label, Lang};
+use crate::i18n::{status_label, strings, Lang};
 use crate::ui::icons::{draw_icon, draw_sync_icon, Icon};
 use crate::ui::motion::{
     anim_bool_eased, anim_value_smooth, ease_in_out_cubic, ease_out_cubic, lerp_color, with_alpha,
@@ -733,6 +733,138 @@ pub fn status_pill_picker(
     chosen
 }
 
+/// Optional status pill picker (`None` shows `+ Этап` / `+ Stage`; dropdown allows clearing).
+pub fn optional_status_pill_picker(
+    ui: &mut Ui,
+    p: &ThemePalette,
+    lang: Lang,
+    id_salt: impl std::hash::Hash,
+    current: Option<NoteStatus>,
+) -> Option<Option<NoteStatus>> {
+    let s = strings(lang);
+    let (pill_bg, dot_col, text_col, label) = match current {
+        Some(st) => {
+            let (bg, dot, fg) = p.status_colors(st);
+            (bg, Some(dot), fg, status_label(lang, st))
+        }
+        None => (p.bg_elevated, None, p.text_muted, s.stage_add_btn),
+    };
+    let galley = ui
+        .painter()
+        .layout_no_wrap(label.to_string(), font_medium(12.0), text_col);
+    let extra_w = if dot_col.is_some() { 34.0 } else { 24.0 };
+    let w = galley.size().x + extra_w;
+    let (rect, resp) = ui.allocate_exact_size(vec2(w, 24.0), Sense::click());
+    let hover_t = anim_bool_eased(ui.ctx(), resp.id.with("hov"), resp.hovered(), 0.10);
+
+    ui.painter().rect_filled(rect, Rounding::same(12.0), pill_bg);
+    if current.is_none() || hover_t > 0.01 {
+        let stroke_col = if current.is_none() {
+            lerp_color(p.border_hairline, p.border_subtle, hover_t)
+        } else {
+            with_alpha(p.border_subtle, hover_t)
+        };
+        ui.painter()
+            .rect_stroke(rect, Rounding::same(12.0), Stroke::new(1.0_f32, stroke_col));
+    }
+    let text_x = if let Some(dot) = dot_col {
+        ui.painter()
+            .circle_filled(pos2(rect.left() + 11.0, rect.center().y), 3.2, dot);
+        rect.left() + 19.0
+    } else {
+        rect.left() + 9.0
+    };
+    ui.painter().galley(
+        pos2(text_x, rect.center().y - galley.size().y * 0.5),
+        galley,
+        text_col,
+    );
+    let chev_rect =
+        Rect::from_center_size(pos2(rect.right() - 10.0, rect.center().y), vec2(10.0, 10.0));
+    draw_icon(ui.painter(), chev_rect, Icon::ChevronDown, text_col);
+
+    let popup_id = ui.make_persistent_id(id_salt);
+    let resp = resp.on_hover_cursor(CursorIcon::PointingHand);
+    if resp.clicked() {
+        ui.memory_mut(|m| m.toggle_popup(popup_id));
+    }
+
+    let mut chosen: Option<Option<NoteStatus>> = None;
+    egui::popup_below_widget(
+        ui,
+        popup_id,
+        &resp,
+        PopupCloseBehavior::CloseOnClick,
+        |ui| {
+            ui.set_min_width(156.0);
+            ui.spacing_mut().item_spacing.y = 3.0;
+            for opt in NoteStatus::ALL {
+                let (obg, odot, otext) = p.status_colors(opt);
+                let olbl = status_label(lang, opt);
+                let og = ui
+                    .painter()
+                    .layout_no_wrap(olbl.to_string(), font_medium(12.5), otext);
+                let (orect, oresp) =
+                    ui.allocate_exact_size(vec2(150.0, 26.0), Sense::click());
+                let active = current == Some(opt);
+                if oresp.hovered() || active {
+                    ui.painter().rect_filled(
+                        orect,
+                        Rounding::same(5.0),
+                        if active { obg } else { p.bg_hover },
+                    );
+                }
+                ui.painter()
+                    .circle_filled(pos2(orect.left() + 10.0, orect.center().y), 3.4, odot);
+                ui.painter().galley(
+                    pos2(orect.left() + 20.0, orect.center().y - og.size().y * 0.5),
+                    og,
+                    if active { otext } else { p.text_primary },
+                );
+                if active {
+                    let chk = Rect::from_center_size(
+                        pos2(orect.right() - 12.0, orect.center().y),
+                        vec2(12.0, 12.0),
+                    );
+                    draw_icon(ui.painter(), chk, Icon::Check, otext);
+                }
+                if oresp.on_hover_cursor(CursorIcon::PointingHand).clicked() {
+                    chosen = Some(Some(opt));
+                }
+            }
+            if current.is_some() {
+                ui.add_space(2.0);
+                hairline_h(ui, p);
+                ui.add_space(2.0);
+                let og = ui.painter().layout_no_wrap(
+                    s.stage_clear_btn.to_string(),
+                    font_medium(12.0),
+                    p.text_muted,
+                );
+                let (orect, oresp) =
+                    ui.allocate_exact_size(vec2(150.0, 24.0), Sense::click());
+                if oresp.hovered() {
+                    ui.painter()
+                        .rect_filled(orect, Rounding::same(5.0), p.bg_hover);
+                }
+                ui.painter().galley(
+                    pos2(orect.left() + 10.0, orect.center().y - og.size().y * 0.5),
+                    og,
+                    if oresp.hovered() {
+                        p.text_primary
+                    } else {
+                        p.text_muted
+                    },
+                );
+                if oresp.on_hover_cursor(CursorIcon::PointingHand).clicked() {
+                    chosen = Some(None);
+                }
+            }
+        },
+    );
+    chosen
+}
+
 pub fn tag_chip(
     ui: &mut Ui,
     p: &ThemePalette,
@@ -992,5 +1124,328 @@ pub fn shortcut_label(base_ctrl_key: &str) -> String {
         format!("⌘{base_ctrl_key}")
     } else {
         format!("Ctrl+{base_ctrl_key}")
+    }
+}
+
+/// Normalizes a tag draft: trims, strips leading `#`, collapses whitespace, and lowercases.
+pub fn normalize_tag_input(raw: &str) -> String {
+    let stripped = raw.trim().trim_start_matches('#').trim();
+    if stripped.is_empty() {
+        return String::new();
+    }
+    stripped
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .to_lowercase()
+}
+
+/// Filters existing tags for autocomplete: prefix matches first, then substring matches,
+/// excluding `already_added` (case-insensitive). Returns `(matches, create_option)`.
+pub fn filter_tag_suggestions(
+    query: &str,
+    existing_tags: &[String],
+    already_added: &[String],
+) -> (Vec<String>, Option<String>) {
+    let norm_q = normalize_tag_input(query);
+    let mut seen: std::collections::HashSet<String> = already_added
+        .iter()
+        .map(|t| normalize_tag_input(t))
+        .filter(|t| !t.is_empty())
+        .collect();
+
+    let mut prefix_hits = Vec::new();
+    let mut sub_hits = Vec::new();
+    let mut exact_exists = false;
+
+    for raw in existing_tags {
+        let trimmed = raw.trim().trim_start_matches('#').trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        let lower = normalize_tag_input(trimmed);
+        if !norm_q.is_empty() && lower == norm_q {
+            exact_exists = true;
+        }
+        if !seen.insert(lower.clone()) {
+            continue;
+        }
+        if norm_q.is_empty() {
+            prefix_hits.push(trimmed.to_string());
+        } else if lower.starts_with(&norm_q) {
+            prefix_hits.push(trimmed.to_string());
+        } else if lower.contains(&norm_q) {
+            sub_hits.push(trimmed.to_string());
+        }
+    }
+
+    prefix_hits.sort_by_key(|a| a.to_lowercase());
+    sub_hits.sort_by_key(|a| a.to_lowercase());
+    prefix_hits.extend(sub_hits);
+    prefix_hits.truncate(8);
+
+    let create_opt = if !norm_q.is_empty()
+        && !exact_exists
+        && !already_added
+            .iter()
+            .any(|t| normalize_tag_input(t) == norm_q)
+    {
+        Some(norm_q)
+    } else {
+        None
+    };
+
+    (prefix_hits, create_opt)
+}
+
+/// Tag input with keyboard-navigable autocomplete dropdown (`Up`/`Down` + `Enter`/`Tab` + click).
+/// Consumes `Enter`/`Tab`/`Escape` while focused so parent modals or quick-add forms do not submit/close.
+#[allow(clippy::too_many_arguments)]
+pub fn tag_autocomplete_input(
+    ui: &mut Ui,
+    p: &ThemePalette,
+    lang: Lang,
+    id_salt: impl std::hash::Hash,
+    draft: &mut String,
+    hint: &str,
+    width: f32,
+    existing_tags: &[String],
+    already_added: &[String],
+) -> Option<String> {
+    let s = strings(lang);
+    let base_id = ui.make_persistent_id(id_salt);
+    let input_id = base_id.with("inp");
+    let sel_id = base_id.with("sel");
+    let popup_id = base_id.with("pop");
+
+    let has_focus_before = ui.ctx().memory(|m| m.has_focus(input_id));
+    let (mut key_up, mut key_down, mut key_accept, mut key_esc) = (false, false, false, false);
+    if has_focus_before {
+        ui.input_mut(|i| {
+            key_up = i.consume_key(egui::Modifiers::NONE, egui::Key::ArrowUp);
+            key_down = i.consume_key(egui::Modifiers::NONE, egui::Key::ArrowDown);
+            key_accept = i.consume_key(egui::Modifiers::NONE, egui::Key::Enter)
+                || i.consume_key(egui::Modifiers::NONE, egui::Key::Tab);
+            key_esc = i.consume_key(egui::Modifiers::NONE, egui::Key::Escape);
+        });
+    }
+
+    let bg_slot = ui.painter().add(egui::Shape::Noop);
+    let frame_resp = egui::Frame::none()
+        .inner_margin(Margin::symmetric(9.0, 5.0))
+        .show(ui, |ui| {
+            ui.add(
+                egui::TextEdit::singleline(draft)
+                    .id(input_id)
+                    .hint_text(hint)
+                    .frame(false)
+                    .font(font_body(12.5))
+                    .desired_width(width),
+            )
+        });
+    let resp = frame_resp.inner;
+    let outer_rect = frame_resp.response.rect;
+
+    if frame_resp.response.clicked()
+        || ui.input(|i| {
+            i.pointer.any_pressed()
+                && i.pointer
+                    .interact_pos()
+                    .is_some_and(|pt| outer_rect.contains(pt) && !resp.rect.contains(pt))
+        })
+    {
+        resp.request_focus();
+    }
+
+    let is_focused = resp.has_focus() || ui.ctx().memory(|m| m.has_focus(input_id));
+    let focus_t = anim_bool_eased(ui.ctx(), base_id.with("foc"), is_focused, 0.13);
+    let hov_t = anim_bool_eased(
+        ui.ctx(),
+        base_id.with("hov"),
+        resp.hovered() || frame_resp.response.hovered(),
+        0.10,
+    );
+    let rest_stroke = lerp_color(p.border_subtle, p.border_strong, hov_t);
+    let stroke_col = lerp_color(rest_stroke, p.accent, focus_t);
+    ui.painter().set(
+        bg_slot,
+        egui::Shape::rect_filled(outer_rect, Rounding::same(7.0), p.bg_input),
+    );
+    ui.painter().rect_stroke(
+        outer_rect,
+        Rounding::same(7.0),
+        Stroke::new(1.0 + 0.25 * focus_t, stroke_col),
+    );
+
+    if key_esc {
+        ui.memory_mut(|m| m.surrender_focus(input_id));
+        return None;
+    }
+
+    let (matches, create_opt) = filter_tag_suggestions(draft, existing_tags, already_added);
+    let total_items = matches.len() + usize::from(create_opt.is_some());
+    let mut sel_idx = ui.data(|d| d.get_temp::<usize>(sel_id)).unwrap_or(0);
+    if total_items > 0 {
+        if sel_idx >= total_items {
+            sel_idx = 0;
+        }
+        if key_down {
+            sel_idx = (sel_idx + 1) % total_items;
+        } else if key_up {
+            sel_idx = if sel_idx == 0 {
+                total_items - 1
+            } else {
+                sel_idx - 1
+            };
+        }
+    } else {
+        sel_idx = 0;
+    }
+    ui.data_mut(|d| d.insert_temp(sel_id, sel_idx));
+
+    let mut chosen: Option<String> = None;
+    if key_accept {
+        if sel_idx < matches.len() {
+            chosen = Some(matches[sel_idx].clone());
+        } else if let Some(ref created) = create_opt {
+            chosen = Some(created.clone());
+        } else {
+            let norm = normalize_tag_input(draft);
+            if !norm.is_empty()
+                && !already_added
+                    .iter()
+                    .any(|t| normalize_tag_input(t) == norm)
+            {
+                chosen = Some(norm);
+            }
+        }
+        if chosen.is_some() {
+            draft.clear();
+            ui.data_mut(|d| d.insert_temp(sel_id, 0usize));
+            ui.memory_mut(|m| m.request_focus(input_id));
+            return chosen;
+        }
+    }
+
+    if is_focused && total_items > 0 {
+        let pop_w = outer_rect.width().max(196.0);
+        egui::Area::new(popup_id)
+            .order(egui::Order::Foreground)
+            .fixed_pos(pos2(outer_rect.left(), outer_rect.bottom() + 4.0))
+            .show(ui.ctx(), |ui| {
+                egui::Frame::none()
+                    .fill(p.bg_elevated)
+                    .stroke(Stroke::new(1.0_f32, p.border_subtle))
+                    .rounding(Rounding::same(8.0))
+                    .shadow(p.shadow_elevated)
+                    .inner_margin(Margin::same(4.0))
+                    .show(ui, |ui| {
+                        ui.set_width(pop_w);
+                        ui.spacing_mut().item_spacing.y = 2.0;
+
+                        for (idx, tag) in matches.iter().enumerate() {
+                            let active = idx == sel_idx;
+                            let (bg, fg) = p.tag_colors(tag);
+                            let (r, r_resp) =
+                                ui.allocate_exact_size(vec2(pop_w - 8.0, 25.0), Sense::click());
+                            if active || r_resp.hovered() {
+                                ui.painter().rect_filled(
+                                    r,
+                                    Rounding::same(5.0),
+                                    if active { p.bg_selected } else { p.bg_hover },
+                                );
+                            }
+                            let dot_r = Rect::from_center_size(
+                                pos2(r.left() + 12.0, r.center().y),
+                                vec2(8.0, 8.0),
+                            );
+                            ui.painter().rect_filled(dot_r, Rounding::same(2.0), bg);
+                            ui.painter().circle_filled(dot_r.center(), 2.2, fg);
+                            let g = ui.painter().layout_no_wrap(
+                                format!("#{tag}"),
+                                font_medium(12.0),
+                                p.text_primary,
+                            );
+                            ui.painter().galley(
+                                pos2(r.left() + 22.0, r.center().y - g.size().y * 0.5),
+                                g,
+                                p.text_primary,
+                            );
+                            let r_hov = r_resp.hovered();
+                            if r_resp.on_hover_cursor(CursorIcon::PointingHand).clicked()
+                                || (r_hov && ui.input(|i| i.pointer.primary_pressed()))
+                            {
+                                chosen = Some(tag.clone());
+                            }
+                        }
+
+                        if let Some(ref new_tag) = create_opt {
+                            let idx = matches.len();
+                            let active = idx == sel_idx;
+                            let (r, r_resp) =
+                                ui.allocate_exact_size(vec2(pop_w - 8.0, 26.0), Sense::click());
+                            if active || r_resp.hovered() {
+                                ui.painter().rect_filled(
+                                    r,
+                                    Rounding::same(5.0),
+                                    if active { p.accent_soft } else { p.bg_hover },
+                                );
+                            }
+                            let lbl = format!("{} \"{}\"", s.create_tag_prefix, new_tag);
+                            let g = ui.painter().layout_no_wrap(
+                                lbl,
+                                font_medium(12.0),
+                                p.accent_text,
+                            );
+                            ui.painter().galley(
+                                pos2(r.left() + 8.0, r.center().y - g.size().y * 0.5),
+                                g,
+                                p.accent_text,
+                            );
+                            let r_hov = r_resp.hovered();
+                            if r_resp.on_hover_cursor(CursorIcon::PointingHand).clicked()
+                                || (r_hov && ui.input(|i| i.pointer.primary_pressed()))
+                            {
+                                chosen = Some(new_tag.clone());
+                            }
+                        }
+                    });
+            });
+    }
+
+    if chosen.is_some() {
+        draft.clear();
+        ui.data_mut(|d| d.insert_temp(sel_id, 0usize));
+        ui.memory_mut(|m| m.request_focus(input_id));
+    }
+    chosen
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn tag_autocomplete_filters_orders_and_offers_create() {
+        let existing = vec![
+            "backend".to_string(),
+            "База".to_string(),
+            "баг".to_string(),
+            "архив".to_string(),
+            "ui-ux".to_string(),
+        ];
+        let already = vec!["База".to_string()];
+
+        let (m, create) = filter_tag_suggestions("  #БА ", &existing, &already);
+        assert_eq!(m, vec!["баг"]);
+        assert_eq!(create, Some("ба".to_string()));
+
+        let (m2, create2) = filter_tag_suggestions("баг", &existing, &already);
+        assert_eq!(m2, vec!["баг"]);
+        assert_eq!(create2, None);
+
+        let (m3, create3) = filter_tag_suggestions("  Новый   Тег ", &existing, &already);
+        assert!(m3.is_empty());
+        assert_eq!(create3, Some("новый тег".to_string()));
     }
 }

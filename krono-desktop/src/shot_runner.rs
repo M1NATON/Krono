@@ -215,7 +215,7 @@ impl KronoApp {
             NoteMeta {
                 path: "welcome.md".into(),
                 title: "Добро пожаловать в Krono".into(),
-                status: NoteStatus::InProgress,
+                status: Some(NoteStatus::InProgress),
                 tags: vec!["krono".into(), "pkm".into()],
                 excerpt: "Нативное рабочее пространство для заметок на Rust и OpenGL.".into(),
                 modified: 100,
@@ -226,7 +226,7 @@ impl KronoApp {
             NoteMeta {
                 path: "architecture.md".into(),
                 title: "Architecture".into(),
-                status: NoteStatus::Done,
+                status: Some(NoteStatus::Done),
                 tags: vec!["rust".into(), "sqlite".into()],
                 excerpt: "OpenGL eframe, SQLite FTS5 и прямая 3-way синхронизация GitHub.".into(),
                 modified: 110,
@@ -237,7 +237,7 @@ impl KronoApp {
             NoteMeta {
                 path: "projects/roadmap.md".into(),
                 title: "Дорожная карта".into(),
-                status: NoteStatus::Todo,
+                status: Some(NoteStatus::Todo),
                 tags: vec!["planning".into()],
                 excerpt: "Этапы 1–6: кастомные доски, граф связей, Canvas и PWA.".into(),
                 modified: 95,
@@ -248,7 +248,7 @@ impl KronoApp {
             NoteMeta {
                 path: "tech/sqlite-fts5.md".into(),
                 title: "SQLite FTS5".into(),
-                status: NoteStatus::Done,
+                status: Some(NoteStatus::Done),
                 tags: vec!["sqlite".into(), "rust".into()],
                 excerpt: "Мгновенный полнотекстовый индекс и обратные ссылки за O(1).".into(),
                 modified: 88,
@@ -259,7 +259,7 @@ impl KronoApp {
             NoteMeta {
                 path: "tech/git-sync.md".into(),
                 title: "Git Data API".into(),
-                status: NoteStatus::InProgress,
+                status: Some(NoteStatus::InProgress),
                 tags: vec!["github".into(), "rust".into()],
                 excerpt: "Blobs + Trees + Commits без локального git и VPS.".into(),
                 modified: 84,
@@ -270,7 +270,7 @@ impl KronoApp {
             NoteMeta {
                 path: "daily/2026-11-19.md".into(),
                 title: "19 ноября 2026".into(),
-                status: NoteStatus::Todo,
+                status: Some(NoteStatus::Todo),
                 tags: vec!["daily".into()],
                 excerpt: "Тестирование локального мини-графа и экспорта Canvas в сценарий.".into(),
                 modified: 120,
@@ -281,7 +281,7 @@ impl KronoApp {
             NoteMeta {
                 path: "ideas/orphan-note.md".into(),
                 title: "Черновик идей".into(),
-                status: NoteStatus::Todo,
+                status: Some(NoteStatus::Todo),
                 tags: vec!["ideas".into()],
                 excerpt: "Отдельная заметка без входящих и исходящих ссылок.".into(),
                 modified: 40,
@@ -350,7 +350,7 @@ impl KronoApp {
             NoteMeta {
                 path: "welcome.md".into(),
                 title: "Добро пожаловать в Krono".into(),
-                status: NoteStatus::InProgress,
+                status: Some(NoteStatus::InProgress),
                 tags: vec!["krono".into(), "pkm".into()],
                 excerpt: "Нативное рабочее пространство для заметок, досок и холстов.".into(),
                 modified: 200,
@@ -361,7 +361,7 @@ impl KronoApp {
             NoteMeta {
                 path: "architecture.md".into(),
                 title: "Architecture".into(),
-                status: NoteStatus::Done,
+                status: Some(NoteStatus::Done),
                 tags: vec!["rust".into(), "sqlite".into()],
                 excerpt: "OpenGL eframe, SQLite FTS5 и прямая 3-way синхронизация GitHub.".into(),
                 modified: 190,
@@ -372,7 +372,7 @@ impl KronoApp {
             NoteMeta {
                 path: "projects/roadmap.md".into(),
                 title: "Дорожная карта".into(),
-                status: NoteStatus::Todo,
+                status: Some(NoteStatus::Todo),
                 tags: vec!["planning".into()],
                 excerpt: "Этапы 1–6: кастомные доски, граф связей, Canvas и PWA.".into(),
                 modified: 180,
@@ -383,7 +383,7 @@ impl KronoApp {
             NoteMeta {
                 path: "daily/2026/2026.md".into(),
                 title: "Дневник 2026".into(),
-                status: NoteStatus::Todo,
+                status: Some(NoteStatus::Todo),
                 tags: vec!["daily".into(), "year".into()],
                 excerpt: "Годовой хаб дневника: [[Ноябрь 2026]]".into(),
                 modified: 150,
@@ -394,7 +394,7 @@ impl KronoApp {
             NoteMeta {
                 path: "daily/2026/11/2026-11.md".into(),
                 title: "Ноябрь 2026".into(),
-                status: NoteStatus::InProgress,
+                status: Some(NoteStatus::InProgress),
                 tags: vec!["daily".into(), "month".into()],
                 excerpt: "Месяц дневника в [[Дневник 2026]].".into(),
                 modified: 175,
@@ -405,7 +405,7 @@ impl KronoApp {
             NoteMeta {
                 path: "daily/2026/11/2026-11-19.md".into(),
                 title: "19 ноября 2026".into(),
-                status: NoteStatus::Done,
+                status: Some(NoteStatus::Done),
                 tags: vec!["daily".into()],
                 excerpt: "Месяц: [[Ноябрь 2026]] • Граф и холст проверены.".into(),
                 modified: 170,
@@ -416,7 +416,7 @@ impl KronoApp {
             NoteMeta {
                 path: "daily/2026/11/2026-11-20.md".into(),
                 title: "20 ноября 2026".into(),
-                status: NoteStatus::Todo,
+                status: Some(NoteStatus::Todo),
                 tags: vec!["daily".into()],
                 excerpt: "Месяц: [[Ноябрь 2026]] • Обзор [[Сценарий выпуска #12]].".into(),
                 modified: 210,
@@ -487,7 +487,7 @@ impl KronoApp {
         self.current_doc = NoteDocument {
             frontmatter: Frontmatter {
                 title: "Добро пожаловать в Krono".into(),
-                status: NoteStatus::InProgress,
+                status: Some(NoteStatus::InProgress),
                 tags: vec!["krono".into(), "pkm".into()],
                 pinned: true,
                 board_order: None,
@@ -590,7 +590,7 @@ impl KronoApp {
         self.current_doc = NoteDocument {
             frontmatter: Frontmatter {
                 title: "Релиз Krono v0.3".into(),
-                status: NoteStatus::InProgress,
+                status: Some(NoteStatus::InProgress),
                 tags: vec!["krono".into(), "release".into()],
                 pinned: true,
                 board_order: None,
@@ -663,7 +663,7 @@ impl KronoApp {
         self.current_doc = NoteDocument {
             frontmatter: Frontmatter {
                 title: "20 ноября 2026".into(),
-                status: NoteStatus::InProgress,
+                status: Some(NoteStatus::InProgress),
                 tags: vec!["daily".into(), "sprint".into()],
                 pinned: false,
                 board_order: None,
@@ -942,7 +942,7 @@ impl KronoApp {
                         }
                         3 => {
                             self.config.github_repo = "krono-notes/demo-vault".into();
-                            self.config.github_token = "ghp_demo_token_redacted".into();
+                            self.has_saved_github_token = true;
                             self.config.auto_sync_after_save = true;
                             self.view_mode = ViewMode::Settings;
                             self.settings_tab = SettingsTab::GitHub;

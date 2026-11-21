@@ -187,58 +187,58 @@ fn split_folder_and_title(raw_input: &str) -> (Option<String>, String) {
     }
 }
 
-pub fn note_preset_body(preset_id: &str, title: &str, lang: Lang) -> (NoteStatus, Vec<String>, String) {
+pub fn note_preset_body(preset_id: &str, title: &str, lang: Lang) -> (Option<NoteStatus>, Vec<String>, String) {
     match (preset_id, lang) {
         ("meeting", Lang::Ru) => (
-            NoteStatus::InProgress,
+            None,
             vec!["meeting".into()],
             format!(
                 "# {title}\n\n**Участники:** \n\n## Повестка\n- \n\n## Решения и договорённости\n- \n\n## Задачи (Action Items)\n- [ ] \n"
             ),
         ),
         ("meeting", Lang::En) => (
-            NoteStatus::InProgress,
+            None,
             vec!["meeting".into()],
             format!(
                 "# {title}\n\n**Attendees:** \n\n## Agenda\n- \n\n## Key Decisions\n- \n\n## Action Items\n- [ ] \n"
             ),
         ),
         ("concept", Lang::Ru) => (
-            NoteStatus::Todo,
+            None,
             vec!["idea".into()],
             format!(
                 "# {title}\n\n## Главная мысль\n> \n\n## Ключевые тезисы\n- \n\n## Вопросы и связи\nСм. также: [[]]\n"
             ),
         ),
         ("concept", Lang::En) => (
-            NoteStatus::Todo,
+            None,
             vec!["idea".into()],
             format!(
                 "# {title}\n\n## Core Idea\n> \n\n## Key Points\n- \n\n## Questions & Links\nRelated: [[]]\n"
             ),
         ),
         ("script", Lang::Ru) => (
-            NoteStatus::InProgress,
+            None,
             vec!["draft".into()],
             format!(
                 "# {title}\n\n## Хук (Первые 15 секунд)\n\n## Структура\n1. Вступление\n2. Основная часть\n3. Вывод и CTA\n\n## Черновик текста\n\n\n## Чек-лист перед публикацией\n- [ ] Проверить тезисы\n- [ ] Обложка и заголовок\n"
             ),
         ),
         ("script", Lang::En) => (
-            NoteStatus::InProgress,
+            None,
             vec!["draft".into()],
             format!(
                 "# {title}\n\n## Opening Hook\n\n## Outline\n1. Intro\n2. Deep Dive\n3. Summary & CTA\n\n## Draft\n\n\n## Pre-publish Checklist\n- [ ] Fact check\n- [ ] Title & Thumbnail\n"
             ),
         ),
-        _ => (NoteStatus::Todo, Vec::new(), String::new()),
+        _ => (None, Vec::new(), String::new()),
     }
 }
 
 pub fn create_note(
     vault_dir: &Path,
     raw_title_or_path: &str,
-    status: NoteStatus,
+    status: Option<NoteStatus>,
     initial_body: &str,
     existing_paths: &HashSet<String>,
 ) -> Result<(String, NoteDocument, i64, u64), String> {
@@ -255,7 +255,7 @@ pub fn create_note(
 pub fn create_note_with_tags(
     vault_dir: &Path,
     raw_title_or_path: &str,
-    status: NoteStatus,
+    status: Option<NoteStatus>,
     tags: Vec<String>,
     initial_body: &str,
     existing_paths: &HashSet<String>,
@@ -476,7 +476,7 @@ pub fn ensure_daily_hubs_for_date(
         Ok((doc, _, _)) => (doc, true),
         Err(_) => {
             let mut fm = Frontmatter::new(year_title.clone());
-            fm.status = NoteStatus::InProgress;
+            fm.status = None;
             fm.tags = vec!["daily".into(), "year".into()];
             let heading = match lang {
                 Lang::Ru => format!("# {year_title}\n\n## Месяцы\n{month_bullet}\n"),
@@ -505,7 +505,7 @@ pub fn ensure_daily_hubs_for_date(
         Ok((doc, _, _)) => (doc, true),
         Err(_) => {
             let mut fm = Frontmatter::new(month_title.clone());
-            fm.status = NoteStatus::InProgress;
+            fm.status = None;
             fm.tags = vec!["daily".into(), "month".into()];
             let body = match lang {
                 Lang::Ru => format!(
@@ -552,7 +552,7 @@ pub fn create_daily_note(
         ),
     };
     let mut fm = Frontmatter::new(title.clone());
-    fm.status = NoteStatus::Todo;
+    fm.status = None;
     fm.tags = vec!["daily".to_string()];
     let doc = NoteDocument {
         frontmatter: fm,
@@ -1493,4 +1493,80 @@ mod tests {
 
         let _ = fs::remove_dir_all(&dir);
     }
+
+    #[test]
+    fn creates_and_lists_vault_folders() {
+        let dir = std::env::temp_dir().join(format!("krono_vault_folders_{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+
+        let f1 = create_vault_folder(&dir, "", "Проекты").unwrap();
+        assert_eq!(f1, "проекты");
+        let f2 = create_vault_folder(&dir, &f1, "Идеи 2026").unwrap();
+        assert_eq!(f2, "проекты/идеи-2026");
+
+        let listed = list_vault_folders(&dir);
+        assert!(listed.contains(&"проекты".to_string()));
+        assert!(listed.contains(&"проекты/идеи-2026".to_string()));
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+}
+
+pub fn list_vault_folders(vault_dir: &Path) -> Vec<String> {
+    let mut out = Vec::new();
+    for entry in WalkDir::new(vault_dir)
+        .min_depth(1)
+        .into_iter()
+        .filter_entry(|e| {
+            let name = e.file_name().to_string_lossy();
+            if name.starts_with('.') {
+                return false;
+            }
+            if e.depth() == 1 && (name.eq_ignore_ascii_case("assets") || name.eq_ignore_ascii_case("daily")) {
+                return false;
+            }
+            true
+        })
+        .flatten()
+    {
+        if !entry.file_type().is_dir() {
+            continue;
+        }
+        if let Ok(rel) = entry.path().strip_prefix(vault_dir) {
+            let norm = rel.to_string_lossy().replace('\\', "/");
+            if !norm.is_empty() && !norm.split('/').any(|s| s.is_empty() || s.starts_with('.')) {
+                out.push(norm);
+            }
+        }
+    }
+    out.sort();
+    out.dedup();
+    out
+}
+
+pub fn create_vault_folder(
+    vault_dir: &Path,
+    parent: &str,
+    raw_name: &str,
+) -> Result<String, String> {
+    let seg = slugify_title(raw_name);
+    if seg == "untitled" && raw_name.trim().is_empty() {
+        return Err("folder name cannot be empty".to_string());
+    }
+    let parent_clean = parent.trim().trim_matches('/').replace('\\', "/");
+    if parent_clean.split('/').any(|s| s == ".." || s.starts_with('.')) {
+        return Err("invalid parent folder".to_string());
+    }
+    let rel = if parent_clean.is_empty() {
+        seg
+    } else {
+        format!("{parent_clean}/{seg}")
+    };
+    let mut full = vault_dir.to_path_buf();
+    for part in rel.split('/') {
+        full.push(part);
+    }
+    fs::create_dir_all(&full).map_err(|e| format!("create folder '{rel}': {e}"))?;
+    Ok(rel)
 }

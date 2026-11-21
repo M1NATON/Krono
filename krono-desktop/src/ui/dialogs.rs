@@ -715,3 +715,208 @@ fn render_modal_backdrop(
             }
         });
 }
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FirstRunAction {
+    StartWorkspace,
+    StartAndConfigureSync,
+}
+
+pub fn render_first_run_screen(
+    ui: &mut egui::Ui,
+    p: &ThemePalette,
+    lang: Lang,
+    vault_draft: &mut String,
+) -> Option<FirstRunAction> {
+    let s = strings(lang);
+    let mut action = None;
+    let avail = ui.available_width();
+    let card_w = 520.0_f32.min((avail - 24.0).max(280.0));
+    let side_pad = ((avail - card_w) * 0.5).max(12.0);
+
+    ui.add_space((ui.available_height() * 0.14).max(24.0));
+    ui.horizontal(|ui| {
+        ui.add_space(side_pad);
+        egui::Frame::none()
+            .fill(p.bg_elevated)
+            .stroke(Stroke::new(1.0_f32, p.border_subtle))
+            .rounding(Rounding::same(14.0))
+            .shadow(p.shadow_floating)
+            .inner_margin(Margin::same(24.0))
+            .show(ui, |ui| {
+                ui.set_width((card_w - 48.0).max(220.0));
+                ui.horizontal(|ui| {
+                    let (lr, _) = ui.allocate_exact_size(vec2(26.0, 26.0), Sense::hover());
+                    draw_icon(ui.painter(), lr, Icon::Logo, p.accent);
+                    ui.add_space(6.0);
+                    ui.label(
+                        egui::RichText::new(s.first_run_title)
+                            .font(font_semibold(20.0))
+                            .color(p.text_primary),
+                    );
+                });
+                ui.add_space(8.0);
+                ui.label(
+                    egui::RichText::new(s.first_run_desc)
+                        .font(font_body(13.0))
+                        .color(p.text_secondary),
+                );
+
+                ui.add_space(18.0);
+                ui.label(
+                    egui::RichText::new(s.first_run_folder_label)
+                        .font(font_medium(12.5))
+                        .color(p.text_secondary),
+                );
+                ui.add_space(6.0);
+                let input_w = (ui.available_width() - 148.0).max(150.0);
+                ui.horizontal_wrapped(|ui| {
+                    ui.spacing_mut().item_spacing = vec2(8.0, 6.0);
+                    styled_text_input(ui, p, vault_draft, "", false, input_w);
+                    if secondary_button(ui, p, Some(Icon::Folder), s.first_run_browse_btn)
+                        .clicked()
+                    {
+                        let mut dlg = rfd::FileDialog::new();
+                        let cur = std::path::Path::new(vault_draft.trim());
+                        if cur.exists() {
+                            dlg = dlg.set_directory(cur);
+                        }
+                        if let Some(chosen) = dlg.pick_folder() {
+                            *vault_draft = chosen.to_string_lossy().to_string();
+                        }
+                    }
+                });
+
+                ui.add_space(14.0);
+                egui::Frame::none()
+                    .fill(p.bg_card)
+                    .stroke(Stroke::new(1.0_f32, p.border_hairline))
+                    .rounding(Rounding::same(8.0))
+                    .inner_margin(Margin::symmetric(12.0, 9.0))
+                    .show(ui, |ui| {
+                        ui.horizontal_top(|ui| {
+                            let (ir, _) =
+                                ui.allocate_exact_size(vec2(14.0, 16.0), Sense::hover());
+                            draw_icon(ui.painter(), ir, Icon::GitHub, p.accent_text);
+                            ui.add_space(4.0);
+                            ui.label(
+                                egui::RichText::new(s.first_run_sync_tip)
+                                    .font(font_body(12.0))
+                                    .color(p.text_secondary),
+                            );
+                        });
+                    });
+
+                ui.add_space(18.0);
+                let can_start = !vault_draft.trim().is_empty();
+                ui.horizontal_wrapped(|ui| {
+                    ui.spacing_mut().item_spacing = vec2(8.0, 6.0);
+                    ui.add_enabled_ui(can_start, |ui| {
+                        if primary_button(
+                            ui,
+                            p,
+                            Some(Icon::Check),
+                            s.first_run_start_btn,
+                            false,
+                        )
+                        .clicked()
+                        {
+                            action = Some(FirstRunAction::StartWorkspace);
+                        }
+                        if secondary_button(ui, p, Some(Icon::GitHub), s.first_run_sync_btn)
+                            .clicked()
+                        {
+                            action = Some(FirstRunAction::StartAndConfigureSync);
+                        }
+                    });
+                });
+            });
+    });
+
+    action
+}
+
+pub fn render_create_subfolder_modal(
+    ctx: &egui::Context,
+    p: &ThemePalette,
+    lang: Lang,
+    parent_folder: &mut Option<String>,
+    draft: &mut String,
+) -> Option<(String, String)> {
+    let Some(parent) = parent_folder.clone() else {
+        reset_focus_gate(ctx, egui::Id::new("krono_subf_focus_gate"));
+        return None;
+    };
+    let s = strings(lang);
+    let mut created: Option<(String, String)> = None;
+
+    if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
+        *parent_folder = None;
+        draft.clear();
+        return None;
+    }
+
+    render_modal_backdrop(ctx, p, "krono_subfolder_backdrop", 1.0, || {
+        *parent_folder = None;
+        draft.clear();
+    });
+
+    let modal_w = 390.0_f32.min((ctx.screen_rect().width() - 32.0).max(260.0));
+    egui::Window::new("krono_create_subfolder_modal")
+        .title_bar(false)
+        .resizable(false)
+        .collapsible(false)
+        .order(egui::Order::Foreground)
+        .anchor(Align2::CENTER_CENTER, vec2(0.0, -30.0))
+        .fixed_size(vec2(modal_w, 0.0))
+        .frame(
+            egui::Frame::none()
+                .fill(p.bg_elevated)
+                .stroke(Stroke::new(1.0_f32, p.border_subtle))
+                .rounding(Rounding::same(12.0))
+                .shadow(p.shadow_floating)
+                .inner_margin(Margin::same(18.0)),
+        )
+        .show(ctx, |ui| {
+            ui.label(
+                egui::RichText::new(s.subfolder_modal_title)
+                    .font(font_semibold(16.0))
+                    .color(p.text_primary),
+            );
+            ui.add_space(4.0);
+            ui.label(
+                egui::RichText::new(format!("{}: {parent}", s.create_folder_label))
+                    .font(font_body(12.0))
+                    .color(p.text_muted),
+            );
+            ui.add_space(10.0);
+
+            let resp = styled_text_input(
+                ui,
+                p,
+                draft,
+                s.subfolder_modal_hint,
+                false,
+                f32::INFINITY,
+            );
+            focus_once(ctx, egui::Id::new("krono_subf_focus_gate"), true, resp.id);
+            let enter = ui.input(|i| i.key_pressed(egui::Key::Enter));
+            ui.add_space(14.0);
+            ui.horizontal(|ui| {
+                if (primary_button(ui, p, Some(Icon::Plus), s.create_btn, false).clicked()
+                    || enter)
+                    && !draft.trim().is_empty()
+                {
+                    created = Some((parent.clone(), draft.trim().to_string()));
+                    *parent_folder = None;
+                    draft.clear();
+                }
+                if secondary_button(ui, p, None, s.cancel_btn).clicked() {
+                    *parent_folder = None;
+                    draft.clear();
+                }
+            });
+        });
+
+    created
+}

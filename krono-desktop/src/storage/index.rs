@@ -104,6 +104,13 @@ impl VaultIndex {
         Ok(idx)
     }
 
+    pub fn open_in_memory_checked() -> Result<Self, String> {
+        let conn = Connection::open_in_memory().map_err(|e| format!("open in-memory sqlite: {e}"))?;
+        let idx = Self { conn };
+        idx.init_schema()?;
+        Ok(idx)
+    }
+
     #[cfg(test)]
     pub fn open_in_memory() -> Self {
         let conn = Connection::open_in_memory().unwrap();
@@ -742,7 +749,7 @@ impl VaultIndex {
             params![
                 rel_path,
                 doc.frontmatter.title,
-                doc.frontmatter.status.as_yaml_str(),
+                doc.frontmatter.status.map(|s| s.as_yaml_str()).unwrap_or(""),
                 tags_joined,
                 excerpt,
                 modified,
@@ -1108,11 +1115,11 @@ fn row_to_collection_meta(row: &rusqlite::Row<'_>) -> rusqlite::Result<Collectio
 
 fn row_to_note_meta(row: &rusqlite::Row<'_>) -> rusqlite::Result<NoteMeta> {
     let tags_raw: String = row.get(3)?;
-    let status_raw: String = row.get(2)?;
+    let status_raw: Option<String> = row.get(2).ok().flatten();
     Ok(NoteMeta {
         path: row.get(0)?,
         title: row.get(1)?,
-        status: NoteStatus::from_str_lossy(&status_raw),
+        status: status_raw.as_deref().and_then(NoteStatus::parse_optional),
         tags: parse_tags_value(&tags_raw),
         excerpt: row.get(4)?,
         modified: row.get(5)?,
@@ -1153,7 +1160,7 @@ mod tests {
         let doc1 = NoteDocument {
             frontmatter: Frontmatter {
                 title: "Архитектура проекта".into(),
-                status: NoteStatus::InProgress,
+                status: Some(NoteStatus::InProgress),
                 tags: vec!["rust".into(), "дизайн".into()],
                 pinned: false,
                 board_order: None,
@@ -1359,5 +1366,32 @@ mod tests {
         assert_eq!(idx.count_unsynced_changes(), 2);
 
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn optional_status_sqlite_roundtrip_and_null_compat() {
+        let mut idx = VaultIndex::open_in_memory();
+        let no_stage = NoteDocument::parse("Plain note without status", "No Stage");
+        idx.upsert_note("no-stage.md", &no_stage, 100, 20).unwrap();
+
+        let with_stage = NoteDocument::parse("---\ntitle: Staged\nstatus: Done\n---\nOk", "Staged");
+        idx.upsert_note("staged.md", &with_stage, 101, 30).unwrap();
+
+        let listed = idx.list_notes().unwrap();
+        let m_none = listed.iter().find(|n| n.path == "no-stage.md").unwrap();
+        let m_done = listed.iter().find(|n| n.path == "staged.md").unwrap();
+        assert_eq!(m_none.status, None);
+        assert_eq!(m_done.status, Some(NoteStatus::Done));
+
+        // Legacy nullable row check via direct query using row_to_note_meta
+        let meta = idx
+            .conn
+            .query_row(
+                "SELECT 'legacy.md', 'Legacy', NULL, '', '', 10, 5, 0, 0",
+                [],
+                row_to_note_meta,
+            )
+            .unwrap();
+        assert_eq!(meta.status, None);
     }
 }

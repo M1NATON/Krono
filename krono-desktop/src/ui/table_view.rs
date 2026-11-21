@@ -1,6 +1,7 @@
 use crate::i18n::{format_relative_time, strings, Lang, Strings};
 use crate::ui::components::{
-    hairline_h, icon_button, primary_button, secondary_button, status_pill_picker, tag_chip,
+    hairline_h, icon_button, optional_status_pill_picker, primary_button, secondary_button,
+    tag_chip,
 };
 use crate::ui::icons::{draw_icon, Icon};
 use crate::ui::motion::{anim_bool_eased, lerp_color, with_alpha};
@@ -49,7 +50,8 @@ pub fn render_table_view(
                 if primary_button(ui, p, Some(Icon::Plus), s.new_note, false).clicked() {
                     actions.push(UiAction::CreateNote {
                         title: default_new_note_title(lang),
-                        status: status_filter.unwrap_or(NoteStatus::Todo),
+                        status: *status_filter,
+                        tags: Vec::new(),
                     });
                 }
                 if secondary_button(ui, p, Some(Icon::Table), s.new_custom_table_btn).clicked() {
@@ -126,7 +128,7 @@ fn filter_and_sort_notes<'a>(
         .iter()
         .filter(|n| {
             if let Some(st) = status_filter {
-                if n.status != st {
+                if n.status != Some(st) {
                     return false;
                 }
             }
@@ -155,8 +157,8 @@ fn filter_and_sort_notes<'a>(
         }
         TableSort::StatusAsc => filtered.sort_by(|a, b| {
             a.status
-                .sort_rank()
-                .cmp(&b.status.sort_rank())
+                .map_or(3, NoteStatus::sort_rank)
+                .cmp(&b.status.map_or(3, NoteStatus::sort_rank))
                 .then_with(|| a.title.to_lowercase().cmp(&b.title.to_lowercase()))
         }),
     }
@@ -477,7 +479,7 @@ fn render_mobile_cards(
                         ui.add_space(6.0);
                         ui.horizontal_wrapped(|ui| {
                             ui.spacing_mut().item_spacing = vec2(6.0, 4.0);
-                            if let Some(new_st) = status_pill_picker(
+                            if let Some(new_st) = optional_status_pill_picker(
                                 ui,
                                 p,
                                 lang,
@@ -623,7 +625,7 @@ fn render_desktop_table(
                                     });
 
                                     in_cell(ui, col_status, 26.0, |ui| {
-                                        if let Some(new_st) = status_pill_picker(
+                                        if let Some(new_st) = optional_status_pill_picker(
                                             ui,
                                             p,
                                             lang,

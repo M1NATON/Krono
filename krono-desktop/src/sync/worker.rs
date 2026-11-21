@@ -6,6 +6,7 @@ use std::{
     path::PathBuf,
     sync::mpsc::{self, Receiver, Sender},
 };
+use zeroize::Zeroizing;
 
 #[derive(Clone, Debug)]
 pub enum SyncEvent {
@@ -36,7 +37,7 @@ impl SyncWorker {
     pub fn start_test(
         &mut self,
         repo: String,
-        token: String,
+        token: Zeroizing<String>,
         lang: Lang,
         ctx: egui::Context,
     ) {
@@ -61,7 +62,7 @@ impl SyncWorker {
         base_hashes: HashMap<String, String>,
         repo: String,
         branch: String,
-        token: String,
+        token: Zeroizing<String>,
         lang: Lang,
         ctx: egui::Context,
     ) {

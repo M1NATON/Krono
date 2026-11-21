@@ -235,7 +235,10 @@ pub fn render_vault_map_view(
         {
             continue;
         }
-        let (_, dot, _) = p.status_colors(n.status);
+        let dot = n
+            .status
+            .map(|st| p.status_colors(st).1)
+            .unwrap_or(p.text_muted);
         groups
             .entry(folder_of_path(&n.path))
             .or_default()

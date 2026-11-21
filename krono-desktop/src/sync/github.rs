@@ -153,7 +153,8 @@ fn build_agent() -> ureq::Agent {
 }
 
 fn apply_headers(req: ureq::Request, token: &str) -> ureq::Request {
-    req.set("Authorization", &format!("Bearer {}", token.trim()))
+    let auth = zeroize::Zeroizing::new(format!("Bearer {}", token.trim()));
+    req.set("Authorization", &auth)
         .set("Accept", "application/vnd.github+json")
         .set("X-GitHub-Api-Version", "2022-11-28")
         .set("User-Agent", "Krono-Desktop/0.2")

@@ -814,7 +814,7 @@ pub fn apply_palette(ctx: &egui::Context, p: &ThemePalette) {
     v.widgets.open.bg_stroke = Stroke::new(1.0_f32, p.border_subtle);
     v.widgets.open.rounding = Rounding::same(6.0);
 
-    v.selection.bg_fill = p.accent_soft;
+    v.selection.bg_fill = crate::ui::motion::with_alpha(p.accent, if p.is_dark { 0.36 } else { 0.26 });
     v.selection.stroke = Stroke::new(1.0_f32, p.accent);
     v.text_cursor.stroke = Stroke::new(1.5_f32, p.accent);
 

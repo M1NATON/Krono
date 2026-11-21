@@ -32,7 +32,7 @@ pub struct GraphNode {
     pub path: String,
     pub title: String,
     pub kind: VaultFileKind,
-    pub status: NoteStatus,
+    pub status: Option<NoteStatus>,
     pub tags: Vec<String>,
     pub pos: Pos2,
     pub vel: Vec2,
@@ -102,7 +102,7 @@ fn data_fingerprint(
     for n in notes {
         mix(n.path.as_bytes());
         mix(n.title.as_bytes());
-        mix(n.status.as_yaml_str().as_bytes());
+        mix(n.status.map(|s| s.as_yaml_str()).unwrap_or("").as_bytes());
         for t in &n.tags {
             mix(t.as_bytes());
         }
@@ -201,7 +201,7 @@ impl GraphState {
                 path: c.path.clone(),
                 title: c.title.clone(),
                 kind: c.kind,
-                status: NoteStatus::Todo,
+                status: None,
                 tags: Vec::new(),
                 pos,
                 vel: Vec2::ZERO,
@@ -339,7 +339,7 @@ impl GraphState {
                     return false;
                 }
                 if let Some(st) = self.status_filter {
-                    if n.kind != VaultFileKind::Markdown || n.status != st {
+                    if n.kind != VaultFileKind::Markdown || n.status != Some(st) {
                         return false;
                     }
                 }
@@ -421,7 +421,10 @@ fn node_color(p: &ThemePalette, node: &GraphNode, mode: GraphColorMode) -> Color
         VaultFileKind::Table => p.token_colors(ColorToken::Teal).1,
         VaultFileKind::Asset => p.text_muted,
         VaultFileKind::Markdown => match mode {
-            GraphColorMode::ByStatus => p.status_colors(node.status).1,
+            GraphColorMode::ByStatus => match node.status {
+                Some(st) => p.status_colors(st).1,
+                None => p.text_muted,
+            },
             GraphColorMode::ByTag => {
                 if let Some(first_tag) = node.tags.first() {
                     p.tag_colors(first_tag).1
@@ -612,7 +615,31 @@ pub fn render_graph_view(
         .iter()
         .filter(|e| mask[e.a] && mask[e.b])
         .count();
-    let visible_nodes = mask.iter().filter(|v| **v).count();
+    let mut vis_notes = 0usize;
+    let mut vis_boards = 0usize;
+    let mut vis_tables = 0usize;
+    let mut vis_canvases = 0usize;
+    for (idx, node) in state.nodes.iter().enumerate() {
+        if !mask[idx] {
+            continue;
+        }
+        match node.kind {
+            VaultFileKind::Markdown => vis_notes += 1,
+            VaultFileKind::Board => vis_boards += 1,
+            VaultFileKind::Table => vis_tables += 1,
+            VaultFileKind::Canvas => vis_canvases += 1,
+            VaultFileKind::Asset => {}
+        }
+    }
+    let visible_nodes = vis_notes + vis_boards + vis_tables + vis_canvases;
+    let stats_lbl = format_graph_stats_label(
+        lang,
+        vis_notes,
+        vis_boards,
+        vis_tables,
+        vis_canvases,
+        visible_edges,
+    );
 
     for edge in &state.edges {
         if !mask[edge.a] || !mask[edge.b] {
@@ -729,7 +756,6 @@ pub fn render_graph_view(
     filter_ui.set_clip_rect(ui.clip_rect().intersect(canvas_rect));
 
     let filter_frame_resp = if !filters_open {
-        let stats_lbl = format!("{} · {}", visible_nodes, visible_edges);
         egui::Frame::none()
             .fill(p.bg_elevated)
             .stroke(Stroke::new(1.0_f32, p.border_subtle))
@@ -743,7 +769,7 @@ pub fn render_graph_view(
                         state.filters_open = Some(true);
                     }
                     ui.label(
-                        egui::RichText::new(stats_lbl)
+                        egui::RichText::new(&stats_lbl)
                             .font(font_mono(11.0))
                             .color(p.text_secondary),
                     );
@@ -770,13 +796,14 @@ pub fn render_graph_view(
                         if icon_button(ui, p, Icon::Close, s.tooltip_close, false).clicked() {
                             state.filters_open = Some(false);
                         }
-                        ui.label(
-                            egui::RichText::new(format!("{visible_nodes}/{visible_edges}"))
-                                .font(font_mono(10.5))
-                                .color(p.text_muted),
-                        );
                     });
                 });
+                ui.add_space(2.0);
+                ui.label(
+                    egui::RichText::new(&stats_lbl)
+                        .font(font_mono(10.5))
+                        .color(p.text_muted),
+                );
                 ui.add_space(6.0);
                 styled_text_input(
                     ui,
@@ -988,7 +1015,7 @@ pub fn build_local_graph(
             path: c.path.clone(),
             title: c.title.clone(),
             kind: c.kind,
-            status: NoteStatus::Todo,
+            status: None,
             tags: Vec::new(),
             pos: Pos2::ZERO,
             vel: Vec2::ZERO,
@@ -1261,6 +1288,46 @@ pub fn render_local_graph(
     }
 }
 
+fn format_graph_stats_label(
+    lang: Lang,
+    notes: usize,
+    boards: usize,
+    tables: usize,
+    canvases: usize,
+    edges: usize,
+) -> String {
+    let mut parts = Vec::new();
+    match lang {
+        Lang::Ru => {
+            parts.push(format!("{notes} зам."));
+            if boards > 0 {
+                parts.push(format!("{boards} доск."));
+            }
+            if tables > 0 {
+                parts.push(format!("{tables} табл."));
+            }
+            if canvases > 0 {
+                parts.push(format!("{canvases} канв."));
+            }
+            parts.push(format!("{edges} связ."));
+        }
+        Lang::En => {
+            parts.push(format!("{notes} notes"));
+            if boards > 0 {
+                parts.push(format!("{boards} boards"));
+            }
+            if tables > 0 {
+                parts.push(format!("{tables} tables"));
+            }
+            if canvases > 0 {
+                parts.push(format!("{canvases} canvases"));
+            }
+            parts.push(format!("{edges} links"));
+        }
+    }
+    parts.join(" · ")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1269,7 +1336,7 @@ mod tests {
         NoteMeta {
             path: path.into(),
             title: title.into(),
-            status,
+            status: Some(status),
             tags: tags.iter().map(|s| s.to_string()).collect(),
             excerpt: String::new(),
             modified: 100,

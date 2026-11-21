@@ -9,8 +9,8 @@ use crate::ui::icons::{draw_icon, draw_sync_icon, Icon};
 use crate::ui::motion::{anim_bool_eased, anim_value_smooth, lerp_color, with_alpha};
 use crate::ui::theme::{font_body, font_medium, font_mono, font_semibold, ThemePalette};
 use crate::ui::{
-    CalendarUiState, PagesKindFilter, PagesSortOrder, PagesTreeUiState, SettingsTab, SyncUiState,
-    UiAction, ViewMode,
+    CalendarUiState, CreateItemKind, PagesKindFilter, PagesSortOrder, PagesTreeUiState,
+    SettingsTab, SyncUiState, UiAction, ViewMode,
 };
 use eframe::egui::{
     self, pos2, vec2, Color32, CursorIcon, Margin, Rect, Rounding, Sense, Stroke, Ui,
@@ -112,6 +112,12 @@ struct FolderNode<'a> {
     entries: Vec<TreeEntry<'a>>,
 }
 
+fn ensure_folder_path<'a, 'b>(mut node: &'b mut FolderNode<'a>, folder_path: &str) {
+    for seg in folder_path.split('/').filter(|s| !s.is_empty()) {
+        node = node.subfolders.entry(seg.to_string()).or_default();
+    }
+}
+
 fn insert_into_tree<'a>(node: &mut FolderNode<'a>, parts: &[&str], entry: TreeEntry<'a>) {
     if parts.len() <= 1 {
         node.entries.push(entry);
@@ -130,6 +136,7 @@ pub fn render_sidebar(
     anim_t: f32,
     notes: &[NoteMeta],
     collections: &[CollectionMeta],
+    vault_folders: &[String],
     tag_counts: &[(String, usize)],
     selected_path: Option<&str>,
     selected_collection_path: Option<&str>,
@@ -172,6 +179,7 @@ pub fn render_sidebar(
             lang,
             notes,
             collections,
+            vault_folders,
             tag_counts,
             selected_path,
             selected_collection_path,
@@ -201,6 +209,7 @@ pub fn render_sidebar_drawer(
     anim_t: f32,
     notes: &[NoteMeta],
     collections: &[CollectionMeta],
+    vault_folders: &[String],
     tag_counts: &[(String, usize)],
     selected_path: Option<&str>,
     selected_collection_path: Option<&str>,
@@ -258,6 +267,7 @@ pub fn render_sidebar_drawer(
                             lang,
                             notes,
                             collections,
+                            vault_folders,
                             tag_counts,
                             selected_path,
                             selected_collection_path,
@@ -293,6 +303,8 @@ pub fn render_sidebar_drawer(
                 | UiAction::CreateNote { .. }
                 | UiAction::CreateCollection { .. }
                 | UiAction::OpenCreateModal(_)
+                | UiAction::CreateInFolder { .. }
+                | UiAction::StartCreateSubfolder(_)
                 | UiAction::ReturnToNotesTab
                 | UiAction::SetViewMode(_)
                 | UiAction::OpenPalette
@@ -314,6 +326,7 @@ fn render_sidebar_contents(
     lang: Lang,
     notes: &[NoteMeta],
     collections: &[CollectionMeta],
+    vault_folders: &[String],
     tag_counts: &[(String, usize)],
     selected_path: Option<&str>,
     selected_collection_path: Option<&str>,
@@ -509,6 +522,7 @@ fn render_sidebar_contents(
                 lang,
                 notes,
                 collections,
+                vault_folders,
                 tag_counts,
                 selected_path,
                 selected_collection_path,
@@ -743,6 +757,7 @@ pub(crate) fn render_pages_and_tags_tree(
     lang: Lang,
     notes: &[NoteMeta],
     collections: &[CollectionMeta],
+    vault_folders: &[String],
     tag_counts: &[(String, usize)],
     selected_path: Option<&str>,
     selected_collection_path: Option<&str>,
@@ -810,6 +825,10 @@ pub(crate) fn render_pages_and_tags_tree(
     }
 
     let mut root = FolderNode::default();
+    let mut notes_n = 0usize;
+    let mut boards_n = 0usize;
+    let mut tables_n = 0usize;
+    let mut canvases_n = 0usize;
     let mut filtered_count = 0usize;
     for note in notes {
         if let Some(tag_filter) = active_tag {
@@ -817,6 +836,7 @@ pub(crate) fn render_pages_and_tags_tree(
                 continue;
             }
         }
+        notes_n += 1;
         let entry = TreeEntry::Note(note);
         if !entry_matches_filter(entry, *pages_ui.filter) {
             continue;
@@ -827,6 +847,12 @@ pub(crate) fn render_pages_and_tags_tree(
     }
     if active_tag.is_none() {
         for col in collections {
+            match col.kind {
+                VaultFileKind::Board => boards_n += 1,
+                VaultFileKind::Table => tables_n += 1,
+                VaultFileKind::Canvas => canvases_n += 1,
+                _ => {}
+            }
             let entry = TreeEntry::Collection(col);
             if !entry_matches_filter(entry, *pages_ui.filter) {
                 continue;
@@ -835,7 +861,17 @@ pub(crate) fn render_pages_and_tags_tree(
             insert_into_tree(&mut root, &parts, entry);
             filtered_count += 1;
         }
+        if *pages_ui.filter == PagesKindFilter::All {
+            for folder in vault_folders {
+                ensure_folder_path(&mut root, folder);
+            }
+        }
     }
+    let total_all = notes_n + boards_n + tables_n + canvases_n;
+    let counts_breakdown = format!(
+        "{}: {notes_n} · {}: {boards_n} · {}: {tables_n} · {}: {canvases_n}",
+        s.stat_notes_count, s.stat_boards_count, s.stat_tables_count, s.stat_canvases_count,
+    );
 
     ui.horizontal(|ui| {
         section_heading(ui, p, s.pages_section);
@@ -922,7 +958,8 @@ pub(crate) fn render_pages_and_tags_tree(
                 egui::RichText::new(filtered_count.to_string())
                     .font(font_mono(11.0))
                     .color(p.text_muted),
-            );
+            )
+            .on_hover_text(&counts_breakdown);
         });
     });
 
@@ -930,16 +967,20 @@ pub(crate) fn render_pages_and_tags_tree(
         ui.add_space(4.0);
         ui.horizontal_wrapped(|ui| {
             ui.spacing_mut().item_spacing = vec2(4.0, 4.0);
-            for (kind, lbl) in [
-                (PagesKindFilter::All, s.filter_all),
-                (PagesKindFilter::Notes, s.filter_notes),
-                (PagesKindFilter::Boards, s.filter_boards),
-                (PagesKindFilter::Tables, s.filter_tables),
-                (PagesKindFilter::Canvases, s.filter_canvases),
+            for (kind, lbl, cnt) in [
+                (PagesKindFilter::All, s.filter_all, total_all),
+                (PagesKindFilter::Notes, s.filter_notes, notes_n),
+                (PagesKindFilter::Boards, s.filter_boards, boards_n),
+                (PagesKindFilter::Tables, s.filter_tables, tables_n),
+                (PagesKindFilter::Canvases, s.filter_canvases, canvases_n),
             ] {
                 let sel = *pages_ui.filter == kind;
                 let fg = if sel { p.accent_text } else { p.text_secondary };
-                let g = ui.painter().layout_no_wrap(lbl.to_string(), font_medium(10.5), fg);
+                let g = ui.painter().layout_no_wrap(
+                    format!("{lbl} {cnt}"),
+                    font_medium(10.5),
+                    fg,
+                );
                 let (r, resp) = ui.allocate_exact_size(vec2(g.size().x + 11.0, 19.0), Sense::click());
                 ui.painter().rect_filled(
                     r,
@@ -1155,8 +1196,52 @@ fn render_folder_node(
             g,
             txt_col,
         );
-        if resp.on_hover_cursor(CursorIcon::PointingHand).clicked() {
+        let resp = resp.on_hover_cursor(CursorIcon::PointingHand);
+        if resp.clicked() {
             actions.push(UiAction::ToggleFolder(folder_path.clone()));
+        }
+        if !is_daily_root && !is_daily_boards && !in_daily_notes && !is_diary_boards_lvl {
+            let folder_ctx = folder_path.clone();
+            resp.context_menu(|ui| {
+                ui.set_min_width(172.0);
+                if context_menu_row(ui, p, Icon::Document, s.folder_ctx_new_note, false).clicked() {
+                    actions.push(UiAction::CreateInFolder {
+                        folder: folder_ctx.clone(),
+                        kind: CreateItemKind::Note,
+                    });
+                    ui.close_menu();
+                }
+                if context_menu_row(ui, p, Icon::Board, s.folder_ctx_new_board, false).clicked() {
+                    actions.push(UiAction::CreateInFolder {
+                        folder: folder_ctx.clone(),
+                        kind: CreateItemKind::Board,
+                    });
+                    ui.close_menu();
+                }
+                if context_menu_row(ui, p, Icon::Table, s.folder_ctx_new_table, false).clicked() {
+                    actions.push(UiAction::CreateInFolder {
+                        folder: folder_ctx.clone(),
+                        kind: CreateItemKind::Table,
+                    });
+                    ui.close_menu();
+                }
+                if context_menu_row(ui, p, Icon::Canvas, s.folder_ctx_new_canvas, false).clicked() {
+                    actions.push(UiAction::CreateInFolder {
+                        folder: folder_ctx.clone(),
+                        kind: CreateItemKind::Canvas,
+                    });
+                    ui.close_menu();
+                }
+                ui.add_space(3.0);
+                hairline_h(ui, p);
+                ui.add_space(3.0);
+                if context_menu_row(ui, p, Icon::Folder, s.folder_ctx_new_subfolder, false)
+                    .clicked()
+                {
+                    actions.push(UiAction::StartCreateSubfolder(folder_ctx));
+                    ui.close_menu();
+                }
+            });
         }
 
         if open_t > 0.005 {
@@ -1435,9 +1520,11 @@ fn touch_entry_row(
 
     match entry {
         TreeEntry::Note(note) => {
-            let (_, dot_col, _) = p.status_colors(note.status);
-            ui.painter()
-                .circle_filled(pos2(rect.right() - 12.0, rect.center().y), 3.2, dot_col);
+            if let Some(st) = note.status {
+                let (_, dot_col, _) = p.status_colors(st);
+                ui.painter()
+                    .circle_filled(pos2(rect.right() - 12.0, rect.center().y), 3.2, dot_col);
+            }
         }
         TreeEntry::Collection(_) => {
             ui.painter()
@@ -1505,7 +1592,7 @@ mod tests {
         NoteMeta {
             path: path.into(),
             title: path.into(),
-            status: NoteStatus::Todo,
+            status: Some(NoteStatus::Todo),
             tags: Vec::new(),
             excerpt: String::new(),
             modified: 0,

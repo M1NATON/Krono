@@ -1,7 +1,8 @@
 use crate::i18n::{strings, Lang};
 use crate::ui::collection_view::{render_color_token_picker, CollectionEditorState};
 use crate::ui::components::{
-    focus_once, icon_button, primary_button, reset_focus_gate, secondary_button, styled_text_input,
+    focus_once, icon_button, normalize_tag_input, primary_button, reset_focus_gate,
+    secondary_button, styled_text_input, tag_autocomplete_input, tag_chip,
 };
 use crate::ui::icons::{draw_icon, Icon};
 use crate::ui::motion::{anim_bool_eased, lerp_color, with_alpha};
@@ -42,6 +43,7 @@ pub fn render_custom_board(
     layout: LayoutClass,
     today: SimpleDate,
     state: &mut CollectionEditorState,
+    available_tags: &[String],
     actions: &mut Vec<UiAction>,
 ) {
     let s = strings(lang);
@@ -135,6 +137,7 @@ pub fn render_custom_board(
             date_col_id.as_deref(),
             &note_link_cols,
             state,
+            available_tags,
             actions,
         );
         return;
@@ -328,10 +331,14 @@ pub fn render_custom_board(
                                                 state.quick_add_col_opt = None;
                                                 state.quick_add_at_top = false;
                                                 state.quick_add_title.clear();
+                                                state.quick_add_tags.clear();
+                                                state.quick_add_tag_input.clear();
                                             } else {
                                                 state.quick_add_col_opt = Some(opt.id.clone());
                                                 state.quick_add_at_top = true;
                                                 state.quick_add_title.clear();
+                                                state.quick_add_tags.clear();
+                                                state.quick_add_tag_input.clear();
                                             }
                                         }
                                     },
@@ -349,6 +356,7 @@ pub fn render_custom_board(
                                     inner_w,
                                     "top",
                                     state,
+                                    available_tags,
                                     actions,
                                 );
                                 cui.add_space(8.0);
@@ -678,6 +686,7 @@ pub fn render_custom_board(
                                                         .on_hover_cursor(CursorIcon::Grab);
                                                 }
                                                 if card_resp.clicked() {
+                                                    state.modal_new_tag.clear();
                                                     state.editing_record_id = Some(rec.id.clone());
                                                 }
                                             }
@@ -725,6 +734,7 @@ pub fn render_custom_board(
                                             inner_w,
                                             "inline",
                                             state,
+                                            available_tags,
                                             actions,
                                         );
                                     }
@@ -861,6 +871,7 @@ fn render_mobile_custom_board(
     date_col_id: Option<&str>,
     note_link_cols: &[String],
     state: &mut CollectionEditorState,
+    available_tags: &[String],
     actions: &mut Vec<UiAction>,
 ) {
     let s = strings(lang);
@@ -969,6 +980,7 @@ fn render_mobile_custom_board(
                 } else if let Some(delta) = reord_hit {
                     mob_reorder = Some((rec.id.clone(), delta));
                 } else if resp.interact(Sense::click()).on_hover_cursor(CursorIcon::PointingHand).clicked() {
+                    state.modal_new_tag.clear();
                     state.editing_record_id = Some(rec.id.clone());
                 }
                 ui.add_space(8.0);
@@ -988,6 +1000,7 @@ fn render_mobile_custom_board(
                     full_w,
                     "mob",
                     state,
+                    available_tags,
                     actions,
                 );
             }
@@ -1210,6 +1223,7 @@ fn render_column_quick_add(
     width: f32,
     slot_tag: &str,
     state: &mut CollectionEditorState,
+    available_tags: &[String],
     actions: &mut Vec<UiAction>,
 ) {
     let s = strings(lang);
@@ -1235,20 +1249,70 @@ fn render_column_quick_add(
                 f32::INFINITY,
             );
             focus_once(fui.ctx(), qa_gate_id, true, resp.id);
-            let enter = fui.input(|i| i.key_pressed(egui::Key::Enter));
+            let title_enter = resp.has_focus() && fui.input(|i| i.key_pressed(egui::Key::Enter));
+
+            fui.add_space(6.0);
+            if !state.quick_add_tags.is_empty() {
+                fui.horizontal_wrapped(|ui| {
+                    ui.spacing_mut().item_spacing = vec2(4.0, 4.0);
+                    let mut remove_idx: Option<usize> = None;
+                    for (ti, tag) in state.quick_add_tags.iter().enumerate() {
+                        let (_, rm) = tag_chip(ui, p, tag, true);
+                        if rm {
+                            remove_idx = Some(ti);
+                        }
+                    }
+                    if let Some(ti) = remove_idx {
+                        state.quick_add_tags.remove(ti);
+                    }
+                });
+                fui.add_space(4.0);
+            }
+
+            if let Some(new_tag) = tag_autocomplete_input(
+                fui,
+                p,
+                lang,
+                ("col_qa_tag", opt_id, slot_tag),
+                &mut state.quick_add_tag_input,
+                s.add_tag_hint,
+                f32::INFINITY,
+                available_tags,
+                &state.quick_add_tags,
+            ) {
+                let clean = normalize_tag_input(&new_tag);
+                if !clean.is_empty()
+                    && !state
+                        .quick_add_tags
+                        .iter()
+                        .any(|t| normalize_tag_input(t) == clean)
+                {
+                    state.quick_add_tags.push(clean);
+                }
+            }
+
             let esc = fui.input(|i| i.key_pressed(egui::Key::Escape));
             fui.add_space(7.0);
             fui.horizontal(|ui| {
-                if (primary_button(ui, p, Some(Icon::Plus), s.create_btn, false).clicked() || enter)
+                if (primary_button(ui, p, Some(Icon::Plus), s.create_btn, false).clicked()
+                    || title_enter)
                     && !state.quick_add_title.trim().is_empty()
                 {
                     let title = state.quick_add_title.trim().to_string();
-                    state.doc.add_record(
+                    let new_id = state.doc.add_record(
                         &title,
                         Some((group_col_id, opt_id)),
                         chrono::Utc::now().timestamp(),
                     );
+                    let tags = krono_core::note::normalize_tags(
+                        std::mem::take(&mut state.quick_add_tags),
+                    );
+                    if let Some(rec) = state.doc.records.iter_mut().find(|r| r.id == new_id) {
+                        rec.tags = tags;
+                    }
                     state.quick_add_title.clear();
+                    state.quick_add_tags.clear();
+                    state.quick_add_tag_input.clear();
                     state.quick_add_col_opt = None;
                     state.quick_add_at_top = false;
                     actions.push(UiAction::MarkCollectionDirty);
@@ -1256,6 +1320,8 @@ fn render_column_quick_add(
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     if icon_button(ui, p, Icon::Close, s.cancel_btn, false).clicked() || esc {
                         state.quick_add_title.clear();
+                        state.quick_add_tags.clear();
+                        state.quick_add_tag_input.clear();
                         state.quick_add_col_opt = None;
                         state.quick_add_at_top = false;
                     }
@@ -1293,6 +1359,8 @@ fn render_column_quick_add(
             state.quick_add_col_opt = Some(opt_id.to_string());
             state.quick_add_at_top = false;
             state.quick_add_title.clear();
+            state.quick_add_tags.clear();
+            state.quick_add_tag_input.clear();
         }
     }
 }

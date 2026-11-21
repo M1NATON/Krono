@@ -173,12 +173,30 @@ pub struct SyncUiState<'a> {
     pub pending_changes: usize,
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct VaultCounts {
+    pub notes: usize,
+    pub boards: usize,
+    pub tables: usize,
+    pub canvases: usize,
+    pub tags: usize,
+    pub links: usize,
+}
+
+impl VaultCounts {
+    #[allow(dead_code)]
+    pub fn total_items(&self) -> usize {
+        self.notes + self.boards + self.tables + self.canvases
+    }
+}
+
 pub struct EditorDocState<'a> {
     pub selected_path: Option<&'a str>,
     pub title: &'a mut String,
-    pub status: &'a mut NoteStatus,
+    pub status: &'a mut Option<NoteStatus>,
     pub tags: &'a mut Vec<String>,
     pub pinned: &'a mut bool,
+    pub extra_lines: &'a mut Vec<(String, String)>,
     pub body: &'a mut String,
     pub modified: i64,
     pub external_conflict: bool,
@@ -203,13 +221,15 @@ pub enum UiAction {
     OpenNote(String),
     CreateNote {
         title: String,
-        status: NoteStatus,
+        status: Option<NoteStatus>,
+        tags: Vec<String>,
     },
     OpenOrCreateWikilink(String),
     SaveCurrentNote,
+    CommitCurrentNoteTitle,
     UpdateNoteStatus {
         path: String,
-        status: NoteStatus,
+        status: Option<NoteStatus>,
     },
     MoveNoteInBoard {
         path: String,
@@ -225,6 +245,11 @@ pub enum UiAction {
     OpenNavTarget(NavTarget),
     CloseRecentTab(NavTarget),
     OpenCreateModalInFolder(String),
+    CreateInFolder {
+        folder: String,
+        kind: CreateItemKind,
+    },
+    StartCreateSubfolder(String),
     SendTaskToBoard {
         task_idx: usize,
         board_path: String,
@@ -260,6 +285,8 @@ pub enum UiAction {
     CloseSettings,
     SyncNow,
     TestGitHubConnection,
+    SaveGitHubToken,
+    DeleteGitHubToken,
     SetTagFilter(Option<String>),
     ToggleFolder(String),
     MarkDirty,

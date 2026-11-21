@@ -1,8 +1,8 @@
 use crate::config::CustomSlashSnippet;
 use crate::i18n::{format_relative_time, strings, Lang};
 use crate::ui::components::{
-    focus_once, icon_button, primary_button, reset_focus_gate, secondary_button,
-    status_pill_picker, tag_chip,
+    focus_once, icon_button, optional_status_pill_picker, primary_button, reset_focus_gate,
+    secondary_button, tag_chip,
 };
 use crate::ui::icons::{draw_icon, Icon};
 use crate::ui::embedded_board::render_embedded_board_widget;
@@ -70,6 +70,7 @@ pub fn render_editor_view(
     if effective_mode == EditorMode::Split {
         egui::ScrollArea::vertical()
             .id_salt("editor_split_scroll")
+            .drag_to_scroll(false)
             .show(ui, |ui| {
                 ui.add_space(6.0 + (1.0 - entrance_t) * 6.0);
                 if doc.external_conflict {
@@ -81,10 +82,12 @@ pub fn render_editor_view(
                     p,
                     lang,
                     layout,
+                    today,
                     doc.title,
                     doc.status,
                     doc.tags,
                     doc.pinned,
+                    doc.extra_lines,
                     doc.modified,
                     new_tag_input,
                     adding_tag,
@@ -108,6 +111,7 @@ pub fn render_editor_view(
                             ui,
                             p,
                             lang,
+                            today,
                             doc.body,
                             ed_id,
                             prefs,
@@ -170,6 +174,7 @@ pub fn render_editor_view(
     // Centered single-column page (configured reading measure)
     egui::ScrollArea::vertical()
         .id_salt("editor_main_scroll")
+        .drag_to_scroll(false)
         .show(ui, |ui| {
             let avail = ui.available_width();
             let edge = if layout.is_mobile() { 4.0 } else { 24.0 };
@@ -193,10 +198,12 @@ pub fn render_editor_view(
                         p,
                         lang,
                         layout,
+                        today,
                         doc.title,
                         doc.status,
                         doc.tags,
                         doc.pinned,
+                        doc.extra_lines,
                         doc.modified,
                         new_tag_input,
                         adding_tag,
@@ -216,6 +223,7 @@ pub fn render_editor_view(
                                 ui,
                                 p,
                                 lang,
+                                today,
                                 doc.body,
                                 ed_id,
                                 prefs,
@@ -339,10 +347,12 @@ fn render_document_header(
     p: &ThemePalette,
     lang: Lang,
     layout: LayoutClass,
+    today: SimpleDate,
     note_title: &mut String,
-    note_status: &mut NoteStatus,
+    note_status: &mut Option<NoteStatus>,
     note_tags: &mut Vec<String>,
     note_pinned: &mut bool,
+    note_extra_lines: &mut Vec<(String, String)>,
     note_modified: i64,
     new_tag_input: &mut String,
     adding_tag: &mut bool,
@@ -371,11 +381,15 @@ fn render_document_header(
         title_resp.request_focus();
         *focus_title = false;
     }
-    if title_resp.has_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+    let enter_on_title = title_resp.has_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+    if enter_on_title {
         *focus_body = true;
     }
     if title_resp.changed() {
         actions.push(UiAction::MarkDirty);
+    }
+    if enter_on_title || title_resp.lost_focus() {
+        actions.push(UiAction::CommitCurrentNoteTitle);
     }
 
     ui.add_space(10.0);
@@ -384,7 +398,7 @@ fn render_document_header(
     ui.horizontal_wrapped(|ui| {
         ui.spacing_mut().item_spacing = vec2(8.0, 6.0);
 
-        if let Some(new_status) = status_pill_picker(
+        if let Some(new_status) = optional_status_pill_picker(
             ui,
             p,
             lang,
@@ -402,6 +416,91 @@ fn render_document_header(
             *note_pinned = !*note_pinned;
             actions.push(UiAction::MarkDirty);
             actions.push(UiAction::SaveCurrentNote);
+        }
+
+        if let Some(date_idx) = note_extra_lines
+            .iter()
+            .position(|(k, _)| k.trim().eq_ignore_ascii_case("date"))
+        {
+            let date_val = note_extra_lines[date_idx].1.clone();
+            let g = ui.painter().layout_no_wrap(
+                date_val,
+                font_mono(11.5),
+                p.text_secondary,
+            );
+            let (rect, resp) =
+                ui.allocate_exact_size(vec2(g.size().x + 34.0, 22.0), Sense::click());
+            ui.painter()
+                .rect_filled(rect, Rounding::same(11.0), p.bg_elevated);
+            ui.painter().rect_stroke(
+                rect,
+                Rounding::same(11.0),
+                Stroke::new(1.0_f32, p.border_hairline),
+            );
+            draw_icon(
+                ui.painter(),
+                Rect::from_center_size(pos2(rect.left() + 11.0, rect.center().y), vec2(11.0, 11.0)),
+                Icon::CalendarDays,
+                p.text_muted,
+            );
+            ui.painter().galley(
+                pos2(rect.left() + 20.0, rect.center().y - g.size().y * 0.5),
+                g,
+                p.text_secondary,
+            );
+            let del_r = Rect::from_center_size(
+                pos2(rect.right() - 10.0, rect.center().y),
+                vec2(10.0, 10.0),
+            );
+            let del_hov = resp
+                .hover_pos()
+                .is_some_and(|pt| del_r.expand(4.0).contains(pt));
+            draw_icon(
+                ui.painter(),
+                del_r,
+                Icon::Close,
+                if del_hov { p.danger } else { p.text_muted },
+            );
+            if resp.on_hover_cursor(CursorIcon::PointingHand).clicked() && del_hov {
+                note_extra_lines.remove(date_idx);
+                actions.push(UiAction::MarkDirty);
+                actions.push(UiAction::SaveCurrentNote);
+            }
+        } else {
+            let g = ui.painter().layout_no_wrap(
+                s.insert_date_btn.to_string(),
+                font_medium(11.5),
+                p.text_muted,
+            );
+            let (rect, resp) =
+                ui.allocate_exact_size(vec2(g.size().x + 12.0, 21.0), Sense::click());
+            if resp.hovered() {
+                ui.painter()
+                    .rect_filled(rect, Rounding::same(5.0), p.bg_hover);
+            } else {
+                ui.painter().rect_stroke(
+                    rect,
+                    Rounding::same(5.0),
+                    Stroke::new(1.0_f32, p.border_hairline),
+                );
+            }
+            ui.painter().galley(
+                pos2(
+                    rect.center().x - g.size().x * 0.5,
+                    rect.center().y - g.size().y * 0.5,
+                ),
+                g,
+                if resp.hovered() {
+                    p.text_primary
+                } else {
+                    p.text_muted
+                },
+            );
+            if resp.on_hover_cursor(CursorIcon::PointingHand).clicked() {
+                note_extra_lines.push(("date".to_string(), today.format_iso()));
+                actions.push(UiAction::MarkDirty);
+                actions.push(UiAction::SaveCurrentNote);
+            }
         }
 
         let mut remove_idx: Option<usize> = None;
@@ -678,7 +777,8 @@ fn render_empty_state(
                         } else {
                             "New Note".into()
                         },
-                        status: NoteStatus::Todo,
+                        status: None,
+                        tags: Vec::new(),
                     });
                 }
             });

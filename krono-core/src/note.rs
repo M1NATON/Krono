@@ -26,13 +26,19 @@ impl NoteStatus {
     }
 
     pub fn from_str_lossy(raw: &str) -> Self {
+        Self::parse_optional(raw).unwrap_or(NoteStatus::Todo)
+    }
+
+    pub fn parse_optional(raw: &str) -> Option<Self> {
         let norm = raw.trim().to_lowercase();
         match norm.as_str() {
+            "" | "none" | "null" | "-" | "нет" | "без этапа" => None,
             "in progress" | "in_progress" | "in-progress" | "progress" | "в работе" => {
-                NoteStatus::InProgress
+                Some(NoteStatus::InProgress)
             }
-            "done" | "completed" | "finished" | "готово" => NoteStatus::Done,
-            _ => NoteStatus::Todo,
+            "done" | "completed" | "finished" | "готово" => Some(NoteStatus::Done),
+            "todo" | "to do" | "to-do" | "к выполнению" => Some(NoteStatus::Todo),
+            _ => Some(NoteStatus::Todo),
         }
     }
 
@@ -48,7 +54,7 @@ impl NoteStatus {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Frontmatter {
     pub title: String,
-    pub status: NoteStatus,
+    pub status: Option<NoteStatus>,
     pub tags: Vec<String>,
     pub pinned: bool,
     pub board_order: Option<i64>,
@@ -59,7 +65,7 @@ impl Frontmatter {
     pub fn new(title: impl Into<String>) -> Self {
         Self {
             title: title.into(),
-            status: NoteStatus::Todo,
+            status: None,
             tags: Vec::new(),
             pinned: false,
             board_order: None,
@@ -78,7 +84,7 @@ pub struct NoteDocument {
 pub struct NoteMeta {
     pub path: String,
     pub title: String,
-    pub status: NoteStatus,
+    pub status: Option<NoteStatus>,
     pub tags: Vec<String>,
     pub excerpt: String,
     pub modified: i64,
@@ -205,9 +211,7 @@ impl NoteDocument {
                                 }
                             }
                             "status" => {
-                                if !val_raw.is_empty() {
-                                    fm.status = NoteStatus::from_str_lossy(strip_quotes(val_raw));
-                                }
+                                fm.status = NoteStatus::parse_optional(strip_quotes(val_raw));
                             }
                             "tags" => {
                                 if val_raw.is_empty() {
@@ -245,7 +249,9 @@ impl NoteDocument {
         let mut out = String::new();
         out.push_str("---\n");
         out.push_str(&format!("title: {}\n", yaml_scalar(&self.frontmatter.title)));
-        out.push_str(&format!("status: {}\n", self.frontmatter.status.as_yaml_str()));
+        if let Some(status) = self.frontmatter.status {
+            out.push_str(&format!("status: {}\n", status.as_yaml_str()));
+        }
         out.push_str(&format!("tags: {}\n", self.frontmatter.tags.join(", ")));
         if self.frontmatter.pinned {
             out.push_str("pinned: true\n");
@@ -282,7 +288,7 @@ mod tests {
         let raw = "---\r\ntitle: \"Roadmap 2026\"\r\nstatus: In Progress\r\ntags: [rust, ui, Rust]\r\nauthor: Alex\r\ncreated: 2026-01-10\r\n---\r\n\r\nHello **world**\r\nLine 2";
         let doc = NoteDocument::parse(raw, "fallback");
         assert_eq!(doc.frontmatter.title, "Roadmap 2026");
-        assert_eq!(doc.frontmatter.status, NoteStatus::InProgress);
+        assert_eq!(doc.frontmatter.status, Some(NoteStatus::InProgress));
         assert_eq!(doc.frontmatter.tags, vec!["rust", "ui"]);
         assert_eq!(
             doc.frontmatter.extra_lines,
@@ -310,8 +316,19 @@ mod tests {
         let plain = "# Heading\nJust markdown.";
         let doc2 = NoteDocument::parse(plain, "My Fallback");
         assert_eq!(doc2.frontmatter.title, "My Fallback");
-        assert_eq!(doc2.frontmatter.status, NoteStatus::Todo);
+        assert_eq!(doc2.frontmatter.status, None);
         assert_eq!(doc2.body, plain);
+        assert!(!doc2.serialize().contains("status:"));
+    }
+
+    #[test]
+    fn optional_status_parses_empty_and_none() {
+        assert_eq!(NoteStatus::parse_optional(""), None);
+        assert_eq!(NoteStatus::parse_optional("none"), None);
+        assert_eq!(NoteStatus::parse_optional("Todo"), Some(NoteStatus::Todo));
+        let raw = "---\ntitle: No Stage\nstatus:\ntags: a\n---\nText";
+        let doc = NoteDocument::parse(raw, "fallback");
+        assert_eq!(doc.frontmatter.status, None);
     }
 
     #[test]

@@ -15,7 +15,7 @@ use crate::ui::theme::{
     accent_swatch_color, font_body, font_bold, font_medium, font_mono, font_semibold,
     font_serif_bold, ThemePalette,
 };
-use crate::ui::{SettingsTab, UiAction};
+use crate::ui::{SettingsTab, UiAction, VaultCounts};
 use eframe::egui::{
     self, pos2, vec2, Align, CursorIcon, Layout, Margin, Rect, Rounding, Sense, Stroke, Ui,
 };
@@ -37,13 +37,13 @@ pub fn render_settings_view(
     tab: &mut SettingsTab,
     tab_anim_t: f32,
     vault_draft: &mut String,
-    show_token: &mut bool,
+    has_saved_token: bool,
+    token_replace_mode: &mut bool,
+    token_draft: &mut String,
     test_feedback: &Option<(bool, String)>,
     last_sync_info: Option<&str>,
     sync_busy: bool,
-    notes_count: usize,
-    tags_count: usize,
-    links_count: usize,
+    counts: VaultCounts,
     snippet_trigger: &mut String,
     snippet_label: &mut String,
     snippet_content: &mut String,
@@ -90,13 +90,13 @@ pub fn render_settings_view(
                     *tab,
                     tab_anim_t,
                     vault_draft,
-                    show_token,
+                    has_saved_token,
+                    token_replace_mode,
+                    token_draft,
                     test_feedback,
                     last_sync_info,
                     sync_busy,
-                    notes_count,
-                    tags_count,
-                    links_count,
+                    counts,
                     snippet_trigger,
                     snippet_label,
                     snippet_content,
@@ -234,13 +234,13 @@ pub fn render_settings_view(
                             *tab,
                             tab_anim_t,
                             vault_draft,
-                            show_token,
+                            has_saved_token,
+                            token_replace_mode,
+                            token_draft,
                             test_feedback,
                             last_sync_info,
                             sync_busy,
-                            notes_count,
-                            tags_count,
-                            links_count,
+                            counts,
                             snippet_trigger,
                             snippet_label,
                             snippet_content,
@@ -268,13 +268,13 @@ fn render_tab_scroll(
     tab: SettingsTab,
     tab_anim_t: f32,
     vault_draft: &mut String,
-    show_token: &mut bool,
+    has_saved_token: bool,
+    token_replace_mode: &mut bool,
+    token_draft: &mut String,
     test_feedback: &Option<(bool, String)>,
     last_sync_info: Option<&str>,
     sync_busy: bool,
-    notes_count: usize,
-    tags_count: usize,
-    links_count: usize,
+    counts: VaultCounts,
     snippet_trigger: &mut String,
     snippet_label: &mut String,
     snippet_content: &mut String,
@@ -867,9 +867,15 @@ fn render_tab_scroll(
                         ui.add_space(12.0);
 
                         ui.columns(3, |cols| {
-                            index_stat_tile(&mut cols[0], p, notes_count, s.stat_notes_count);
-                            index_stat_tile(&mut cols[1], p, tags_count, s.stat_tags_count);
-                            index_stat_tile(&mut cols[2], p, links_count, s.stat_links_count);
+                            index_stat_tile(&mut cols[0], p, counts.notes, s.stat_notes_count);
+                            index_stat_tile(&mut cols[1], p, counts.boards, s.stat_boards_count);
+                            index_stat_tile(&mut cols[2], p, counts.tables, s.stat_tables_count);
+                        });
+                        ui.add_space(8.0);
+                        ui.columns(3, |cols| {
+                            index_stat_tile(&mut cols[0], p, counts.canvases, s.stat_canvases_count);
+                            index_stat_tile(&mut cols[1], p, counts.tags, s.stat_tags_count);
+                            index_stat_tile(&mut cols[2], p, counts.links, s.stat_links_count);
                         });
 
                         ui.add_space(14.0);
@@ -1293,7 +1299,7 @@ fn render_tab_scroll(
                     ui.add_space(14.0);
 
                     // Connection summary card
-                    let configured = cfg.is_github_configured();
+                    let configured = cfg.is_github_configured(has_saved_token);
                     settings_card(ui, p, |ui| {
                         let narrow = ui.available_width() < 440.0;
                         let sync_text = format!(
@@ -1427,32 +1433,82 @@ fn render_tab_scroll(
                                 .color(p.text_secondary),
                         );
                         ui.add_space(5.0);
-                        let tok_w = (ui.available_width() - 36.0).max(160.0);
-                        ui.horizontal(|ui| {
-                            if styled_text_input(
-                                ui,
-                                p,
-                                &mut cfg.github_token,
-                                s.gh_token_hint,
-                                !*show_token,
-                                tok_w,
-                            )
-                            .changed()
-                            {
-                                actions.push(UiAction::ConfigChanged);
+                        if has_saved_token && !*token_replace_mode {
+                            ui.horizontal_wrapped(|ui| {
+                                ui.spacing_mut().item_spacing = vec2(8.0, 6.0);
+                                egui::Frame::none()
+                                    .fill(p.success_soft)
+                                    .rounding(Rounding::same(6.0))
+                                    .inner_margin(Margin::symmetric(10.0, 5.0))
+                                    .show(ui, |ui| {
+                                        ui.horizontal(|ui| {
+                                            ui.spacing_mut().item_spacing.x = 6.0;
+                                            let (ir, _) = ui.allocate_exact_size(
+                                                vec2(12.0, 12.0),
+                                                Sense::hover(),
+                                            );
+                                            draw_icon(ui.painter(), ir, Icon::Check, p.success);
+                                            ui.label(
+                                                egui::RichText::new(s.gh_token_saved)
+                                                    .font(font_medium(12.0))
+                                                    .color(p.success),
+                                            );
+                                        });
+                                    });
+                                if secondary_button(ui, p, Some(Icon::Edit), s.gh_token_replace)
+                                    .clicked()
+                                {
+                                    token_draft.clear();
+                                    *token_replace_mode = true;
+                                }
+                                if secondary_button(ui, p, Some(Icon::Trash), s.gh_token_delete)
+                                    .clicked()
+                                {
+                                    actions.push(UiAction::DeleteGitHubToken);
+                                }
+                            });
+                        } else {
+                            if !has_saved_token {
+                                ui.label(
+                                    egui::RichText::new(s.gh_token_missing)
+                                        .font(font_body(12.0))
+                                        .color(p.text_muted),
+                                );
+                                ui.add_space(4.0);
                             }
-                            if icon_button(
-                                ui,
-                                p,
-                                if *show_token { Icon::EyeOff } else { Icon::Eye },
-                                s.gh_show_token,
-                                *show_token,
-                            )
-                            .clicked()
-                            {
-                                *show_token = !*show_token;
-                            }
-                        });
+                            let tok_w = (ui.available_width() - 180.0).max(160.0);
+                            ui.horizontal_wrapped(|ui| {
+                                ui.spacing_mut().item_spacing = vec2(8.0, 6.0);
+                                styled_text_input(
+                                    ui,
+                                    p,
+                                    token_draft,
+                                    s.gh_token_hint,
+                                    true,
+                                    tok_w,
+                                );
+                                ui.add_enabled_ui(!token_draft.trim().is_empty(), |ui| {
+                                    if primary_button(
+                                        ui,
+                                        p,
+                                        Some(Icon::Check),
+                                        s.gh_token_save,
+                                        false,
+                                    )
+                                    .clicked()
+                                    {
+                                        actions.push(UiAction::SaveGitHubToken);
+                                    }
+                                });
+                                if *token_replace_mode
+                                    && secondary_button(ui, p, Some(Icon::Close), s.cancel_btn)
+                                        .clicked()
+                                {
+                                    token_draft.clear();
+                                    *token_replace_mode = false;
+                                }
+                            });
+                        }
 
                         ui.add_space(14.0);
                         ui.add_enabled_ui(!sync_busy, |ui| {

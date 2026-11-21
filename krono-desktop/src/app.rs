@@ -6,19 +6,25 @@ use crate::storage::{
     index::{BacklinkHit, CollectionMeta, RawLinkEdge, SearchHit, VaultIndex},
     vault::{
         audit_vault_assets, create_canvas_preset, create_collection, create_collection_preset,
-        create_daily_note, create_note, create_note_with_preset, delete_note, duplicate_canvas,
-        duplicate_collection, duplicate_note, ensure_daily_hubs_for_date, ensure_starter_vault,
-        import_image_file_to_assets, migrate_diary_hierarchy, read_canvas, read_collection,
-        read_note, rename_canvas, rename_collection, rename_note, rewrite_vault_canvas_links,
+        create_daily_note, create_note_with_preset, create_note_with_tags, create_vault_folder,
+        delete_note, duplicate_canvas, duplicate_collection, duplicate_note,
+        ensure_daily_hubs_for_date, ensure_starter_vault, import_image_file_to_assets,
+        list_vault_folders, migrate_diary_hierarchy, read_canvas, read_collection, read_note,
+        rename_canvas, rename_collection, rename_note, rewrite_vault_canvas_links,
         rewrite_vault_collection_links, rewrite_vault_wikilinks, save_canvas, save_collection,
         save_image_bytes_to_assets, save_note, AssetAuditEntry,
     },
     watcher::VaultWatcher,
 };
 use crate::sync::{
+    secrets::{
+        delete_github_token, has_github_token, load_github_token, migrate_legacy_token,
+        save_github_token,
+    },
     updater::{AvailableUpdate, UpdateApplyOutcome, UpdateEvent, UpdateWorker},
     worker::{SyncEvent, SyncWorker},
 };
+use zeroize::{Zeroize, Zeroizing};
 use crate::ui::{
     board_view::render_board_view,
     canvas_view::{render_canvas_view, CanvasEditorState},
@@ -26,7 +32,8 @@ use crate::ui::{
     command_palette::render_command_palette,
     components::{render_toasts, Toast, ToastKind},
     dialogs::{
-        render_create_item_modal, render_delete_modal, render_rename_modal, CreateModalState,
+        render_create_item_modal, render_create_subfolder_modal, render_delete_modal,
+        render_first_run_screen, render_rename_modal, CreateModalState, FirstRunAction,
     },
     editor_view::render_editor_view,
     embedded_board::EmbeddedBoardAction,
@@ -46,7 +53,7 @@ use crate::ui::{
     vault_map_view::{render_vault_map_view, VaultMapState},
     CalendarUiState, CreateItemKind, EditorDocState, EditorMode, EditorPrefs, LayoutClass,
     NavTarget, PagesKindFilter, PagesSortOrder, PagesTreeUiState, RecentTabItem, SettingsTab,
-    SyncUiState, TableSort, TopbarDocContext, UiAction, ViewMode,
+    SyncUiState, TableSort, TopbarDocContext, UiAction, VaultCounts, ViewMode,
 };
 use chrono::Datelike;
 use eframe::egui::{self, Margin};
@@ -58,7 +65,7 @@ use krono_core::{
         parse_inline_task_meta, remove_nth_task_line, Heading, TaskPriority,
     },
     note::{normalize_tags, NoteDocument, NoteMeta, NoteStatus},
-    path::{conflict_path, is_image_ext, vault_file_stem, VaultFileKind},
+    path::{conflict_path, is_image_ext, unique_note_path, vault_file_stem, VaultFileKind},
 };
 use std::{
     collections::{BTreeSet, HashMap, HashSet},
@@ -147,6 +154,8 @@ pub struct KronoApp {
     table_sort: TableSort,
     quick_add_board_status: Option<NoteStatus>,
     quick_add_board_title: String,
+    quick_add_board_tags: Vec<String>,
+    quick_add_board_tag_input: String,
 
     // Command palette
     pub(crate) palette_open: bool,
@@ -157,11 +166,17 @@ pub struct KronoApp {
     // Settings & Dialogs & Toasts
     pub(crate) settings_tab: SettingsTab,
     vault_draft: String,
-    show_token: bool,
+    pub(crate) has_saved_github_token: bool,
+    token_replace_mode: bool,
+    token_draft: Zeroizing<String>,
     test_feedback: Option<(bool, String)>,
     pub(crate) rename_target: Option<String>,
     rename_draft: String,
     pub(crate) delete_target: Option<String>,
+    first_run_open: bool,
+    vault_folders: Vec<String>,
+    create_subfolder_parent: Option<String>,
+    create_subfolder_draft: String,
     toasts: Vec<Toast>,
 
     // Sync & Clipboard indicators
@@ -213,7 +228,7 @@ pub struct KronoApp {
 
 impl KronoApp {
     pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
-        let config = AppConfig::load();
+        let (mut config, config_existed) = AppConfig::load_with_existed();
         setup_fonts(&cc.egui_ctx);
         let palette = ThemePalette::for_preset(config.theme, config.accent);
         apply_palette(&cc.egui_ctx, &palette);
@@ -231,12 +246,42 @@ impl KronoApp {
             }
         };
 
-        let _ = ensure_starter_vault(&config.vault_dir, config.language);
-        if !is_shot_mode {
-            let _ = migrate_diary_hierarchy(&config.vault_dir, config.language);
+        let first_run_open = !config_existed && !is_shot_mode;
+
+        let mut startup_migration_err: Option<String> = None;
+        if !is_shot_mode && !config.legacy_github_token.trim().is_empty() {
+            match migrate_legacy_token(&mut config.legacy_github_token) {
+                Ok(true) => {
+                    if config_existed {
+                        let _ = config.save();
+                    }
+                }
+                Ok(false) => {}
+                Err(e) => {
+                    startup_migration_err = Some(e);
+                }
+            }
         }
-        let (mut index, index_recovered) = VaultIndex::open_or_recover(&config.vault_dir);
-        let _ = index.sync_from_disk(&config.vault_dir);
+        let has_saved_github_token = if is_shot_mode {
+            false
+        } else {
+            has_github_token()
+        };
+
+        let (index, index_recovered) = if first_run_open {
+            match VaultIndex::open_in_memory_checked() {
+                Ok(idx) => (idx, false),
+                Err(_) => VaultIndex::open_or_recover(&config.vault_dir),
+            }
+        } else {
+            let _ = ensure_starter_vault(&config.vault_dir, config.language);
+            if !is_shot_mode {
+                let _ = migrate_diary_hierarchy(&config.vault_dir, config.language);
+            }
+            let (mut idx, rec) = VaultIndex::open_or_recover(&config.vault_dir);
+            let _ = idx.sync_from_disk(&config.vault_dir);
+            (idx, rec)
+        };
         let today = today_local();
 
         let last_sync_ts = index
@@ -250,17 +295,19 @@ impl KronoApp {
         let mut sync_worker = SyncWorker::new();
         let mut update_worker = UpdateWorker::new();
 
-        if config.auto_sync_on_start && config.is_github_configured() {
-            if let Ok(base) = index.load_sync_state() {
-                sync_worker.start_sync(
-                    config.vault_dir.clone(),
-                    base,
-                    config.github_repo.clone(),
-                    config.github_branch.clone(),
-                    config.github_token.clone(),
-                    config.language,
-                    cc.egui_ctx.clone(),
-                );
+        if config.auto_sync_on_start && config.is_github_configured(has_saved_github_token) {
+            if let Ok(Some(token)) = load_github_token() {
+                if let Ok(base) = index.load_sync_state() {
+                    sync_worker.start_sync(
+                        config.vault_dir.clone(),
+                        base,
+                        config.github_repo.clone(),
+                        config.github_branch.clone(),
+                        token,
+                        config.language,
+                        cc.egui_ctx.clone(),
+                    );
+                }
             }
         }
 
@@ -331,17 +378,25 @@ impl KronoApp {
             table_sort: TableSort::ModifiedDesc,
             quick_add_board_status: None,
             quick_add_board_title: String::new(),
+            quick_add_board_tags: Vec::new(),
+            quick_add_board_tag_input: String::new(),
             palette_open: false,
             palette_query: String::new(),
             palette_selected: 0,
             palette_hits: Vec::new(),
             settings_tab: SettingsTab::Appearance,
             vault_draft,
-            show_token: false,
+            has_saved_github_token,
+            token_replace_mode: false,
+            token_draft: Zeroizing::new(String::new()),
             test_feedback: None,
             rename_target: None,
             rename_draft: String::new(),
             delete_target: None,
+            first_run_open,
+            vault_folders: Vec::new(),
+            create_subfolder_parent: None,
+            create_subfolder_draft: String::new(),
             toasts: Vec::new(),
             last_sync_ts,
             last_sync_commit,
@@ -381,6 +436,9 @@ impl KronoApp {
         };
 
         app.reload_index_caches();
+        if let Some(err) = startup_migration_err {
+            app.push_toast(err, ToastKind::Error);
+        }
         if index_recovered {
             let s = strings(app.config.language);
             app.push_toast(s.toast_index_recovered, ToastKind::Info);
@@ -414,6 +472,11 @@ impl KronoApp {
     pub(crate) fn reload_index_caches(&mut self) {
         self.notes = self.index.list_notes().unwrap_or_default();
         self.collections = self.index.list_collections().unwrap_or_default();
+        self.vault_folders = if self.first_run_open {
+            Vec::new()
+        } else {
+            list_vault_folders(&self.config.vault_dir)
+        };
         self.all_links = self.index.list_all_links().unwrap_or_default();
         self.tag_counts = self.index.tag_counts().unwrap_or_default();
         self.cached_link_count = self.index.total_links_count();
@@ -434,12 +497,30 @@ impl KronoApp {
                 self.daily_dates.insert(date);
             }
         }
-        self.pending_sync_changes = if self.config.is_github_configured() {
+        self.pending_sync_changes = if self.config.is_github_configured(self.has_saved_github_token) {
             self.index.count_unsynced_changes()
         } else {
             0
         };
         self.refresh_palette_hits();
+    }
+
+    fn vault_counts(&self) -> VaultCounts {
+        let mut counts = VaultCounts {
+            notes: self.notes.len(),
+            tags: self.tag_counts.len(),
+            links: self.cached_link_count,
+            ..Default::default()
+        };
+        for c in &self.collections {
+            match c.kind {
+                VaultFileKind::Board => counts.boards += 1,
+                VaultFileKind::Table => counts.tables += 1,
+                VaultFileKind::Canvas => counts.canvases += 1,
+                _ => {}
+            }
+        }
+        counts
     }
 
     pub(crate) fn refresh_document_derivations(&mut self) {
@@ -718,9 +799,18 @@ impl KronoApp {
     }
 
     fn save_current_note(&mut self) {
+        self.save_current_note_inner(false);
+    }
+
+    fn save_current_note_inner(&mut self, sync_filename: bool) {
         let Some(rel_path) = self.selected_path.clone() else {
             return;
         };
+        let prev_title = self
+            .notes
+            .iter()
+            .find(|n| n.path == rel_path)
+            .map(|n| n.title.clone());
         if self.current_doc.frontmatter.title.trim().is_empty() {
             let fallback = std::path::Path::new(&rel_path)
                 .file_stem()
@@ -746,6 +836,23 @@ impl KronoApp {
                 self.refresh_document_derivations();
                 self.refresh_embedded_boards();
                 self.last_local_save_at = Some(Instant::now());
+
+                if sync_filename && !rel_path.starts_with("daily/") {
+                    let clean_title = self.current_doc.frontmatter.title.trim().to_string();
+                    if !clean_title.is_empty() {
+                        let folder = rel_path.rsplit_once('/').map(|(d, _)| d);
+                        let mut filtered_existing = self.existing_paths_set();
+                        filtered_existing.remove(&rel_path);
+                        let desired = unique_note_path(folder, &clean_title, &filtered_existing);
+                        if desired != rel_path {
+                            self.perform_rename_with_prev_title(
+                                &rel_path,
+                                &clean_title,
+                                prev_title.as_deref(),
+                            );
+                        }
+                    }
+                }
             }
             Err(e) => {
                 self.push_toast(e, ToastKind::Error);
@@ -753,11 +860,21 @@ impl KronoApp {
         }
     }
 
-    fn create_and_open_note(&mut self, title: &str, status: NoteStatus, body: &str) {
+    fn create_and_open_note(&mut self, title: &str, status: Option<NoteStatus>, body: &str) {
+        self.create_and_open_note_with_tags(title, status, Vec::new(), body);
+    }
+
+    fn create_and_open_note_with_tags(
+        &mut self,
+        title: &str,
+        status: Option<NoteStatus>,
+        tags: Vec<String>,
+        body: &str,
+    ) {
         self.flush_unsaved_documents();
         let existing = self.existing_paths_set();
         self.watcher.mark_internal_change();
-        match create_note(&self.config.vault_dir, title, status, body, &existing) {
+        match create_note_with_tags(&self.config.vault_dir, title, status, tags, body, &existing) {
             Ok((rel_path, doc, modified, size)) => {
                 let _ = self.index.upsert_note(&rel_path, &doc, modified, size);
                 self.reload_index_caches();
@@ -780,6 +897,11 @@ impl KronoApp {
 
     fn existing_folders_list(&self) -> Vec<String> {
         let mut set = BTreeSet::new();
+        for f in &self.vault_folders {
+            if !f.is_empty() && f != "daily" && !f.starts_with("daily/") {
+                set.insert(f.clone());
+            }
+        }
         for n in &self.notes {
             if let Some((dir, _)) = n.path.rsplit_once('/') {
                 if dir != "daily" && !dir.starts_with("daily/") {
@@ -921,7 +1043,7 @@ impl KronoApp {
         }
     }
 
-    fn update_note_status(&mut self, rel_path: &str, new_status: NoteStatus) {
+    fn update_note_status(&mut self, rel_path: &str, new_status: Option<NoteStatus>) {
         if self.selected_path.as_deref() == Some(rel_path) {
             self.current_doc.frontmatter.status = new_status;
             self.save_current_note();
@@ -949,7 +1071,7 @@ impl KronoApp {
         let mut items: Vec<&NoteMeta> = self
             .notes
             .iter()
-            .filter(|n| n.status == status && exclude.is_none_or(|ex| n.path != ex))
+            .filter(|n| n.status == Some(status) && exclude.is_none_or(|ex| n.path != ex))
             .collect();
         items.sort_by(|a, b| {
             a.board_order
@@ -966,12 +1088,13 @@ impl KronoApp {
         for (idx, rel_path) in ordered_paths.iter().enumerate() {
             let new_order = ((idx + 1) * 10) as i64;
             let meta = self.notes.iter().find(|n| &n.path == rel_path);
-            let needs_write = meta.is_none_or(|m| m.status != status || m.board_order != new_order);
+            let needs_write =
+                meta.is_none_or(|m| m.status != Some(status) || m.board_order != new_order);
             if !needs_write {
                 continue;
             }
             if self.selected_path.as_deref() == Some(rel_path.as_str()) {
-                self.current_doc.frontmatter.status = status;
+                self.current_doc.frontmatter.status = Some(status);
                 self.current_doc.frontmatter.board_order = Some(new_order);
                 if let Ok((modified, size)) =
                     save_note(&self.config.vault_dir, rel_path, &self.current_doc)
@@ -984,7 +1107,7 @@ impl KronoApp {
                     any_changed = true;
                 }
             } else if let Ok((mut doc, _, _)) = read_note(&self.config.vault_dir, rel_path) {
-                doc.frontmatter.status = status;
+                doc.frontmatter.status = Some(status);
                 doc.frontmatter.board_order = Some(new_order);
                 if let Ok((modified, size)) = save_note(&self.config.vault_dir, rel_path, &doc) {
                     let _ = self.index.upsert_note(rel_path, &doc, modified, size);
@@ -1019,7 +1142,7 @@ impl KronoApp {
             .notes
             .iter()
             .find(|n| n.path == rel_path)
-            .map(|n| n.status)
+            .and_then(|n| n.status)
         else {
             return;
         };
@@ -1417,12 +1540,21 @@ impl KronoApp {
             Some((folder, _)) => format!("{folder}/{script_title}"),
             None => script_title,
         };
-        self.create_and_open_note(&target_arg, NoteStatus::InProgress, &md_body);
+        self.create_and_open_note(&target_arg, None, &md_body);
         let s = strings(self.config.language);
         self.push_toast(s.canvas_export_toast, ToastKind::Success);
     }
 
     fn perform_rename(&mut self, old_path: &str, new_title: &str) {
+        self.perform_rename_with_prev_title(old_path, new_title, None);
+    }
+
+    fn perform_rename_with_prev_title(
+        &mut self,
+        old_path: &str,
+        new_title: &str,
+        extra_prev_title: Option<&str>,
+    ) {
         if VaultFileKind::from_path(old_path) == Some(VaultFileKind::Canvas) {
             if self.active_canvas.dirty && self.active_canvas.path.as_deref() == Some(old_path) {
                 self.save_current_canvas();
@@ -1498,6 +1630,9 @@ impl KronoApp {
 
                 // Collect all aliases that previously resolved to the renamed note.
                 let mut old_targets_owned = Vec::new();
+                if let Some(prev) = extra_prev_title {
+                    old_targets_owned.push(prev.to_string());
+                }
                 if let Some(meta) = old_meta {
                     old_targets_owned.push(meta.title);
                 }
@@ -1571,6 +1706,20 @@ impl KronoApp {
                     self.current_doc = doc;
                     self.current_modified = modified;
                     self.dirty = false;
+                }
+                for item in &mut self.nav_history {
+                    if let NavTarget::Note(p) = item {
+                        if p == old_path {
+                            *p = new_path.clone();
+                        }
+                    }
+                }
+                for item in &mut self.recent_tabs {
+                    if let NavTarget::Note(p) = item {
+                        if p == old_path {
+                            *p = new_path.clone();
+                        }
+                    }
                 }
                 self.expand_parents(&new_path);
                 self.refresh_document_derivations();
@@ -1937,7 +2086,7 @@ impl KronoApp {
     fn trigger_sync(&mut self, ctx: &egui::Context) {
         self.flush_unsaved_documents();
         self.last_local_save_at = None;
-        if !self.config.is_github_configured() {
+        if !self.config.is_github_configured(self.has_saved_github_token) {
             if self.view_mode != ViewMode::Settings {
                 self.previous_view_mode = self.view_mode;
             }
@@ -1947,13 +2096,28 @@ impl KronoApp {
             self.push_toast(s.sync_not_configured, ToastKind::Info);
             return;
         }
+        let token = match load_github_token() {
+            Ok(Some(t)) => t,
+            Ok(None) => {
+                self.has_saved_github_token = false;
+                let s = strings(self.config.language);
+                self.push_toast(s.gh_token_missing_toast, ToastKind::Info);
+                self.view_mode = ViewMode::Settings;
+                self.settings_tab = SettingsTab::GitHub;
+                return;
+            }
+            Err(e) => {
+                self.push_toast(e, ToastKind::Error);
+                return;
+            }
+        };
         let base_hashes = self.index.load_sync_state().unwrap_or_default();
         self.sync_worker.start_sync(
             self.config.vault_dir.clone(),
             base_hashes,
             self.config.github_repo.clone(),
             self.config.github_branch.clone(),
-            self.config.github_token.clone(),
+            token,
             self.config.language,
             ctx.clone(),
         );
@@ -2565,7 +2729,9 @@ impl KronoApp {
                             } else if let Ok((doc, modified, _)) =
                                 read_note(&self.config.vault_dir, &sel)
                             {
-                                self.current_doc = doc;
+                                if doc != self.current_doc {
+                                    self.current_doc = doc;
+                                }
                                 self.current_modified = modified;
                                 self.external_conflict_open_note = false;
                             } else {
@@ -2801,8 +2967,12 @@ impl KronoApp {
                     self.last_notes_showing_list = false;
                     self.drawer_sidebar_open = false;
                 }
-                UiAction::CreateNote { title, status } => {
-                    self.create_and_open_note(&title, status, "");
+                UiAction::CreateNote {
+                    title,
+                    status,
+                    tags,
+                } => {
+                    self.create_and_open_note_with_tags(&title, status, tags, "");
                     self.focus_title_next = true;
                     self.mobile_showing_list = false;
                     self.last_notes_showing_list = false;
@@ -2817,7 +2987,7 @@ impl KronoApp {
                         self.open_note(&path);
                         self.view_mode = ViewMode::Editor;
                     } else {
-                        self.create_and_open_note(&target, NoteStatus::Todo, "");
+                        self.create_and_open_note(&target, None, "");
                         let msg = match self.config.language {
                             Lang::Ru => format!("Создана заметка «{target}»"),
                             Lang::En => format!("Created note \"{target}\""),
@@ -2825,7 +2995,8 @@ impl KronoApp {
                         self.push_toast(msg, ToastKind::Info);
                     }
                 }
-                UiAction::SaveCurrentNote => self.save_current_note(),
+                UiAction::SaveCurrentNote => self.save_current_note_inner(true),
+                UiAction::CommitCurrentNoteTitle => self.save_current_note_inner(true),
                 UiAction::UpdateNoteStatus { path, status } => {
                     self.update_note_status(&path, status);
                 }
@@ -2864,6 +3035,21 @@ impl KronoApp {
                 UiAction::OpenCreateModalInFolder(folder) => {
                     self.create_modal.open_with(CreateItemKind::Note);
                     self.create_modal.folder = folder;
+                    self.drawer_sidebar_open = false;
+                    self.drawer_inspector_open = false;
+                }
+                UiAction::CreateInFolder { folder, kind } => {
+                    if !folder.is_empty() {
+                        self.expand_parents(&format!("{folder}/_"));
+                    }
+                    self.create_modal.open_with(kind);
+                    self.create_modal.folder = folder;
+                    self.drawer_sidebar_open = false;
+                    self.drawer_inspector_open = false;
+                }
+                UiAction::StartCreateSubfolder(parent) => {
+                    self.create_subfolder_parent = Some(parent);
+                    self.create_subfolder_draft.clear();
                     self.drawer_sidebar_open = false;
                     self.drawer_inspector_open = false;
                 }
@@ -3030,12 +3216,61 @@ impl KronoApp {
                 UiAction::SyncNow => self.trigger_sync(ctx),
                 UiAction::TestGitHubConnection => {
                     let _ = self.config.save();
-                    self.sync_worker.start_test(
-                        self.config.github_repo.clone(),
-                        self.config.github_token.clone(),
-                        self.config.language,
-                        ctx.clone(),
-                    );
+                    match load_github_token() {
+                        Ok(Some(token)) => {
+                            self.sync_worker.start_test(
+                                self.config.github_repo.clone(),
+                                token,
+                                self.config.language,
+                                ctx.clone(),
+                            );
+                        }
+                        Ok(None) => {
+                            self.has_saved_github_token = false;
+                            let s = strings(self.config.language);
+                            self.test_feedback = Some((false, s.gh_token_missing_toast.to_string()));
+                        }
+                        Err(e) => {
+                            self.test_feedback = Some((false, e));
+                        }
+                    }
+                }
+                UiAction::SaveGitHubToken => {
+                    let trimmed = self.token_draft.trim().to_string();
+                    if !trimmed.is_empty() {
+                        match save_github_token(&trimmed) {
+                            Ok(()) => {
+                                self.token_draft.zeroize();
+                                self.token_draft.clear();
+                                self.has_saved_github_token = true;
+                                self.token_replace_mode = false;
+                                self.test_feedback = None;
+                                self.reload_index_caches();
+                                let s = strings(self.config.language);
+                                self.push_toast(s.gh_token_saved_toast, ToastKind::Success);
+                            }
+                            Err(e) => {
+                                self.push_toast(e, ToastKind::Error);
+                            }
+                        }
+                    }
+                }
+                UiAction::DeleteGitHubToken => {
+                    match delete_github_token() {
+                        Ok(()) => {
+                            self.token_draft.zeroize();
+                            self.token_draft.clear();
+                            self.has_saved_github_token = false;
+                            self.token_replace_mode = false;
+                            self.test_feedback = None;
+                            self.reload_index_caches();
+                            let s = strings(self.config.language);
+                            self.push_toast(s.gh_token_deleted_toast, ToastKind::Info);
+                        }
+                        Err(e) => {
+                            self.push_toast(e, ToastKind::Error);
+                        }
+                    }
                 }
                 UiAction::SetTagFilter(tag) => self.active_tag_filter = tag,
                 UiAction::ToggleFolder(folder) => {
@@ -3444,6 +3679,34 @@ impl eframe::App for KronoApp {
         #[cfg(debug_assertions)]
         self.drive_screenshots(ctx);
 
+        if self.first_run_open {
+            let palette = self.palette;
+            let lang = self.config.language;
+            let mut first_run_action = None;
+            egui::CentralPanel::default()
+                .frame(egui::Frame::none().fill(palette.bg_canvas))
+                .show(ctx, |ui| {
+                    first_run_action =
+                        render_first_run_screen(ui, &palette, lang, &mut self.vault_draft);
+                });
+            render_toasts(ctx, &palette, &mut self.toasts);
+            if let Some(act) = first_run_action {
+                let target = self.vault_draft.trim().to_string();
+                if !target.is_empty() {
+                    let target_path = std::path::PathBuf::from(&target);
+                    let _ = ensure_starter_vault(&target_path, self.config.language);
+                    self.first_run_open = false;
+                    self.switch_vault(&target);
+                    let _ = self.config.save();
+                    if act == FirstRunAction::StartAndConfigureSync {
+                        self.view_mode = ViewMode::Settings;
+                        self.settings_tab = SettingsTab::GitHub;
+                    }
+                }
+            }
+            return;
+        }
+
         // Smooth 60fps cross-fade between themes and accent presets
         if let Some(at) = self.palette_anim_at {
             let raw = (at.elapsed().as_secs_f32() / 0.24).clamp(0.0, 1.0);
@@ -3500,7 +3763,7 @@ impl eframe::App for KronoApp {
             && !self.active_collection.dirty
             && !self.active_canvas.dirty
             && !self.sync_worker.is_busy()
-            && self.config.is_github_configured()
+            && self.config.is_github_configured(self.has_saved_github_token)
         {
             let interval_secs = u64::from(self.config.auto_sync_interval_mins) * 60;
             let due = match self.last_sync_ts {
@@ -3521,7 +3784,7 @@ impl eframe::App for KronoApp {
             && !self.active_canvas.dirty
             && !self.sync_worker.is_busy()
             && self.pending_sync_changes > 0
-            && self.config.is_github_configured()
+            && self.config.is_github_configured(self.has_saved_github_token)
         {
             if let Some(saved_at) = self.last_local_save_at {
                 if saved_at.elapsed() >= Duration::from_secs(15) {
@@ -3586,7 +3849,7 @@ impl eframe::App for KronoApp {
         let lang = self.config.language;
         let s = strings(lang);
         let sync_busy = self.sync_worker.is_busy();
-        let sync_configured = self.config.is_github_configured();
+        let sync_configured = self.config.is_github_configured(self.has_saved_github_token);
         let sync_status_text = if sync_busy {
             s.syncing_label.to_string()
         } else if !sync_configured {
@@ -3608,6 +3871,7 @@ impl eframe::App for KronoApp {
         let can_forward = self.can_nav_forward();
         let recent_items = self.build_recent_tab_items();
         let vault_dir_snap = self.config.vault_dir.clone();
+        let vault_counts = self.vault_counts();
 
         let mut cal_ui = CalendarUiState {
             open: self.config.calendar_open,
@@ -3635,6 +3899,7 @@ impl eframe::App for KronoApp {
                 desktop_sidebar_t,
                 &self.notes,
                 &self.collections,
+                &self.vault_folders,
                 &self.tag_counts,
                 self.selected_path.as_deref(),
                 self.active_collection.path.as_deref(),
@@ -3805,6 +4070,7 @@ impl eframe::App for KronoApp {
                             lang,
                             &self.notes,
                             &self.collections,
+                            &self.vault_folders,
                             &self.tag_counts,
                             self.selected_path.as_deref(),
                             self.active_collection.path.as_deref(),
@@ -3821,6 +4087,7 @@ impl eframe::App for KronoApp {
                             status: &mut self.current_doc.frontmatter.status,
                             tags: &mut self.current_doc.frontmatter.tags,
                             pinned: &mut self.current_doc.frontmatter.pinned,
+                            extra_lines: &mut self.current_doc.frontmatter.extra_lines,
                             body: &mut self.current_doc.body,
                             modified: self.current_modified,
                             external_conflict: self.external_conflict_open_note,
@@ -3870,6 +4137,9 @@ impl eframe::App for KronoApp {
                     if view_t < 0.99 {
                         ui.add_space((1.0 - view_t) * 6.0);
                     }
+                    let mut board_tags: Vec<String> =
+                        self.tag_counts.iter().map(|(t, _)| t.clone()).collect();
+                    board_tags.sort_by_key(|a| a.to_lowercase());
                     actions.extend(render_board_view(
                         ui,
                         &palette,
@@ -3880,6 +4150,9 @@ impl eframe::App for KronoApp {
                         self.active_tag_filter.as_deref(),
                         &mut self.quick_add_board_status,
                         &mut self.quick_add_board_title,
+                        &mut self.quick_add_board_tags,
+                        &mut self.quick_add_board_tag_input,
+                        &board_tags,
                     ));
                 }
                 ViewMode::Graph => {
@@ -3947,13 +4220,13 @@ impl eframe::App for KronoApp {
                         &mut self.settings_tab,
                         tab_anim_t,
                         &mut self.vault_draft,
-                        &mut self.show_token,
+                        self.has_saved_github_token,
+                        &mut self.token_replace_mode,
+                        &mut self.token_draft,
                         &self.test_feedback,
                         last_sync_info.as_deref(),
                         sync_busy,
-                        self.notes.len(),
-                        self.tag_counts.len(),
-                        self.cached_link_count,
+                        vault_counts,
                         &mut self.snippet_draft_trigger,
                         &mut self.snippet_draft_label,
                         &mut self.snippet_draft_content,
@@ -3991,6 +4264,7 @@ impl eframe::App for KronoApp {
                 drawer_sidebar_t,
                 &self.notes,
                 &self.collections,
+                &self.vault_folders,
                 &self.tag_counts,
                 self.selected_path.as_deref(),
                 self.active_collection.path.as_deref(),
@@ -4066,6 +4340,23 @@ impl eframe::App for KronoApp {
             actions.push(act);
         }
 
+        if let Some((parent, name)) = render_create_subfolder_modal(
+            ctx,
+            &palette,
+            lang,
+            &mut self.create_subfolder_parent,
+            &mut self.create_subfolder_draft,
+        ) {
+            self.watcher.mark_internal_change();
+            match create_vault_folder(&self.config.vault_dir, &parent, &name) {
+                Ok(rel) => {
+                    self.expand_parents(&format!("{rel}/_"));
+                    self.reload_index_caches();
+                }
+                Err(e) => self.push_toast(e, ToastKind::Error),
+            }
+        }
+
         if let Some((old_path, new_title)) = render_rename_modal(
             ctx,
             &palette,
@@ -4106,6 +4397,8 @@ impl eframe::App for KronoApp {
         if self.shot_runner.is_some() {
             return;
         }
-        let _ = self.config.save();
+        if !self.first_run_open {
+            let _ = self.config.save();
+        }
     }
 }

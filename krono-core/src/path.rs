@@ -170,12 +170,45 @@ pub fn slugify_title(title: &str) -> String {
         }
     }
 
-    let trimmed = slug.trim_matches('-').to_string();
+    let mut trimmed: String = slug
+        .trim_matches('-')
+        .chars()
+        .take(80)
+        .collect::<String>()
+        .trim_matches('-')
+        .to_string();
     if trimmed.is_empty() {
-        "untitled".to_string()
-    } else {
-        trimmed
+        return "untitled".to_string();
     }
+    let is_win_reserved = matches!(
+        trimmed.as_str(),
+        "con"
+            | "prn"
+            | "aux"
+            | "nul"
+            | "com1"
+            | "com2"
+            | "com3"
+            | "com4"
+            | "com5"
+            | "com6"
+            | "com7"
+            | "com8"
+            | "com9"
+            | "lpt1"
+            | "lpt2"
+            | "lpt3"
+            | "lpt4"
+            | "lpt5"
+            | "lpt6"
+            | "lpt7"
+            | "lpt8"
+            | "lpt9"
+    );
+    if is_win_reserved {
+        trimmed.push_str("-note");
+    }
+    trimmed
 }
 
 /// Generates a guaranteed-unique relative path with custom extension (`<slug><ext>`, `<slug>-2<ext>`, ...).
@@ -207,13 +240,15 @@ pub fn unique_vault_path(
     };
 
     let first = make_candidate(None);
-    if !existing.iter().any(|p| p.eq_ignore_ascii_case(&first)) {
+    let first_lower = first.to_lowercase();
+    if !existing.iter().any(|p| p.to_lowercase() == first_lower) {
         return first;
     }
     let mut counter = 2usize;
     loop {
         let cand = make_candidate(Some(counter));
-        if !existing.iter().any(|p| p.eq_ignore_ascii_case(&cand)) {
+        let cand_lower = cand.to_lowercase();
+        if !existing.iter().any(|p| p.to_lowercase() == cand_lower) {
             return cand;
         }
         counter += 1;
@@ -382,5 +417,21 @@ mod tests {
 
         let t1 = unique_vault_path(None, "Подписки", ".table.json", &existing);
         assert_eq!(t1, "подписки.table.json");
+    }
+
+    #[test]
+    fn slugify_handles_reserved_names_cyrillic_and_collisions() {
+        assert_eq!(slugify_title("CON"), "con-note");
+        assert_eq!(slugify_title("lpt1"), "lpt1-note");
+        let long_title = "Очень длинный заголовок заметки ".repeat(6);
+        assert!(slugify_title(&long_title).chars().count() <= 80);
+
+        let mut existing = HashSet::new();
+        existing.insert("папка/План.md".to_string());
+        let p2 = unique_note_path(Some("папка"), "план", &existing);
+        assert_eq!(p2, "папка/план-2.md");
+        existing.insert(p2);
+        let p3 = unique_note_path(Some("папка"), "План", &existing);
+        assert_eq!(p3, "папка/план-3.md");
     }
 }

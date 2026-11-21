@@ -109,6 +109,7 @@ pub fn builtin_slash_commands(lang: Lang, trigger_ch: char) -> Vec<SlashCommand>
         Lang::Ru => "[текст](https://)",
         Lang::En => "[label](https://)",
     };
+    let today_str = chrono::Local::now().format("%Y-%m-%d").to_string();
 
     let items: Vec<(&str, &str, &str, &str, &[&str], &str, usize, Icon)> = vec![
         (
@@ -240,6 +241,19 @@ pub fn builtin_slash_commands(lang: Lang, trigger_ch: char) -> Vec<SlashCommand>
             "---\n",
             4,
             Icon::Minus,
+        ),
+        (
+            "date",
+            "date",
+            match lang {
+                Lang::Ru => "Сегодняшняя дата",
+                Lang::En => "Today's date",
+            },
+            "YYYY-MM-DD",
+            &["date", "today", "дата", "сегодня"],
+            today_str.as_str(),
+            today_str.chars().count(),
+            Icon::CalendarDays,
         ),
         (
             "wikilink",

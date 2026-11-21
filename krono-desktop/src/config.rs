@@ -1,5 +1,5 @@
 use crate::i18n::Lang;
-use directories::ProjectDirs;
+use directories::{ProjectDirs, UserDirs};
 use serde::{Deserialize, Serialize};
 use std::{
     fs,
@@ -124,7 +124,8 @@ pub struct AppConfig {
     pub auto_sync_interval_mins: u32,
     pub github_repo: String,
     pub github_branch: String,
-    pub github_token: String,
+    #[serde(default, skip_serializing, rename = "github_token")]
+    pub legacy_github_token: String,
     pub auto_sync_on_start: bool,
     #[serde(default)]
     pub auto_sync_after_save: bool,
@@ -166,7 +167,7 @@ impl Default for AppConfig {
             auto_sync_interval_mins: 0,
             github_repo: String::new(),
             github_branch: "main".to_string(),
-            github_token: String::new(),
+            legacy_github_token: String::new(),
             auto_sync_on_start: false,
             auto_sync_after_save: false,
             auto_check_updates: true,
@@ -178,15 +179,24 @@ impl Default for AppConfig {
     }
 }
 
-pub fn default_vault_dir() -> PathBuf {
-    let cwd_vault = PathBuf::from("./krono_vault");
-    if cwd_vault.is_dir() {
-        return cwd_vault.canonicalize().unwrap_or(cwd_vault);
+pub fn default_documents_vault_dir() -> PathBuf {
+    if let Some(user_dirs) = UserDirs::new() {
+        if let Some(docs) = user_dirs.document_dir() {
+            return docs.join("Krono");
+        }
     }
     if let Some(proj) = ProjectDirs::from("io", "krono", "Krono") {
         return proj.data_local_dir().join("vault");
     }
     PathBuf::from("./krono_vault")
+}
+
+pub fn default_vault_dir() -> PathBuf {
+    let cwd_vault = PathBuf::from("./krono_vault");
+    if cwd_vault.is_dir() {
+        return cwd_vault.canonicalize().unwrap_or(cwd_vault);
+    }
+    default_documents_vault_dir()
 }
 
 pub fn config_file_path() -> PathBuf {
@@ -204,7 +214,12 @@ pub fn crash_log_path() -> PathBuf {
 }
 
 impl AppConfig {
+    #[allow(dead_code)]
     pub fn load() -> Self {
+        Self::load_with_existed().0
+    }
+
+    pub fn load_with_existed() -> (Self, bool) {
         let path = config_file_path();
         if let Ok(raw) = fs::read_to_string(&path) {
             if let Ok(mut cfg) = serde_json::from_str::<AppConfig>(&raw) {
@@ -227,10 +242,10 @@ impl AppConfig {
                 if !matches!(cfg.auto_sync_interval_mins, 0 | 5 | 15) {
                     cfg.auto_sync_interval_mins = 0;
                 }
-                return cfg;
+                return (cfg, true);
             }
         }
-        Self::default()
+        (Self::default(), false)
     }
 
     pub fn save(&self) -> Result<(), String> {
@@ -275,9 +290,9 @@ impl AppConfig {
         }
     }
 
-    pub fn is_github_configured(&self) -> bool {
+    pub fn is_github_configured(&self, has_token: bool) -> bool {
         normalize_github_repo(&self.github_repo).is_some()
-            && !self.github_token.trim().is_empty()
+            && has_token
             && !self.github_branch.trim().is_empty()
     }
 }
@@ -374,5 +389,19 @@ mod tests {
         assert_eq!(light_cfg.md_slash_trigger, SlashTrigger::Slash);
         assert!(!light_cfg.calendar_open);
         assert!(light_cfg.custom_slash_snippets.is_empty());
+    }
+
+    #[test]
+    fn never_serializes_github_token_in_plaintext() {
+        let mut cfg: AppConfig =
+            serde_json::from_str(r#"{"github_repo":"alice/krono","github_token":"ghp_legacy_secret"}"#)
+                .unwrap();
+        assert_eq!(cfg.legacy_github_token, "ghp_legacy_secret");
+        let serialized = serde_json::to_string(&cfg).unwrap();
+        assert!(!serialized.contains("ghp_legacy_secret"));
+        assert!(!serialized.contains("github_token"));
+        cfg.legacy_github_token.clear();
+        assert!(!cfg.is_github_configured(false));
+        assert!(cfg.is_github_configured(true));
     }
 }

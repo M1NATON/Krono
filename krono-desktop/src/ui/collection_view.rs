@@ -1,8 +1,8 @@
 use crate::i18n::{column_type_label, strings, Lang};
 use crate::ui::collection_board::render_custom_board;
 use crate::ui::components::{
-    focus_once, hairline_h, icon_button, primary_button, reset_focus_gate, secondary_button,
-    styled_text_input, tag_chip,
+    focus_once, hairline_h, icon_button, normalize_tag_input, primary_button, reset_focus_gate,
+    secondary_button, styled_text_input, tag_autocomplete_input, tag_chip,
 };
 use crate::ui::icons::{draw_icon, Icon};
 use crate::ui::motion::{anim_bool_eased, ease_in_out_cubic, lerp_color, with_alpha};
@@ -58,6 +58,8 @@ pub struct CollectionEditorState {
     pub quick_add_col_opt: Option<String>,
     pub quick_add_at_top: bool,
     pub quick_add_title: String,
+    pub quick_add_tags: Vec<String>,
+    pub quick_add_tag_input: String,
     pub adding_board_stage: bool,
     pub new_stage_name: String,
     pub new_stage_color: ColorToken,
@@ -97,6 +99,8 @@ impl Default for CollectionEditorState {
             quick_add_col_opt: None,
             quick_add_at_top: false,
             quick_add_title: String::new(),
+            quick_add_tags: Vec::new(),
+            quick_add_tag_input: String::new(),
             adding_board_stage: false,
             new_stage_name: String::new(),
             new_stage_color: ColorToken::Blue,
@@ -129,6 +133,8 @@ impl CollectionEditorState {
         self.quick_add_col_opt = None;
         self.quick_add_at_top = false;
         self.quick_add_title.clear();
+        self.quick_add_tags.clear();
+        self.quick_add_tag_input.clear();
         self.adding_board_stage = false;
         self.new_stage_name.clear();
         self.editing_record_id = None;
@@ -169,9 +175,11 @@ pub fn render_collection_view(
     render_collection_header(ui, p, lang, layout, &rel_path, state, &mut actions);
     ui.add_space(10.0);
 
+    let available_tags = collect_available_tags(&state.doc, all_notes);
+
     match state.active_view {
         CollectionViewKind::Board => {
-            render_custom_board(ui, p, lang, layout, today, state, &mut actions);
+            render_custom_board(ui, p, lang, layout, today, state, &available_tags, &mut actions);
         }
         CollectionViewKind::Table => {
             render_custom_table(ui, p, lang, layout, today, state, all_notes, &mut actions);
@@ -179,7 +187,7 @@ pub fn render_collection_view(
     }
 
     // Modals (Card detail & Column schema)
-    render_record_detail_modal(ctx, p, lang, state, all_notes, &mut actions);
+    render_record_detail_modal(ctx, p, lang, state, all_notes, &available_tags, &mut actions);
     render_column_schema_modal(ctx, p, lang, state, &mut actions);
     render_add_field_modal(ctx, p, lang, state, &mut actions);
 
@@ -948,6 +956,7 @@ fn render_custom_table(
         dirty = true;
     }
     if let Some(rid) = open_rec_id {
+        state.modal_new_tag.clear();
         state.editing_record_id = Some(rid);
     }
     if dirty {
@@ -1110,6 +1119,7 @@ fn render_mobile_custom_table(
         });
 
     if let Some(id) = open_id {
+        state.modal_new_tag.clear();
         state.editing_record_id = Some(id);
     }
     if dirty {
@@ -1493,22 +1503,42 @@ pub(crate) fn render_note_link_picker(
     result
 }
 
+pub(crate) fn collect_available_tags(doc: &CollectionDoc, all_notes: &[NoteMeta]) -> Vec<String> {
+    let mut seen = std::collections::HashSet::new();
+    let mut out = Vec::new();
+    for rec in &doc.records {
+        for t in &rec.tags {
+            let norm = normalize_tag_input(t);
+            if !norm.is_empty() && seen.insert(norm) {
+                out.push(t.trim().to_string());
+            }
+        }
+    }
+    for note in all_notes {
+        for t in &note.tags {
+            let norm = normalize_tag_input(t);
+            if !norm.is_empty() && seen.insert(norm) {
+                out.push(t.trim().to_string());
+            }
+        }
+    }
+    out.sort_by_key(|a| a.to_lowercase());
+    out
+}
+
 fn render_record_detail_modal(
     ctx: &egui::Context,
     p: &ThemePalette,
     lang: Lang,
     state: &mut CollectionEditorState,
     all_notes: &[NoteMeta],
+    available_tags: &[String],
     actions: &mut Vec<UiAction>,
 ) {
     let Some(rec_id) = state.editing_record_id.clone() else {
         return;
     };
     let s = strings(lang);
-    if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
-        state.editing_record_id = None;
-        return;
-    }
 
     let screen = ctx.screen_rect();
     let max_alpha = if p.is_dark { 135.0 } else { 75.0 };
@@ -1639,18 +1669,22 @@ fn render_record_detail_modal(
                             rec.tags.remove(ti);
                             dirty = true;
                         }
-                        let tr = styled_text_input(
+                        if let Some(new_tag) = tag_autocomplete_input(
                             ui,
                             p,
+                            lang,
+                            ("c_rec_tag_inp", &rec_id),
                             &mut state.modal_new_tag,
                             s.add_tag_hint,
-                            false,
-                            118.0,
-                        );
-                        if tr.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
-                            let tag = state.modal_new_tag.trim().trim_start_matches('#').to_string();
-                            if !tag.is_empty() && !rec.tags.iter().any(|t| t.eq_ignore_ascii_case(&tag)) {
-                                rec.tags.push(tag);
+                            128.0,
+                            available_tags,
+                            &rec.tags,
+                        ) {
+                            let clean = normalize_tag_input(&new_tag);
+                            if !clean.is_empty()
+                                && !rec.tags.iter().any(|t| normalize_tag_input(t) == clean)
+                            {
+                                rec.tags.push(clean);
                                 dirty = true;
                             }
                             state.modal_new_tag.clear();
@@ -1758,12 +1792,18 @@ fn render_record_detail_modal(
                 });
         });
 
+    if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
+        close_modal = true;
+    }
+
     if delete_me {
         state.doc.remove_record(&rec_id);
         state.editing_record_id = None;
+        state.modal_new_tag.clear();
         dirty = true;
     } else if close_modal {
         state.editing_record_id = None;
+        state.modal_new_tag.clear();
     }
     if dirty {
         actions.push(UiAction::MarkCollectionDirty);

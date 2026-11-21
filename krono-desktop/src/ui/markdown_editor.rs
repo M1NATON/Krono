@@ -18,7 +18,7 @@ use eframe::egui::{
     self, pos2, vec2, Color32, CursorIcon, FontId, Rect, Rounding, Sense, Stroke, TextFormat, Ui,
 };
 use egui::text::LayoutJob;
-use krono_core::note::NoteMeta;
+use krono_core::{daily::SimpleDate, note::NoteMeta};
 use std::collections::HashSet;
 
 #[derive(Clone, Copy)]
@@ -35,6 +35,7 @@ enum InlineFmt {
     Quote,
     Table,
     WikiLink,
+    TodayDate,
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -42,6 +43,7 @@ pub fn render_markdown_editor(
     ui: &mut Ui,
     p: &ThemePalette,
     lang: Lang,
+    today: SimpleDate,
     body: &mut String,
     editor_id: egui::Id,
     prefs: EditorPrefs,
@@ -77,7 +79,9 @@ pub fn render_markdown_editor(
     let mut shortcut_fmt: Option<InlineFmt> = None;
     if had_focus {
         ui.input_mut(|i| {
-            if i.consume_key(egui::Modifiers::COMMAND, egui::Key::B) {
+            if i.modifiers.command && i.modifiers.shift && i.key_pressed(egui::Key::D) {
+                shortcut_fmt = Some(InlineFmt::TodayDate);
+            } else if i.consume_key(egui::Modifiers::COMMAND, egui::Key::B) {
                 shortcut_fmt = Some(InlineFmt::Bold);
             } else if i.consume_key(egui::Modifiers::COMMAND, egui::Key::I) {
                 shortcut_fmt = Some(InlineFmt::Italic);
@@ -135,6 +139,18 @@ pub fn render_markdown_editor(
             {
                 extra_action = Some(UiAction::PickImageForEditor);
             }
+            if toolbar_icon_chip(
+                ui,
+                p,
+                Icon::CalendarDays,
+                None,
+                s.toolbar_insert_date,
+                false,
+            )
+            .clicked()
+            {
+                pending_fmt = Some(InlineFmt::TodayDate);
+            }
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 if icon_button(ui, p, Icon::CircleHelp, s.md_toolbar_help, false).clicked() {
                     extra_action = Some(UiAction::OpenSettings(SettingsTab::MarkdownHelp));
@@ -145,7 +161,7 @@ pub fn render_markdown_editor(
     }
 
     if let Some(fmt) = pending_fmt {
-        apply_toolbar_format(ui, editor_id, body, fmt, lang);
+        apply_toolbar_format(ui, editor_id, body, fmt, lang, today);
         changed = true;
     }
 
@@ -212,7 +228,9 @@ pub fn render_markdown_editor(
     // Quiet empty space below the last line: clicking places caret at end of note
     let (tail_rect, tail_resp) =
         ui.allocate_exact_size(vec2(ui.available_width().max(60.0), 110.0), Sense::click());
-    if tail_resp.on_hover_cursor(CursorIcon::Text).clicked() {
+    if tail_resp.on_hover_cursor(CursorIcon::Text).clicked()
+        && !ui.ctx().input(|i| i.pointer.is_decidedly_dragging())
+    {
         let end_c = body.chars().count();
         let cc = egui::text::CCursor::new(end_c);
         output
@@ -431,11 +449,13 @@ fn apply_toolbar_format(
     body: &mut String,
     fmt: InlineFmt,
     lang: Lang,
+    today: SimpleDate,
 ) {
     let table_tpl = match lang {
         Lang::Ru => "| Колонка 1 | Колонка 2 |\n| --- | --- |\n|  |  |",
         Lang::En => "| Column 1 | Column 2 |\n| --- | --- |\n|  |  |",
     };
+    let date_str = today.format_iso();
     let (prefix, suffix, line_prefix): (&str, &str, bool) = match fmt {
         InlineFmt::Heading1 => ("# ", "", true),
         InlineFmt::Heading2 => ("## ", "", true),
@@ -449,6 +469,7 @@ fn apply_toolbar_format(
         InlineFmt::Quote => ("> ", "", true),
         InlineFmt::Table => (table_tpl, "", true),
         InlineFmt::WikiLink => ("[[", "]]", false),
+        InlineFmt::TodayDate => (date_str.as_str(), "", false),
     };
 
     let mut state = egui::TextEdit::load_state(ui.ctx(), editor_id).unwrap_or_default();
@@ -514,7 +535,7 @@ pub fn build_editor_layout_job(
             let mut fmt = TextFormat {
                 font_id: font_mono(mono_sz),
                 color: p.accent_text,
-                background: p.bg_code,
+                background: with_alpha(p.bg_code, 0.55),
                 line_height: code_lh,
                 ..Default::default()
             };
@@ -535,7 +556,7 @@ pub fn build_editor_layout_job(
             let mut fmt = TextFormat {
                 font_id: font_mono(mono_sz),
                 color: p.text_secondary,
-                background: p.bg_code,
+                background: with_alpha(p.bg_code, 0.55),
                 line_height: code_lh,
                 ..Default::default()
             };
@@ -765,7 +786,7 @@ fn append_inline_markdown(
                         TextFormat {
                             font_id: font_medium(base.font_id.size),
                             color: p.accent_text,
-                            background: p.accent_soft,
+                            background: with_alpha(p.accent_soft, 0.45),
                             line_height: base.line_height,
                             ..Default::default()
                         },
@@ -789,7 +810,7 @@ fn append_inline_markdown(
                     TextFormat {
                         font_id: FontId::monospace((base.font_id.size - 1.5).max(12.0)),
                         color: p.accent_text,
-                        background: p.bg_code,
+                        background: with_alpha(p.bg_code, 0.55),
                         line_height: base.line_height,
                         ..Default::default()
                     },

@@ -1,7 +1,7 @@
 use crate::i18n::{status_label, strings, Lang, Strings};
 use crate::ui::components::{
-    focus_once, icon_button, primary_button, reset_focus_gate, secondary_button, status_pill_picker,
-    styled_text_input, tag_chip,
+    focus_once, icon_button, normalize_tag_input, primary_button, reset_focus_gate,
+    secondary_button, status_pill_picker, styled_text_input, tag_autocomplete_input, tag_chip,
 };
 use crate::ui::icons::{draw_icon, Icon};
 use crate::ui::motion::{anim_bool_eased, anim_value_smooth, lerp_color, with_alpha};
@@ -36,6 +36,9 @@ pub fn render_board_view(
     active_tag: Option<&str>,
     quick_add_status: &mut Option<NoteStatus>,
     quick_add_title: &mut String,
+    quick_add_tags: &mut Vec<String>,
+    quick_add_tag_input: &mut String,
+    available_tags: &[String],
 ) -> Vec<UiAction> {
     let s = strings(lang);
     let mut actions = Vec::new();
@@ -89,7 +92,9 @@ pub fn render_board_view(
                 continue;
             }
         }
-        grouped.entry(n.status).or_default().push(n);
+        if let Some(st) = n.status {
+            grouped.entry(st).or_default().push(n);
+        }
     }
     for list in grouped.values_mut() {
         list.sort_by(|a, b| {
@@ -111,6 +116,9 @@ pub fn render_board_view(
             &grouped,
             quick_add_status,
             quick_add_title,
+            quick_add_tags,
+            quick_add_tag_input,
+            available_tags,
             &mut actions,
         );
         return actions;
@@ -189,10 +197,14 @@ pub fn render_board_view(
                                 *quick_add_status = None;
                                 qa_at_top = false;
                                 quick_add_title.clear();
+                                quick_add_tags.clear();
+                                quick_add_tag_input.clear();
                             } else {
                                 *quick_add_status = Some(status);
                                 qa_at_top = true;
                                 quick_add_title.clear();
+                                quick_add_tags.clear();
+                                quick_add_tag_input.clear();
                             }
                         }
                     });
@@ -203,6 +215,7 @@ pub fn render_board_view(
                     render_quick_add_control(
                         cui,
                         p,
+                        lang,
                         s,
                         status,
                         inner_w,
@@ -210,6 +223,9 @@ pub fn render_board_view(
                         quick_add_status,
                         &mut qa_at_top,
                         quick_add_title,
+                        quick_add_tags,
+                        quick_add_tag_input,
+                        available_tags,
                         &mut actions,
                     );
                     cui.add_space(8.0);
@@ -517,6 +533,7 @@ pub fn render_board_view(
                             render_quick_add_control(
                                 ui,
                                 p,
+                                lang,
                                 s,
                                 status,
                                 inner_w,
@@ -524,6 +541,9 @@ pub fn render_board_view(
                                 quick_add_status,
                                 &mut qa_at_top,
                                 quick_add_title,
+                                quick_add_tags,
+                                quick_add_tag_input,
+                                available_tags,
                                 &mut actions,
                             );
                         }
@@ -581,6 +601,9 @@ fn render_mobile_tabbed_board(
     grouped: &HashMap<NoteStatus, Vec<&NoteMeta>>,
     quick_add_status: &mut Option<NoteStatus>,
     quick_add_title: &mut String,
+    quick_add_tags: &mut Vec<String>,
+    quick_add_tag_input: &mut String,
+    available_tags: &[String],
     actions: &mut Vec<UiAction>,
 ) {
     let avail_w = ui.available_width().max(260.0);
@@ -719,6 +742,7 @@ fn render_mobile_tabbed_board(
             render_quick_add_control(
                 ui,
                 p,
+                lang,
                 s,
                 active_status,
                 card_w,
@@ -726,6 +750,9 @@ fn render_mobile_tabbed_board(
                 quick_add_status,
                 &mut mob_top,
                 quick_add_title,
+                quick_add_tags,
+                quick_add_tag_input,
+                available_tags,
                 actions,
             );
             ui.add_space(12.0);
@@ -800,12 +827,12 @@ fn render_mobile_board_card(
                     p,
                     lang,
                     ("board_mob_st", &item.path),
-                    item.status,
+                    item.status.unwrap_or(NoteStatus::Todo),
                 ) {
-                    if new_st != item.status {
+                    if Some(new_st) != item.status {
                         actions.push(UiAction::UpdateNoteStatus {
                             path: item.path.clone(),
-                            status: new_st,
+                            status: Some(new_st),
                         });
                     }
                 }
@@ -854,6 +881,7 @@ fn mobile_shift_btn(ui: &mut Ui, p: &ThemePalette, glyph: &str) -> egui::Respons
 fn render_quick_add_control(
     ui: &mut Ui,
     p: &ThemePalette,
+    lang: Lang,
     s: &Strings,
     status: NoteStatus,
     inner_w: f32,
@@ -861,6 +889,9 @@ fn render_quick_add_control(
     quick_add_status: &mut Option<NoteStatus>,
     qa_at_top: &mut bool,
     quick_add_title: &mut String,
+    quick_add_tags: &mut Vec<String>,
+    quick_add_tag_input: &mut String,
+    available_tags: &[String],
     actions: &mut Vec<UiAction>,
 ) {
     let qa_gate_id = egui::Id::new(("board_qa_foc", status, slot_tag));
@@ -884,22 +915,72 @@ fn render_quick_add_control(
                 f32::INFINITY,
             );
             focus_once(fui.ctx(), qa_gate_id, true, resp.id);
-            let enter = fui.input(|i| i.key_pressed(egui::Key::Enter));
+            let title_enter = resp.has_focus() && fui.input(|i| i.key_pressed(egui::Key::Enter));
+
+            fui.add_space(6.0);
+            if !quick_add_tags.is_empty() {
+                fui.horizontal_wrapped(|ui| {
+                    ui.spacing_mut().item_spacing = vec2(4.0, 4.0);
+                    let mut remove_idx: Option<usize> = None;
+                    for (ti, tag) in quick_add_tags.iter().enumerate() {
+                        let (_, rm) = tag_chip(ui, p, tag, true);
+                        if rm {
+                            remove_idx = Some(ti);
+                        }
+                    }
+                    if let Some(ti) = remove_idx {
+                        quick_add_tags.remove(ti);
+                    }
+                });
+                fui.add_space(4.0);
+            }
+
+            if let Some(new_tag) = tag_autocomplete_input(
+                fui,
+                p,
+                lang,
+                ("board_qa_tag", status, slot_tag),
+                quick_add_tag_input,
+                s.add_tag_hint,
+                f32::INFINITY,
+                available_tags,
+                quick_add_tags,
+            ) {
+                let clean = normalize_tag_input(&new_tag);
+                if !clean.is_empty()
+                    && !quick_add_tags
+                        .iter()
+                        .any(|t| normalize_tag_input(t) == clean)
+                {
+                    quick_add_tags.push(clean);
+                }
+            }
+
             let esc = fui.input(|i| i.key_pressed(egui::Key::Escape));
             fui.add_space(7.0);
             fui.horizontal(|ui| {
-                if (primary_button(ui, p, Some(Icon::Plus), s.create_btn, false).clicked() || enter)
+                if (primary_button(ui, p, Some(Icon::Plus), s.create_btn, false).clicked()
+                    || title_enter)
                     && !quick_add_title.trim().is_empty()
                 {
                     let t = quick_add_title.trim().to_string();
-                    actions.push(UiAction::CreateNote { title: t, status });
+                    let tags = std::mem::take(quick_add_tags);
+                    actions.push(UiAction::CreateNote {
+                        title: t,
+                        status: Some(status),
+                        tags,
+                    });
                     quick_add_title.clear();
+                    quick_add_tags.clear();
+                    quick_add_tag_input.clear();
                     *quick_add_status = None;
                     *qa_at_top = false;
                 }
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     if icon_button(ui, p, Icon::Close, s.cancel_btn, false).clicked() || esc {
                         quick_add_title.clear();
+                        quick_add_tags.clear();
+                        quick_add_tag_input.clear();
                         *quick_add_status = None;
                         *qa_at_top = false;
                     }
@@ -945,6 +1026,8 @@ fn render_quick_add_control(
             *quick_add_status = Some(status);
             *qa_at_top = false;
             quick_add_title.clear();
+            quick_add_tags.clear();
+            quick_add_tag_input.clear();
         }
     }
 }

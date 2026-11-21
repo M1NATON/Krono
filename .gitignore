@@ -19,6 +19,8 @@
 .graphifyignore
 GEMINI.md
 implementation_plan.md
+.antigravityignore
+
 
 # OS / IDE files
 .DS_Store

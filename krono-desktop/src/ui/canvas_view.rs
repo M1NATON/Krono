@@ -1,4 +1,4 @@
-use crate::i18n::{strings, Lang};
+﻿use crate::i18n::{strings, Lang};
 use crate::storage::index::CollectionMeta;
 use crate::ui::components::{
     context_menu_row, focus_once, hairline_h, icon_button, primary_button, reset_focus_gate,
@@ -6,6 +6,9 @@ use crate::ui::components::{
 };
 use crate::ui::icons::{draw_icon, Icon};
 use crate::ui::image_cache::ImageTextureCache;
+use crate::ui::markdown_preview::{
+    render_markdown_preview, resolve_embedded_note, EmbeddedNoteData, PreviewAction,
+};
 use crate::ui::motion::{lerp_color, with_alpha};
 use crate::ui::theme::{font_body, font_medium, font_mono, font_semibold, ThemePalette};
 use crate::ui::viewport_2d::{draw_dot_grid, render_zoom_hud, Viewport2D};
@@ -15,12 +18,30 @@ use eframe::egui::{
     Sense, Stroke, Ui, Vec2,
 };
 use krono_core::{
-    canvas::{CanvasDoc, CanvasEnd, CanvasNode, CanvasNodeKind, CanvasSide},
-    collection::ColorToken,
+    canvas::{
+        canvas_folder_for_path, suggest_note_title_from_card, CanvasDoc, CanvasEnd, CanvasNode,
+        CanvasNodeKind, CanvasSide,
+    },
+    collection::{CollectionDoc, ColorToken},
+    daily::SimpleDate,
     note::NoteMeta,
     path::{vault_file_stem, VaultFileKind},
 };
-use std::{collections::HashSet, path::Path, time::Instant};
+use std::{
+    collections::{HashMap, HashSet},
+    path::Path,
+    time::Instant,
+};
+
+pub struct CanvasMarkdownCtx<'a> {
+    pub today: SimpleDate,
+    pub heading_serif: bool,
+    pub resolved_titles: &'a HashSet<String>,
+    pub copied_code_hash: Option<u64>,
+    pub embedded_boards: &'a HashMap<String, CollectionDoc>,
+    pub available_boards: &'a [(String, String)],
+    pub embedded_notes: &'a HashMap<String, EmbeddedNoteData>,
+}
 
 #[derive(Clone, Debug)]
 pub struct DraggingNode {
@@ -69,6 +90,7 @@ pub struct CanvasEditorState {
     pub file_picker_open: bool,
     pub file_picker_world: Option<Pos2>,
     pub file_picker_query: String,
+    pub convert_card_modal: Option<(String, String)>,
     pub edge_label_draft: String,
     pub search_open: bool,
     pub search_query: String,
@@ -111,6 +133,7 @@ impl Default for CanvasEditorState {
             file_picker_open: false,
             file_picker_world: None,
             file_picker_query: String::new(),
+            convert_card_modal: None,
             edge_label_draft: String::new(),
             search_open: false,
             search_query: String::new(),
@@ -145,6 +168,7 @@ impl CanvasEditorState {
         self.file_picker_open = false;
         self.file_picker_world = None;
         self.file_picker_query.clear();
+        self.convert_card_modal = None;
         self.edge_label_draft.clear();
         self.search_open = false;
         self.search_query.clear();
@@ -568,6 +592,7 @@ fn canvas_world_bounds(doc: &CanvasDoc) -> Option<Rect> {
 }
 
 #[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_arguments)]
 pub fn render_canvas_view(
     ctx: &egui::Context,
     ui: &mut Ui,
@@ -579,6 +604,7 @@ pub fn render_canvas_view(
     collections: &[CollectionMeta],
     vault_dir: &Path,
     image_cache: &mut ImageTextureCache,
+    md_ctx: &CanvasMarkdownCtx<'_>,
 ) -> Vec<UiAction> {
     let s = strings(lang);
     let mut actions = Vec::new();
@@ -619,7 +645,11 @@ pub fn render_canvas_view(
     let mut dirty = false;
 
     // Keyboard shortcuts: Delete/Backspace, Ctrl+Z/Y, Ctrl+D Duplicate, Ctrl+F Search, Arrow Nudging
-    if state.editing_node_id.is_none() && !state.file_picker_open && !ctx.wants_keyboard_input() {
+    if state.editing_node_id.is_none()
+        && !state.file_picker_open
+        && state.convert_card_modal.is_none()
+        && !ctx.wants_keyboard_input()
+    {
         let mut undo_hit = false;
         let mut redo_hit = false;
         let mut dup_hit = false;
@@ -756,6 +786,7 @@ pub fn render_canvas_view(
     let search_block = ctx.data(|d| d.get_temp::<Rect>(egui::Id::new("c_hud_block_search")));
     let pointer_blocked_by_hud = |mp: Pos2| -> bool {
         state.file_picker_open
+            || state.convert_card_modal.is_some()
             || zoom_hud_block.contains(mp)
             || edge_pill_block.is_some_and(|r| r.contains(mp))
             || minimap_block.is_some_and(|r| r.contains(mp))
@@ -1134,6 +1165,8 @@ pub fn render_canvas_view(
     let mut open_external_target: Option<String> = None;
     let mut complete_connection_to: Option<(String, CanvasSide)> = None;
     let mut port_drag_started: Option<(String, CanvasSide)> = None;
+    let mut pointer_over_selected_card = false;
+    let mut external_label_rects: Vec<(Rect, String)> = Vec::new();
 
     for &ci in &content_indices {
         let node = state.doc.nodes[ci].clone();
@@ -1170,7 +1203,64 @@ pub fn render_canvas_view(
 
         let card_painter = painter.with_clip_rect(canvas_rect.intersect(srect.shrink(2.5)));
         let card_foc_gate = egui::Id::new(("canvas_card_foc", &node.id));
-        if zoom < 0.48 || srect.height() < 54.0 || srect.width() < 96.0 {
+
+        if node.kind == CanvasNodeKind::File && zoom >= 0.40 {
+            if let Some(fp) = node.file.as_deref() {
+                if VaultFileKind::from_path(fp) == Some(VaultFileKind::Markdown) {
+                    let lbl_text = notes
+                        .iter()
+                        .find(|n| n.path.eq_ignore_ascii_case(fp))
+                        .map(|n| n.title.clone())
+                        .unwrap_or_else(|| vault_file_stem(fp).to_string());
+                    let lbl_font = font_medium((11.0 * zoom).clamp(9.5, 13.0));
+                    let lbl_g = painter.layout_no_wrap(lbl_text, lbl_font, p.text_secondary);
+                    let max_lbl_w = (srect.width() - 8.0).max(60.0);
+                    let pill_w = (lbl_g.size().x + 34.0).min(max_lbl_w);
+                    let pill_h = (lbl_g.size().y + 6.0).max(18.0);
+                    let pill_r = Rect::from_min_size(
+                        pos2(srect.left() + 2.0, srect.top() - pill_h - 4.0),
+                        vec2(pill_w, pill_h),
+                    );
+                    if canvas_rect.intersects(pill_r) {
+                        let lbl_hov = pointer_pos.is_some_and(|mp| pill_r.contains(mp));
+                        painter.rect_filled(
+                            pill_r,
+                            Rounding::same(5.0),
+                            if lbl_hov { p.bg_hover } else { p.bg_elevated },
+                        );
+                        painter.rect_stroke(
+                            pill_r,
+                            Rounding::same(5.0),
+                            Stroke::new(1.0_f32, if selected || lbl_hov { p.accent } else { p.border_hairline }),
+                        );
+                        let ic_r = Rect::from_center_size(
+                            pos2(pill_r.left() + 10.0, pill_r.center().y),
+                            vec2(11.0, 11.0),
+                        );
+                        draw_icon(&painter, ic_r, Icon::Document, p.accent_text);
+                        let text_clip = painter.with_clip_rect(
+                            canvas_rect.intersect(Rect::from_min_max(
+                                pos2(pill_r.left() + 18.0, pill_r.top()),
+                                pos2(pill_r.right() - 16.0, pill_r.bottom()),
+                            )),
+                        );
+                        text_clip.galley(
+                            pos2(pill_r.left() + 18.0, pill_r.center().y - lbl_g.size().y * 0.5),
+                            lbl_g,
+                            if lbl_hov { p.text_primary } else { p.text_secondary },
+                        );
+                        let ext_r = Rect::from_center_size(
+                            pos2(pill_r.right() - 9.0, pill_r.center().y),
+                            vec2(10.0, 10.0),
+                        );
+                        draw_icon(&painter, ext_r, Icon::OutLink, p.accent_text);
+                        external_label_rects.push((pill_r, fp.to_string()));
+                    }
+                }
+            }
+        }
+
+        if zoom < 0.40 || srect.height() < 48.0 || srect.width() < 84.0 {
             reset_focus_gate(ui.ctx(), card_foc_gate);
             let mini_title = node.display_title();
             let mut job = egui::text::LayoutJob::single_section(
@@ -1253,7 +1343,92 @@ pub fn render_canvas_view(
                                 );
                                 card_painter.galley(pos2(cap_r.left() + 5.0, cap_r.top() + 2.0), ng, p.text_primary);
                             }
+                        } else if kind == VaultFileKind::Markdown {
+                        let card_scroll_active = selected
+                            && state.dragging_node.is_none()
+                            && state.resizing_node.is_none()
+                            && !state.file_picker_open
+                            && state.convert_card_modal.is_none();
+                        if card_scroll_active && pointer_pos.is_some_and(|mp| srect.contains(mp)) {
+                            pointer_over_selected_card = true;
+                        }
+                        if let Some(note_data) = resolve_embedded_note(file_path, md_ctx.embedded_notes) {
+                            let content_rect = srect.shrink((8.0 * zoom).clamp(5.0, 12.0));
+                            let strict_clip = canvas_rect.intersect(srect.shrink(2.0));
+                            if content_rect.width() >= 24.0 && content_rect.height() >= 24.0 && strict_clip.is_positive() {
+                                let mut child = ui.new_child(
+                                    egui::UiBuilder::new()
+                                        .max_rect(content_rect)
+                                        .layout(Layout::top_down(Align::LEFT)),
+                                );
+                                child.set_clip_rect(strict_clip);
+                                let scroll_h = content_rect.height().max(24.0);
+                                let scroll_w = content_rect.width().max(32.0);
+                                egui::ScrollArea::vertical()
+                                    .id_salt(("canvas_md_scroll", &node.id))
+                                    .enable_scrolling(card_scroll_active)
+                                    .max_height(scroll_h)
+                                    .show(&mut child, |ui| {
+                                        ui.set_width(scroll_w);
+                                        ui.set_max_width(scroll_w);
+                                        if let Some(pv_act) = render_markdown_preview(
+                                            ui,
+                                            p,
+                                            lang,
+                                            md_ctx.today,
+                                            &note_data.body,
+                                            (13.0 * zoom).clamp(9.5, 18.0),
+                                            md_ctx.heading_serif,
+                                            md_ctx.resolved_titles,
+                                            md_ctx.copied_code_hash,
+                                            vault_dir,
+                                            image_cache,
+                                            md_ctx.embedded_boards,
+                                            md_ctx.available_boards,
+                                            md_ctx.embedded_notes,
+                                            Some(&note_data.path),
+                                        ) {
+                                            if selected {
+                                                match pv_act {
+                                                    PreviewAction::NavigateWikilink(target) => {
+                                                        actions.push(UiAction::OpenOrCreateWikilink(target));
+                                                    }
+                                                    PreviewAction::CopyCode(code) => {
+                                                        actions.push(UiAction::CopyText(code));
+                                                    }
+                                                    PreviewAction::OpenImage(path) => {
+                                                        actions.push(UiAction::OpenImageLightbox(path));
+                                                    }
+                                                    _ => {}
+                                                }
+                                            }
+                                        }
+                                    });
+                            }
                         } else {
+                            let resolved_title = notes
+                                .iter()
+                                .find(|n| n.path.eq_ignore_ascii_case(file_path))
+                                .map(|n| n.title.clone())
+                                .unwrap_or_else(|| vault_file_stem(file_path).to_string());
+                            let ic_r = Rect::from_center_size(
+                                pos2(inner.left() + 8.0 * zoom, inner.top() + 9.0 * zoom),
+                                vec2(14.0 * zoom, 14.0 * zoom),
+                            );
+                            draw_icon(&card_painter, ic_r, Icon::Document, accent.unwrap_or(p.accent_text));
+                            let title_g = card_painter.layout(
+                                resolved_title,
+                                font_semibold((13.0 * zoom).clamp(10.0, 16.0)),
+                                p.text_primary,
+                                (inner.width() - 40.0 * zoom).max(40.0),
+                            );
+                            card_painter.galley(
+                                pos2(inner.left() + 20.0 * zoom, inner.top()),
+                                title_g,
+                                p.text_primary,
+                            );
+                        }
+                    } else {
                             let ic_r = Rect::from_center_size(img_area.center(), vec2(26.0 * zoom, 26.0 * zoom));
                             draw_icon(&card_painter, ic_r, Icon::Image, p.text_muted);
                         }
@@ -1452,7 +1627,7 @@ pub fn render_canvas_view(
                         snap(wp.y - 60.0, state.snap_to_grid),
                         if lang == Lang::Ru {
                             "Новая карточка"
-                        } else {
+                    } else {
                             "New card"
                         },
                         Some("5"),
@@ -1487,7 +1662,17 @@ pub fn render_canvas_view(
     if !hit_handled && primary_pressed {
         if let Some(mp) = pointer_pos {
             let mut hit_any = false;
+            // 0. External note filename labels above .md File cards
+            for (lbl_r, fp) in external_label_rects.iter().rev() {
+                if lbl_r.contains(mp) {
+                    open_external_target = Some(fp.clone());
+                    hit_any = true;
+                    break;
+                }
+            }
+
             // 1. Content nodes (topmost first)
+            if !hit_any {
             for &ci in content_indices.iter().rev() {
                 let node = state.doc.nodes[ci].clone();
                 if state.editing_node_id.as_deref() == Some(&node.id) {
@@ -1562,6 +1747,7 @@ pub fn render_canvas_view(
                     hit_any = true;
                     break;
                 }
+            }
             }
 
             // 2. Edges (sit ABOVE Groups so edges inside a group are always selectable)
@@ -1866,7 +2052,7 @@ pub fn render_canvas_view(
         && state.editing_node_id.is_none();
     state
         .viewport
-        .handle_pan_zoom(ui, canvas_rect, &bg_resp, allow_pan, false);
+        .handle_pan_zoom_ex(ui, canvas_rect, &bg_resp, allow_pan, false, !pointer_over_selected_card);
     if clicked {
         if state.pressed_on_empty_bg && !hit_handled {
             state.clear_selection();
@@ -2241,7 +2427,7 @@ pub fn render_canvas_view(
                             let tr = state.edge_label_draft.trim();
                             e.label = if tr.is_empty() {
                                 None
-                            } else {
+                    } else {
                                 Some(tr.to_string())
                             };
                             dirty = true;
@@ -2269,7 +2455,7 @@ pub fn render_canvas_view(
                                     p.accent_soft
                                 } else if bresp.hovered() {
                                     p.bg_hover
-                                } else {
+                    } else {
                                     p.bg_input
                                 },
                             );
@@ -2524,6 +2710,73 @@ pub fn render_canvas_view(
         reset_focus_gate(ctx, fp_gate_id);
     }
 
+    // 10. Convert Text Card to Note Modal
+    let convert_gate_id = egui::Id::new("canvas_convert_card_foc_gate");
+    if let Some((node_id, mut title_draft)) = state.convert_card_modal.clone() {
+        let mut keep_open = true;
+        let mut confirm = false;
+        let folder_preview = state
+            .path
+            .as_deref()
+            .map(canvas_folder_for_path)
+            .unwrap_or_else(|| "Canvas".to_string());
+        egui::Window::new(s.canvas_convert_modal_title)
+            .collapsible(false)
+            .resizable(false)
+            .anchor(Align2::CENTER_CENTER, Vec2::ZERO)
+            .fixed_size(vec2(360.0, 0.0))
+            .frame(
+                egui::Frame::window(&ctx.style())
+                    .fill(p.bg_elevated)
+                    .stroke(Stroke::new(1.0_f32, p.border_subtle))
+                    .rounding(Rounding::same(12.0))
+                    .shadow(p.shadow_floating)
+                    .inner_margin(Margin::same(16.0)),
+            )
+            .show(ctx, |ui| {
+                ui.label(
+                    egui::RichText::new(format!("{}: {folder_preview}/", s.canvas_convert_folder_hint))
+                        .font(font_mono(11.5))
+                        .color(p.text_muted),
+                );
+                ui.add_space(8.0);
+                let resp = styled_text_input(ui, p, &mut title_draft, "note_title", false, 328.0);
+                focus_once(ctx, convert_gate_id, true, resp.id);
+                if ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+                    confirm = true;
+                }
+                if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+                    keep_open = false;
+                }
+                ui.add_space(12.0);
+                ui.horizontal(|ui| {
+                    if secondary_button(ui, p, None, s.cancel_btn).clicked() {
+                        keep_open = false;
+                    }
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if primary_button(ui, p, Some(Icon::FileOutput), s.canvas_convert_confirm, false)
+                            .clicked()
+                        {
+                            confirm = true;
+                        }
+                    });
+                });
+            });
+        if confirm {
+            actions.push(UiAction::ConvertCanvasCardToNote {
+                node_id,
+                custom_title: title_draft,
+            });
+            state.convert_card_modal = None;
+        } else if keep_open {
+            state.convert_card_modal = Some((node_id, title_draft));
+        } else {
+            state.convert_card_modal = None;
+        }
+    } else {
+        reset_focus_gate(ctx, convert_gate_id);
+    }
+
     if dirty {
         actions.push(UiAction::MarkCanvasDirty);
     }
@@ -2718,12 +2971,40 @@ fn render_canvas_context_menu(
                             .iter()
                             .find(|n| n.id == nid)
                             .is_some_and(|n| matches!(n.kind, CanvasNodeKind::Text | CanvasNodeKind::Group));
+                        let is_text_card = state
+                            .doc
+                            .nodes
+                            .iter()
+                            .find(|n| n.id == nid)
+                            .is_some_and(|n| n.kind == CanvasNodeKind::Text);
                         if is_editable
                             && context_menu_row(ui, p, Icon::Edit, s.canvas_edit_card, false).clicked()
                         {
                             state.push_undo();
                             state.selected_node_id = Some(nid.clone());
                             state.editing_node_id = Some(nid.clone());
+                            close = true;
+                        }
+                        if is_text_card
+                            && context_menu_row(
+                                ui,
+                                p,
+                                Icon::FileOutput,
+                                s.canvas_convert_to_note,
+                                false,
+                            )
+                            .clicked()
+                        {
+                            let raw_text = state
+                                .doc
+                                .nodes
+                                .iter()
+                                .find(|n| n.id == nid)
+                                .and_then(|n| n.text.as_deref())
+                                .unwrap_or("");
+                            let fb = if lang == Lang::Ru { "Заметка" } else { "Note" };
+                            let suggested = suggest_note_title_from_card(raw_text, fb);
+                            state.convert_card_modal = Some((nid.clone(), suggested));
                             close = true;
                         }
                         if context_menu_row(ui, p, Icon::Copy, s.canvas_duplicate, false).clicked() {

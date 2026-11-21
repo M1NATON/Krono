@@ -107,6 +107,8 @@ pub struct KronoApp {
     pub(crate) create_modal: CreateModalState,
     pub(crate) image_cache: ImageTextureCache,
     pub(crate) cover_cache: CoverCache,
+    pub(crate) spellchecker: crate::spellcheck::SpellChecker,
+    pub(crate) embedded_notes_cache: HashMap<String, (i64, crate::ui::markdown_preview::EmbeddedNoteData)>,
     pub(crate) lightbox_image: Option<String>,
     pub(crate) embedded_boards: HashMap<String, CollectionDoc>,
     pending_image_pick: Option<(ImagePickTarget, mpsc::Receiver<Option<PathBuf>>)>,
@@ -333,6 +335,7 @@ impl KronoApp {
 
         let vault_draft = config.vault_dir.to_string_lossy().to_string();
         let cover_cache = CoverCache::new(config.vault_dir.clone());
+        let spellchecker = crate::spellcheck::SpellChecker::new(&config.vault_dir);
         let (tmdb_tx, tmdb_rx) = mpsc::channel::<TmdbEvent>();
         let mut app = Self {
             config,
@@ -360,6 +363,8 @@ impl KronoApp {
             create_modal: CreateModalState::default(),
             image_cache: ImageTextureCache::default(),
             cover_cache,
+            spellchecker,
+            embedded_notes_cache: HashMap::new(),
             lightbox_image: None,
             embedded_boards: HashMap::new(),
             pending_image_pick: None,

@@ -130,6 +130,8 @@ pub struct AppConfig {
     pub md_wikilink_autocomplete: bool,
     pub md_auto_lists: bool,
     pub md_auto_pairs: bool,
+    #[serde(default = "default_true")]
+    pub editor_spellcheck: bool,
     pub md_show_toolbar: bool,
     pub md_slash_trigger: SlashTrigger,
     pub custom_slash_snippets: Vec<CustomSlashSnippet>,
@@ -223,6 +225,7 @@ impl Default for AppConfig {
             md_wikilink_autocomplete: true,
             md_auto_lists: true,
             md_auto_pairs: true,
+            editor_spellcheck: true,
             md_show_toolbar: true,
             md_slash_trigger: SlashTrigger::Slash,
             custom_slash_snippets: Vec::new(),

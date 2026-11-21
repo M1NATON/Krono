@@ -2,6 +2,7 @@ pub mod board_dnd;
 pub mod board_view;
 pub mod calendar_widget;
 pub mod canvas_view;
+pub mod code_highlight;
 pub mod collection_board;
 pub mod collection_gallery;
 pub mod collection_view;
@@ -207,6 +208,7 @@ pub struct EditorPrefs {
     pub md_wikilink_autocomplete: bool,
     pub md_auto_lists: bool,
     pub md_auto_pairs: bool,
+    pub spellcheck: bool,
     pub md_show_toolbar: bool,
     pub md_slash_trigger: SlashTrigger,
 }
@@ -411,12 +413,21 @@ pub enum UiAction {
     CanvasExternalKeepMine,
     CanvasExternalSaveConflictCopy,
     ExportCanvasToMarkdown,
+    ConvertCanvasCardToNote {
+        node_id: String,
+        custom_title: String,
+    },
     OpenGraphForNode(String),
     PickImageForEditor,
     PickImageForCanvas,
     PasteClipboardImage,
     OpenImageLightbox(String),
     CreateLinkedBoardForCurrentNote,
+    ExtractSelectionToNote {
+        start_char: usize,
+        end_char: usize,
+    },
+    AddWordToDictionary(String),
     EmbeddedBoard(embedded_board::EmbeddedBoardAction),
     CheckForUpdates,
     InstallUpdate,

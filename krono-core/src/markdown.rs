@@ -72,6 +72,86 @@ pub fn extract_wikilinks(body: &str) -> Vec<WikiLink> {
     links
 }
 
+/// Maximum recursive depth for note transclusion (`![[note]]`).
+pub const MAX_TRANSCLUSION_DEPTH: usize = 3;
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct EmbedRef {
+    pub target: String,
+    pub alias: Option<String>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TransclusionGuard {
+    Allowed,
+    Cycle,
+    MaxDepth,
+}
+
+/// Parses a standalone `![[target]]` or `![[target|alias]]` embed line.
+pub fn parse_standalone_embed(line: &str) -> Option<EmbedRef> {
+    let trimmed = line.trim();
+    let inner = trimmed.strip_prefix("![[")?.strip_suffix("]]")?;
+    if inner.contains("![[") || inner.contains("]]") || inner.contains('\n') {
+        return None;
+    }
+    let (target_raw, alias_raw) = match inner.split_once('|') {
+        Some((t, a)) => (t.trim(), Some(a.trim())),
+        None => (inner.trim(), None),
+    };
+    if target_raw.is_empty() {
+        return None;
+    }
+    let target = target_raw.replace('\\', "/");
+    let alias = alias_raw.filter(|a| !a.is_empty()).map(str::to_string);
+    Some(EmbedRef { target, alias })
+}
+
+/// Extracts standalone `![[note]]` transclusions outside fenced code blocks
+/// (excluding `.board.json` and image assets).
+pub fn extract_note_transclusions(body: &str) -> Vec<EmbedRef> {
+    let mut out = Vec::new();
+    let mut active_fence: Option<char> = None;
+    for raw_line in body.lines() {
+        let trimmed = raw_line.trim_start();
+        if let Some(ch) = is_fence_toggle(trimmed) {
+            if active_fence == Some(ch) {
+                active_fence = None;
+            } else if active_fence.is_none() {
+                active_fence = Some(ch);
+            }
+            continue;
+        }
+        if active_fence.is_some() {
+            continue;
+        }
+        if let Some(embed) = parse_standalone_embed(raw_line) {
+            let low = embed.target.to_lowercase();
+            if !low.ends_with(".board.json")
+                && crate::path::VaultFileKind::from_path(&embed.target)
+                    != Some(crate::path::VaultFileKind::Asset)
+            {
+                out.push(embed);
+            }
+        }
+    }
+    out
+}
+
+pub fn check_transclusion_guard(
+    canonical_target: &str,
+    visited: &std::collections::HashSet<String>,
+    depth: usize,
+) -> TransclusionGuard {
+    if depth >= MAX_TRANSCLUSION_DEPTH {
+        return TransclusionGuard::MaxDepth;
+    }
+    if visited.contains(&canonical_target.to_lowercase()) {
+        return TransclusionGuard::Cycle;
+    }
+    TransclusionGuard::Allowed
+}
+
 /// Extracts deduplicated `![[...board.json]]` embedded board targets outside fenced code blocks.
 pub fn extract_embedded_boards(body: &str) -> Vec<String> {
     let mut boards = Vec::new();
@@ -814,5 +894,39 @@ mod tests {
 
         let only_headers = "---\ntitle: Empty\n---\n# Title\n## Section\n";
         assert_eq!(card_preview_excerpt(only_headers, 2, 80), "");
+    }
+
+    #[test]
+    fn transclusion_parses_embeds_and_guards_cycles_and_depth() {
+        let md = "Intro\n\n![[Архитектура]]\n![[Folder/Spec|Спека]]\n![[assets/pic.png]]\n![[proj/b.board.json]]\n```\n![[Ignored]]\n```\n";
+        let embeds = extract_note_transclusions(md);
+        assert_eq!(
+            embeds,
+            vec![
+                EmbedRef {
+                    target: "Архитектура".to_string(),
+                    alias: None,
+                },
+                EmbedRef {
+                    target: "Folder/Spec".to_string(),
+                    alias: Some("Спека".to_string()),
+                },
+            ]
+        );
+
+        let mut visited = std::collections::HashSet::new();
+        visited.insert("notes/a.md".to_string());
+        assert_eq!(
+            check_transclusion_guard("notes/A.md", &visited, 1),
+            TransclusionGuard::Cycle
+        );
+        assert_eq!(
+            check_transclusion_guard("notes/b.md", &visited, 1),
+            TransclusionGuard::Allowed
+        );
+        assert_eq!(
+            check_transclusion_guard("notes/b.md", &visited, MAX_TRANSCLUSION_DEPTH),
+            TransclusionGuard::MaxDepth
+        );
     }
 }

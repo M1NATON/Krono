@@ -593,6 +593,8 @@ impl KronoApp {
         let _ = self.config.save();
         self.vault_draft = new_dir.to_string_lossy().to_string();
         self.cover_cache.set_vault_dir(new_dir.clone());
+        self.spellchecker.reload_user_dict(&new_dir);
+        self.embedded_notes_cache.clear();
         self.watcher.set_vault_dir(new_dir);
         self.selected_path = None;
         self.dirty = false;

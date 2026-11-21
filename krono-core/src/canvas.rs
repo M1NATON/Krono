@@ -722,6 +722,62 @@ impl CanvasDoc {
     }
 }
 
+/// Computes the companion folder path for notes created from a `.canvas` file
+/// (e.g. `"Архитектура.canvas"` -> `"Архитектура"`, `"Projects/Map.canvas"` -> `"Projects/Map"`).
+pub fn canvas_folder_for_path(canvas_rel_path: &str) -> String {
+    let norm = canvas_rel_path.trim().replace('\\', "/");
+    let stem = crate::path::vault_file_stem(&norm);
+    let clean_stem = if stem.is_empty() { "Canvas" } else { stem };
+    match norm.rsplit_once('/') {
+        Some((dir, _)) if !dir.trim().is_empty() => format!("{dir}/{clean_stem}"),
+        _ => clean_stem.to_string(),
+    }
+}
+
+/// Suggests a clean note title from the first non-empty line of a canvas text card.
+pub fn suggest_note_title_from_card(text: &str, fallback: &str) -> String {
+    let first = text
+        .lines()
+        .map(str::trim)
+        .find(|l| !l.is_empty())
+        .unwrap_or("");
+    let mut cleaned = first.trim_start_matches('#').trim();
+    for (open, close) in [("**", "**"), ("__", "__"), ("[[", "]]"), ("*", "*"), ("_", "_"), ("`", "`")] {
+        if cleaned.starts_with(open)
+            && cleaned.ends_with(close)
+            && cleaned.len() > open.len() + close.len()
+        {
+            cleaned = cleaned[open.len()..cleaned.len() - close.len()].trim();
+        }
+    }
+    let out: String = cleaned.chars().take(80).collect::<String>().trim().to_string();
+    if out.is_empty() {
+        fallback.to_string()
+    } else {
+        out
+    }
+}
+
+/// Converts a `CanvasNodeKind::Text` node in place into a `CanvasNodeKind::File` node.
+pub fn convert_text_node_to_file(
+    doc: &mut CanvasDoc,
+    node_id: &str,
+    file_rel_path: &str,
+) -> bool {
+    let Some(node) = doc.nodes.iter_mut().find(|n| n.id == node_id) else {
+        return false;
+    };
+    if node.kind != CanvasNodeKind::Text {
+        return false;
+    }
+    node.kind = CanvasNodeKind::File;
+    node.file = Some(file_rel_path.to_string());
+    node.text = None;
+    node.width = node.width.max(320.0);
+    node.height = node.height.max(220.0);
+    true
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -827,5 +883,31 @@ mod tests {
         let story = CanvasDoc::new_preset("Video", "storyboard", true);
         assert_eq!(story.nodes.len(), 6);
         assert_eq!(story.edges.len(), 2);
+    }
+
+    #[test]
+    fn canvas_folder_title_and_text_to_file_conversion() {
+        assert_eq!(canvas_folder_for_path("Архитектура.canvas"), "Архитектура");
+        assert_eq!(
+            canvas_folder_for_path("Projects/System.canvas"),
+            "Projects/System"
+        );
+        assert_eq!(
+            suggest_note_title_from_card("## **Модуль Auth**\nДетали", "Card"),
+            "Модуль Auth"
+        );
+        assert_eq!(suggest_note_title_from_card("   \n", "Card"), "Card");
+
+        let mut doc = CanvasDoc::new_preset("Test", "blank", false);
+        let tid = doc.add_text_node(40.0, 60.0, "# Заголовок\nТело", None);
+        let fid = doc.add_file_node(100.0, 100.0, "other.md", None);
+        assert!(convert_text_node_to_file(&mut doc, &tid, "Test/Заголовок.md"));
+        assert!(!convert_text_node_to_file(&mut doc, &fid, "x.md"));
+
+        let converted = doc.nodes.iter().find(|n| n.id == tid).unwrap();
+        assert_eq!(converted.kind, CanvasNodeKind::File);
+        assert_eq!(converted.file.as_deref(), Some("Test/Заголовок.md"));
+        assert!(converted.text.is_none());
+        assert!(converted.width >= 320.0 && converted.height >= 220.0);
     }
 }

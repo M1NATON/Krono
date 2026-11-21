@@ -1,4 +1,5 @@
 use crate::i18n::{strings, Lang};
+use crate::ui::code_highlight::highlight_code_layout;
 use crate::ui::components::hairline_h;
 use crate::ui::embedded_board::{render_embedded_board_widget, EmbeddedBoardAction};
 use crate::ui::icons::{draw_icon, Icon};
@@ -16,7 +17,10 @@ use egui::text::LayoutJob;
 use krono_core::{
     collection::CollectionDoc,
     daily::SimpleDate,
-    markdown::{parse_inline_task_meta, TaskPriority},
+    markdown::{
+        check_transclusion_guard, parse_inline_task_meta, parse_standalone_embed, TaskPriority,
+        TransclusionGuard,
+    },
     path::{vault_file_stem, VaultFileKind},
 };
 use pulldown_cmark::{CodeBlockKind, Event, HeadingLevel, Options, Parser, Tag, TagEnd};
@@ -85,7 +89,45 @@ enum Block {
     EmbeddedBoard {
         target: String,
     },
+    EmbeddedNote {
+        target: String,
+        alias: Option<String>,
+    },
     Rule,
+}
+
+#[derive(Clone, Debug)]
+pub struct EmbeddedNoteData {
+    pub path: String,
+    pub title: String,
+    pub body: String,
+}
+
+pub fn resolve_embedded_note<'a>(
+    target: &str,
+    notes: &'a HashMap<String, EmbeddedNoteData>,
+) -> Option<&'a EmbeddedNoteData> {
+    let t = target.trim().replace('\\', "/").to_lowercase();
+    if t.is_empty() {
+        return None;
+    }
+    let with_md = if t.ends_with(".md") {
+        t.clone()
+    } else {
+        format!("{t}.md")
+    };
+    if let Some(hit) = notes.get(&t).or_else(|| notes.get(&with_md)) {
+        return Some(hit);
+    }
+    let stem_t = vault_file_stem(&t).to_lowercase();
+    notes.values().find(|n| {
+        let low = n.path.to_lowercase();
+        low == t
+            || low == with_md
+            || low.ends_with(&format!("/{with_md}"))
+            || vault_file_stem(&low).to_lowercase() == stem_t
+            || n.title.trim().to_lowercase() == stem_t
+    })
 }
 
 impl std::fmt::Debug for Span {
@@ -134,11 +176,56 @@ pub fn render_markdown_preview(
     image_cache: &mut ImageTextureCache,
     embedded_boards: &HashMap<String, CollectionDoc>,
     available_boards: &[(String, String)],
+    embedded_notes: &HashMap<String, EmbeddedNoteData>,
+    root_note_path: Option<&str>,
+) -> Option<PreviewAction> {
+    let mut visited = HashSet::new();
+    if let Some(rp) = root_note_path {
+        visited.insert(rp.to_lowercase());
+    }
+    render_markdown_preview_inner(
+        ui,
+        p,
+        lang,
+        today,
+        body,
+        font_size,
+        heading_serif,
+        resolved_titles,
+        copied_code_hash,
+        vault_dir,
+        image_cache,
+        embedded_boards,
+        available_boards,
+        embedded_notes,
+        &mut visited,
+        0,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn render_markdown_preview_inner(
+    ui: &mut Ui,
+    p: &ThemePalette,
+    lang: Lang,
+    today: SimpleDate,
+    body: &str,
+    font_size: f32,
+    heading_serif: bool,
+    resolved_titles: &HashSet<String>,
+    copied_code_hash: Option<u64>,
+    vault_dir: &Path,
+    image_cache: &mut ImageTextureCache,
+    embedded_boards: &HashMap<String, CollectionDoc>,
+    available_boards: &[(String, String)],
+    embedded_notes: &HashMap<String, EmbeddedNoteData>,
+    visited: &mut HashSet<String>,
+    depth: usize,
 ) -> Option<PreviewAction> {
     let s = strings(lang);
     let blocks = parse_blocks(body);
     let mut action: Option<PreviewAction> = None;
-    let body_sz = font_size.clamp(14.0, 18.0);
+    let body_sz = font_size.clamp(9.5, 20.0);
     let sz_delta = body_sz - 15.0;
 
     for (b_idx, block) in blocks.iter().enumerate() {
@@ -550,13 +637,16 @@ pub fn render_markdown_preview(
                         });
                         ui.add_space(6.0);
                         egui::ScrollArea::horizontal()
-                            .id_salt(("code_block", b_idx))
+                            .id_salt(("code_block", depth, b_idx))
                             .show(ui, |ui| {
-                                ui.label(
-                                    egui::RichText::new(code.trim_end_matches('\n'))
-                                        .font(font_mono(13.5))
-                                        .color(p.text_primary),
+                                let code_sz = (body_sz - 1.5).clamp(9.0, 14.5);
+                                let job = highlight_code_layout(
+                                    code.trim_end_matches('\n'),
+                                    code_lang,
+                                    code_sz,
+                                    p,
                                 );
+                                ui.label(job);
                             });
                     });
                 ui.add_space(10.0);
@@ -669,6 +759,152 @@ pub fn render_markdown_preview(
                 }
                 ui.add_space(10.0);
             }
+            Block::EmbeddedNote { target, alias } => {
+                let s = strings(lang);
+                if let Some(note) = resolve_embedded_note(target, embedded_notes) {
+                    let display_title = alias.as_deref().unwrap_or(&note.title);
+                    match check_transclusion_guard(&note.path, visited, depth) {
+                        TransclusionGuard::Cycle => {
+                            egui::Frame::none()
+                                .fill(p.bg_elevated)
+                                .stroke(Stroke::new(1.0_f32, p.warning))
+                                .rounding(Rounding::same(7.0))
+                                .inner_margin(Margin::symmetric(10.0, 7.0))
+                                .show(ui, |ui| {
+                                    ui.horizontal(|ui| {
+                                        let (ir, _) = ui.allocate_exact_size(vec2(14.0, 14.0), Sense::hover());
+                                        draw_icon(ui.painter(), ir, Icon::Alert, p.warning);
+                                        ui.label(
+                                            egui::RichText::new(format!(
+                                                "{}: {display_title}",
+                                                s.embed_note_cycle
+                                            ))
+                                            .font(font_body(12.0))
+                                            .color(p.text_secondary),
+                                        );
+                                    });
+                                });
+                        }
+                        TransclusionGuard::MaxDepth => {
+                            let link_resp = ui
+                                .add(
+                                    egui::Button::new(
+                                        egui::RichText::new(format!(
+                                            "{}: {display_title}",
+                                            s.embed_note_open
+                                        ))
+                                        .font(font_medium(12.5))
+                                        .color(p.accent_text),
+                                    )
+                                    .fill(p.bg_elevated)
+                                    .stroke(Stroke::new(1.0_f32, p.border_hairline))
+                                    .rounding(Rounding::same(7.0)),
+                                )
+                                .on_hover_cursor(CursorIcon::PointingHand);
+                            if link_resp.clicked() {
+                                action = Some(PreviewAction::NavigateWikilink(note.path.clone()));
+                            }
+                        }
+                        TransclusionGuard::Allowed => {
+                            let key = note.path.to_lowercase();
+                            visited.insert(key.clone());
+                            let frame_resp = egui::Frame::none()
+                                .fill(p.bg_elevated)
+                                .stroke(Stroke::new(1.0_f32, p.border_hairline))
+                                .rounding(Rounding::same(8.0))
+                                .inner_margin(Margin {
+                                    left: 14.0,
+                                    right: 12.0,
+                                    top: 9.0,
+                                    bottom: 10.0,
+                                })
+                                .show(ui, |ui| {
+                                    ui.horizontal(|ui| {
+                                        let (ir, _) = ui.allocate_exact_size(vec2(14.0, 14.0), Sense::hover());
+                                        draw_icon(ui.painter(), ir, Icon::Document, p.accent_text);
+                                        let title_resp = ui
+                                            .add(
+                                                egui::Label::new(
+                                                    egui::RichText::new(display_title)
+                                                        .font(font_medium(13.0))
+                                                        .color(p.accent_text),
+                                                )
+                                                .sense(Sense::click()),
+                                            )
+                                            .on_hover_cursor(CursorIcon::PointingHand);
+                                        if title_resp.clicked() {
+                                            action = Some(PreviewAction::NavigateWikilink(
+                                                note.path.clone(),
+                                            ));
+                                        }
+                                    });
+                                    ui.add_space(5.0);
+                                    hairline_h(ui, p);
+                                    ui.add_space(6.0);
+                                    if let Some(inner_act) = render_markdown_preview_inner(
+                                        ui,
+                                        p,
+                                        lang,
+                                        today,
+                                        &note.body,
+                                        (body_sz - 0.5).max(9.5),
+                                        heading_serif,
+                                        resolved_titles,
+                                        copied_code_hash,
+                                        vault_dir,
+                                        image_cache,
+                                        embedded_boards,
+                                        available_boards,
+                                        embedded_notes,
+                                        visited,
+                                        depth + 1,
+                                    ) {
+                                        action = Some(inner_act);
+                                    }
+                                });
+                            let accent_bar = Rect::from_min_max(
+                                pos2(frame_resp.response.rect.left(), frame_resp.response.rect.top() + 4.0),
+                                pos2(
+                                    frame_resp.response.rect.left() + 3.0,
+                                    frame_resp.response.rect.bottom() - 4.0,
+                                ),
+                            );
+                            ui.painter().rect_filled(accent_bar, Rounding::same(2.0), p.accent);
+                            visited.remove(&key);
+                        }
+                    }
+                } else {
+                    let resp = egui::Frame::none()
+                        .fill(p.bg_elevated)
+                        .stroke(Stroke::new(1.0_f32, p.border_hairline))
+                        .rounding(Rounding::same(8.0))
+                        .inner_margin(Margin::symmetric(10.0, 8.0))
+                        .show(ui, |ui| {
+                            ui.horizontal(|ui| {
+                                let (ir, _) = ui.allocate_exact_size(vec2(14.0, 14.0), Sense::hover());
+                                draw_icon(ui.painter(), ir, Icon::Document, p.text_muted);
+                                let lbl = ui
+                                    .add(
+                                        egui::Label::new(
+                                            egui::RichText::new(format!(
+                                                "{}: {target}",
+                                                s.embed_note_missing
+                                            ))
+                                            .font(font_mono(11.5))
+                                            .color(p.text_muted),
+                                        )
+                                        .sense(Sense::click()),
+                                    )
+                                    .on_hover_cursor(CursorIcon::PointingHand);
+                                if lbl.clicked() {
+                                    action = Some(PreviewAction::NavigateWikilink(target.clone()));
+                                }
+                            });
+                        });
+                    let _ = resp;
+                }
+                ui.add_space(10.0);
+            }
         }
     }
 
@@ -714,9 +950,10 @@ fn render_md_table(
         }
     }
 
+    let min_col_px = if ui.available_width() < 340.0 { 52.0 } else { 100.0 };
     let min_widths: Vec<f32> = max_chars
         .iter()
-        .map(|&chars| ((chars.clamp(6, 18) as f32) * 7.8 + 20.0).max(100.0))
+        .map(|&chars| ((chars.clamp(6, 18) as f32) * 7.8 + 20.0).max(min_col_px))
         .collect();
     let min_sum: f32 = min_widths.iter().sum();
     let avail_w = ui.available_width().max(120.0);
@@ -1507,30 +1744,21 @@ fn extract_plain_paragraph_if_embed(spans: &[Span]) -> Option<String> {
 }
 
 fn try_parse_embed_line(raw: &str) -> Option<Block> {
-    let trimmed = raw.trim();
-    let inner = trimmed.strip_prefix("![[")?.strip_suffix("]]")?;
-    if inner.contains("![[") || inner.contains("]]") || inner.contains('\n') {
-        return None;
-    }
-    let (target_raw, alias_raw) = match inner.split_once('|') {
-        Some((t, a)) => (t.trim(), a.trim()),
-        None => (inner.trim(), ""),
-    };
-    if target_raw.is_empty() {
-        return None;
-    }
-    let clean_target = target_raw.replace('\\', "/");
-    if clean_target.to_lowercase().ends_with(".board.json") {
+    let embed = parse_standalone_embed(raw)?;
+    if embed.target.to_lowercase().ends_with(".board.json") {
         Some(Block::EmbeddedBoard {
-            target: clean_target,
+            target: embed.target,
         })
-    } else if VaultFileKind::from_path(&clean_target) == Some(VaultFileKind::Asset) {
+    } else if VaultFileKind::from_path(&embed.target) == Some(VaultFileKind::Asset) {
         Some(Block::Image {
-            path: clean_target,
-            alt: alias_raw.to_string(),
+            path: embed.target,
+            alt: embed.alias.unwrap_or_default(),
         })
     } else {
-        None
+        Some(Block::EmbeddedNote {
+            target: embed.target,
+            alias: embed.alias,
+        })
     }
 }
 

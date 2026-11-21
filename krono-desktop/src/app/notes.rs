@@ -204,6 +204,162 @@ impl KronoApp {
         self.create_and_open_note_with_tags(title, status, Vec::new(), body);
     }
 
+    pub(super) fn collect_embedded_notes_for_body(
+        &mut self,
+        body: &str,
+    ) -> std::collections::HashMap<String, crate::ui::markdown_preview::EmbeddedNoteData> {
+        let mut out = std::collections::HashMap::new();
+        let mut queue: Vec<(String, usize)> = krono_core::markdown::extract_note_transclusions(body)
+            .into_iter()
+            .map(|e| (e.target, 0usize))
+            .collect();
+        self.fill_embedded_notes_queue(&mut queue, &mut out);
+        out
+    }
+
+    pub(super) fn collect_embedded_notes_for_paths(
+        &mut self,
+        paths: &[String],
+    ) -> std::collections::HashMap<String, crate::ui::markdown_preview::EmbeddedNoteData> {
+        let mut out = std::collections::HashMap::new();
+        let mut queue: Vec<(String, usize)> = paths
+            .iter()
+            .map(|p| (p.clone(), 0usize))
+            .collect();
+        self.fill_embedded_notes_queue(&mut queue, &mut out);
+        out
+    }
+
+    fn fill_embedded_notes_queue(
+        &mut self,
+        queue: &mut Vec<(String, usize)>,
+        out: &mut std::collections::HashMap<String, crate::ui::markdown_preview::EmbeddedNoteData>,
+    ) {
+        let mut visited_keys = std::collections::HashSet::new();
+        while let Some((target, depth)) = queue.pop() {
+            if depth > krono_core::markdown::MAX_TRANSCLUSION_DEPTH {
+                continue;
+            }
+            let t_low = target.trim().replace('\\', "/").to_lowercase();
+            let with_md = if t_low.ends_with(".md") {
+                t_low.clone()
+            } else {
+                format!("{t_low}.md")
+            };
+            let stem_t = krono_core::path::vault_file_stem(&t_low).to_lowercase();
+            let meta_opt = self.notes.iter().find(|n| {
+                let low = n.path.to_lowercase();
+                low == t_low
+                    || low == with_md
+                    || low.ends_with(&format!("/{with_md}"))
+                    || krono_core::path::vault_file_stem(&low).to_lowercase() == stem_t
+                    || n.title.trim().to_lowercase() == stem_t
+            });
+            let Some(meta) = meta_opt.cloned() else {
+                continue;
+            };
+            let key = meta.path.to_lowercase();
+            if !visited_keys.insert(key.clone()) {
+                continue;
+            }
+            let cached_hit = self
+                .embedded_notes_cache
+                .get(&key)
+                .filter(|(m, _)| *m == meta.modified)
+                .map(|(_, d)| d.clone());
+            let data = if let Some(d) = cached_hit {
+                d
+            } else if let Ok((doc, modified, _)) = read_note(&self.config.vault_dir, &meta.path) {
+                let d = crate::ui::markdown_preview::EmbeddedNoteData {
+                    path: meta.path.clone(),
+                    title: doc.frontmatter.title.clone(),
+                    body: doc.body,
+                };
+                self.embedded_notes_cache.insert(key.clone(), (modified, d.clone()));
+                d
+            } else {
+                continue;
+            };
+            if depth < krono_core::markdown::MAX_TRANSCLUSION_DEPTH {
+                for child in krono_core::markdown::extract_note_transclusions(&data.body) {
+                    queue.push((child.target, depth + 1));
+                }
+            }
+            out.insert(key, data);
+        }
+    }
+
+    pub(super) fn extract_selection_to_note(&mut self, start_char: usize, end_char: usize) {
+        let Some(cur_rel) = self.selected_path.clone() else {
+            return;
+        };
+        let (a, b) = if start_char <= end_char {
+            (start_char, end_char)
+        } else {
+            (end_char, start_char)
+        };
+        let byte_start = self
+            .current_doc
+            .body
+            .char_indices()
+            .nth(a)
+            .map(|(i, _)| i)
+            .unwrap_or(self.current_doc.body.len());
+        let byte_end = self
+            .current_doc
+            .body
+            .char_indices()
+            .nth(b)
+            .map(|(i, _)| i)
+            .unwrap_or(self.current_doc.body.len());
+        if byte_start >= byte_end {
+            return;
+        }
+        let selected = &self.current_doc.body[byte_start..byte_end];
+        let fallback = if self.config.language == Lang::Ru {
+            "Вынесенная заметка"
+        } else {
+            "Extracted Note"
+        };
+        let Some(plan) = krono_core::smart_text::plan_extract_selection(selected, fallback) else {
+            return;
+        };
+
+        let target_arg = match cur_rel.rsplit_once('/') {
+            Some((dir, _)) if !dir.is_empty() && dir != "daily" && !dir.starts_with("daily/") => {
+                format!("{dir}/{}", plan.title)
+            }
+            _ => plan.title.clone(),
+        };
+
+        let existing = self.existing_paths_set();
+        self.watcher.mark_internal_change();
+        match create_note_with_tags(
+            &self.config.vault_dir,
+            &target_arg,
+            None,
+            Vec::new(),
+            &plan.body,
+            &existing,
+        ) {
+            Ok((rel_path, doc, modified, size)) => {
+                let _ = self.index.upsert_note(&rel_path, &doc, modified, size);
+                let link = format!("[[{}]]", doc.frontmatter.title);
+                self.current_doc.body.replace_range(byte_start..byte_end, &link);
+                self.dirty = true;
+                self.save_current_note();
+                self.reload_index_caches();
+                self.expand_parents(&rel_path);
+                let s = crate::i18n::strings(self.config.language);
+                self.push_toast(
+                    format!("{}: {rel_path}", s.toast_extracted_note),
+                    ToastKind::Success,
+                );
+            }
+            Err(e) => self.push_toast(e, ToastKind::Error),
+        }
+    }
+
     pub(super) fn create_and_open_note_with_tags(
         &mut self,
         title: &str,

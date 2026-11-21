@@ -108,13 +108,32 @@ impl Viewport2D {
         allow_left_drag_pan: bool,
         wheel_zooms_directly: bool,
     ) {
+        self.handle_pan_zoom_ex(
+            ui,
+            canvas_rect,
+            bg_resp,
+            allow_left_drag_pan,
+            wheel_zooms_directly,
+            true,
+        );
+    }
+
+    pub fn handle_pan_zoom_ex(
+        &mut self,
+        ui: &Ui,
+        canvas_rect: Rect,
+        bg_resp: &egui::Response,
+        allow_left_drag_pan: bool,
+        wheel_zooms_directly: bool,
+        allow_wheel: bool,
+    ) {
         let hovered = bg_resp.hovered()
             || ui
                 .ctx()
                 .pointer_hover_pos()
                 .is_some_and(|p| canvas_rect.contains(p));
 
-        if hovered {
+        if hovered && allow_wheel {
             let (pinch, scroll_y, pointer_pos, space_held) = ui.ctx().input(|i| {
                 (
                     i.zoom_delta(),

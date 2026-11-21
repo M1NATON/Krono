@@ -1,0 +1,3 @@
+Dictionaries bundled from https://github.com/wooorm/dictionaries (UTF-8 normalized Hunspell files):
+- en_US (dictionaries/en): Derived from SCOWL and Ispell affix files (BSD/MIT compatible).
+- ru_RU (dictionaries/ru): Based on Alexander Lebedev's Russian dictionary (BSD-3-Clause).

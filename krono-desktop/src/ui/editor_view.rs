@@ -1,5 +1,6 @@
 use crate::config::CustomSlashSnippet;
 use crate::i18n::{format_relative_time, strings, Lang};
+use crate::spellcheck::SpellChecker;
 use crate::ui::components::{
     focus_once, icon_button, optional_status_pill_picker, primary_button, reset_focus_gate,
     secondary_button, tag_chip,
@@ -8,7 +9,9 @@ use crate::ui::icons::{draw_icon, Icon};
 use crate::ui::embedded_board::render_embedded_board_widget;
 use crate::ui::image_cache::ImageTextureCache;
 use crate::ui::markdown_editor::render_markdown_editor;
-use crate::ui::markdown_preview::{render_markdown_preview, resolve_embedded_board, PreviewAction};
+use crate::ui::markdown_preview::{
+    render_markdown_preview, resolve_embedded_board, EmbeddedNoteData, PreviewAction,
+};
 use crate::ui::theme::{
     font_body, font_bold, font_medium, font_mono, font_serif_bold, ThemePalette,
 };
@@ -48,8 +51,10 @@ pub fn render_editor_view(
     vault_dir: &Path,
     image_cache: &mut ImageTextureCache,
     embedded_boards: &HashMap<String, CollectionDoc>,
-    today: SimpleDate,
     available_boards: &[(String, String)],
+    embedded_notes: &HashMap<String, EmbeddedNoteData>,
+    spellchecker: &mut SpellChecker,
+    today: SimpleDate,
 ) -> Vec<UiAction> {
     let s = strings(lang);
     let mut actions = Vec::new();
@@ -125,6 +130,7 @@ pub fn render_editor_view(
                             all_notes,
                             resolved_titles,
                             fb,
+                            spellchecker,
                         );
                         if changed {
                             actions.push(UiAction::MarkDirty);
@@ -163,6 +169,8 @@ pub fn render_editor_view(
                             image_cache,
                             embedded_boards,
                             available_boards,
+                            embedded_notes,
+                            Some(rel_path),
                         ) {
                             handle_preview_action(act, &mut actions);
                         }
@@ -243,6 +251,7 @@ pub fn render_editor_view(
                                 all_notes,
                                 resolved_titles,
                                 fb,
+                                spellchecker,
                             );
                             if changed {
                                 actions.push(UiAction::MarkDirty);
@@ -291,6 +300,8 @@ pub fn render_editor_view(
                                 image_cache,
                                 embedded_boards,
                                 available_boards,
+                                embedded_notes,
+                                Some(rel_path),
                             ) {
                                 handle_preview_action(act, &mut actions);
                             }

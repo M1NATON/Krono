@@ -6,6 +6,7 @@ pub mod hash;
 pub mod markdown;
 pub mod note;
 pub mod path;
+pub mod smart_text;
 pub mod sync_plan;
 pub mod tasks;
 pub mod templates;

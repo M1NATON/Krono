@@ -7,6 +7,7 @@ mod i18n;
 mod notifications;
 #[cfg(debug_assertions)]
 mod shot_runner;
+mod spellcheck;
 mod storage;
 mod sync;
 mod tray;

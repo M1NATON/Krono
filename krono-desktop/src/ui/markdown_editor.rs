@@ -1,12 +1,17 @@
 use crate::config::CustomSlashSnippet;
 use crate::i18n::{strings, Lang};
+use crate::spellcheck::{extract_spell_spans, SpellChecker, SpellWordSpan};
 use crate::ui::components::icon_button;
 use crate::ui::icons::{draw_icon, Icon};
 use crate::ui::markdown_assist::{
-    apply_slash_replacement, apply_wikilink_replacement, apply_wrap_or_insert,
+    apply_slash_replacement, apply_wikilink_replacement, apply_wrap_or_insert, char_to_byte,
     detect_assist_trigger, filter_slash_commands, filter_wikilink_candidates,
     handle_auto_list_on_enter, handle_auto_pair, render_assist_popup, AssistPopupAction,
     AssistTrigger,
+};
+use krono_core::smart_text::{
+    classify_smart_paste, html_to_clean_markdown, smart_markdown_cleanup, CleanupLang,
+    SmartPasteOutcome,
 };
 use crate::ui::motion::{anim_bool_eased, lerp_color, with_alpha};
 use crate::ui::theme::{
@@ -15,7 +20,8 @@ use crate::ui::theme::{
 };
 use crate::ui::{EditorPrefs, SettingsTab, UiAction};
 use eframe::egui::{
-    self, pos2, vec2, Color32, CursorIcon, FontId, Rect, Rounding, Sense, Stroke, TextFormat, Ui,
+    self, pos2, vec2, Color32, CursorIcon, FontId, Pos2, Rect, Rounding, Sense, Stroke,
+    TextFormat, Ui,
 };
 use egui::text::LayoutJob;
 use krono_core::{daily::SimpleDate, note::NoteMeta};
@@ -51,6 +57,7 @@ pub fn render_markdown_editor(
     all_notes: &[NoteMeta],
     resolved_titles: &HashSet<String>,
     focus_body: bool,
+    spellchecker: &mut SpellChecker,
 ) -> (bool, Option<UiAction>) {
     let s = strings(lang);
     let mut changed = false;
@@ -77,9 +84,15 @@ pub fn render_markdown_editor(
     }
 
     let mut shortcut_fmt: Option<InlineFmt> = None;
+    let mut run_smart_cleanup = false;
+    let mut run_clean_html_paste = false;
     if had_focus {
         ui.input_mut(|i| {
-            if i.modifiers.command && i.modifiers.shift && i.key_pressed(egui::Key::D) {
+            if i.modifiers.command && i.modifiers.shift && i.consume_key(egui::Modifiers::COMMAND | egui::Modifiers::SHIFT, egui::Key::M) {
+                run_smart_cleanup = true;
+            } else if i.modifiers.command && i.modifiers.shift && i.key_pressed(egui::Key::V) {
+                run_clean_html_paste = true;
+            } else if i.modifiers.command && i.modifiers.shift && i.key_pressed(egui::Key::D) {
                 shortcut_fmt = Some(InlineFmt::TodayDate);
             } else if i.consume_key(egui::Modifiers::COMMAND, egui::Key::B) {
                 shortcut_fmt = Some(InlineFmt::Bold);
@@ -91,8 +104,61 @@ pub fn render_markdown_editor(
         });
     }
 
+    let cleanup_lang = match lang {
+        Lang::Ru => CleanupLang::Ru,
+        Lang::En => CleanupLang::En,
+    };
+    let paste_hint_id = editor_id.with("paste_wikilink_hint");
+
+    if run_clean_html_paste {
+        ui.input_mut(|i| {
+            i.events.retain(|ev| !matches!(ev, egui::Event::Paste(_)));
+        });
+        if let Ok(mut cb) = arboard::Clipboard::new() {
+            let raw_clip = cb.get().html().ok().or_else(|| cb.get_text().ok());
+            if let Some(raw) = raw_clip {
+                let md = html_to_clean_markdown(&raw, cleanup_lang);
+                if !md.is_empty() {
+                    replace_editor_selection(ui, editor_id, body, &md);
+                    changed = true;
+                }
+            }
+        }
+    } else if had_focus {
+        let pasted_text = ui.input(|i| {
+            i.events.iter().find_map(|ev| match ev {
+                egui::Event::Paste(t) => Some(t.clone()),
+                _ => None,
+            })
+        });
+        if let Some(pasted) = pasted_text {
+            let (sel_a, sel_b) = current_selection_char_range(ui, editor_id, body);
+            let b_start = char_to_byte(body, sel_a);
+            let b_end = char_to_byte(body, sel_b);
+            let sel_slice = &body[b_start..b_end];
+            let titles: Vec<String> = all_notes.iter().map(|n| n.title.clone()).collect();
+            match classify_smart_paste(sel_slice, &pasted, &titles) {
+                SmartPasteOutcome::WrapLink(md_link) => {
+                    ui.input_mut(|i| {
+                        i.events.retain(|ev| !matches!(ev, egui::Event::Paste(_)));
+                    });
+                    replace_editor_selection(ui, editor_id, body, &md_link);
+                    changed = true;
+                }
+                SmartPasteOutcome::SuggestWikilink { note_title } => {
+                    let end_after = sel_a + pasted.chars().count();
+                    ui.data_mut(|d| {
+                        d.insert_temp(paste_hint_id, (sel_a, end_after, note_title));
+                    });
+                }
+                SmartPasteOutcome::Plain => {}
+            }
+        }
+    }
+
     // Optional formatting toolbar
     let mut pending_fmt: Option<InlineFmt> = shortcut_fmt;
+    let mut request_extract_selection = false;
     if prefs.md_show_toolbar {
         ui.horizontal_wrapped(|ui| {
             ui.spacing_mut().item_spacing = vec2(2.0, 4.0);
@@ -151,6 +217,30 @@ pub fn render_markdown_editor(
             {
                 pending_fmt = Some(InlineFmt::TodayDate);
             }
+            if toolbar_icon_chip(
+                ui,
+                p,
+                Icon::Sparkles,
+                None,
+                s.toolbar_smart_cleanup,
+                false,
+            )
+            .clicked()
+            {
+                run_smart_cleanup = true;
+            }
+            if toolbar_icon_chip(
+                ui,
+                p,
+                Icon::FileOutput,
+                None,
+                s.toolbar_extract_note,
+                false,
+            )
+            .clicked()
+            {
+                request_extract_selection = true;
+            }
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 if icon_button(ui, p, Icon::CircleHelp, s.md_toolbar_help, false).clicked() {
                     extra_action = Some(UiAction::OpenSettings(SettingsTab::MarkdownHelp));
@@ -158,6 +248,86 @@ pub fn render_markdown_editor(
             });
         });
         ui.add_space(8.0);
+    }
+
+    if run_smart_cleanup {
+        if apply_smart_cleanup(ui, editor_id, body, cleanup_lang) {
+            changed = true;
+        }
+    }
+    if request_extract_selection {
+        let (a, b) = current_selection_char_range(ui, editor_id, body);
+        if a < b {
+            extra_action = Some(UiAction::ExtractSelectionToNote {
+                start_char: a,
+                end_char: b,
+            });
+        }
+    }
+
+    if let Some((h_start, h_end, ref note_title)) =
+        ui.data(|d| d.get_temp::<(usize, usize, String)>(paste_hint_id))
+    {
+        let mut clear_hint = false;
+        egui::Frame::none()
+            .fill(p.bg_elevated)
+            .stroke(Stroke::new(1.0_f32, p.border_subtle))
+            .rounding(Rounding::same(7.0))
+            .inner_margin(egui::Margin::symmetric(10.0, 5.0))
+            .show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    ui.label(
+                        egui::RichText::new(format!("{} [[{note_title}]]?", s.paste_wikilink_prompt))
+                            .font(font_medium(12.0))
+                            .color(p.text_secondary),
+                    );
+                    if ui
+                        .add(
+                            egui::Button::new(
+                                egui::RichText::new(s.paste_wikilink_apply)
+                                    .font(font_medium(11.5))
+                                    .color(p.accent_text),
+                            )
+                            .fill(p.accent_soft)
+                            .rounding(Rounding::same(5.0)),
+                        )
+                        .clicked()
+                    {
+                        let bs = char_to_byte(body, h_start);
+                        let be = char_to_byte(body, h_end);
+                        if bs < be && be <= body.len() {
+                            let link = format!("[[{note_title}]]");
+                            body.replace_range(bs..be, &link);
+                            let nc = h_start + link.chars().count();
+                            let mut st = egui::TextEdit::load_state(ui.ctx(), editor_id)
+                                .unwrap_or_default();
+                            st.cursor.set_char_range(Some(egui::text::CCursorRange::one(
+                                egui::text::CCursor::new(nc),
+                            )));
+                            st.store(ui.ctx(), editor_id);
+                            changed = true;
+                        }
+                        clear_hint = true;
+                    }
+                    if ui
+                        .add(
+                            egui::Button::new(
+                                egui::RichText::new("×")
+                                    .font(font_medium(12.0))
+                                    .color(p.text_muted),
+                            )
+                            .frame(false),
+                        )
+                        .clicked()
+                    {
+                        clear_hint = true;
+                    }
+                });
+            });
+        ui.add_space(6.0);
+        if clear_hint {
+            ui.data_mut(|d| d.remove::<(usize, usize, String)>(paste_hint_id));
+        }
     }
 
     if let Some(fmt) = pending_fmt {
@@ -200,6 +370,7 @@ pub fn render_markdown_editor(
 
     if output.response.changed() {
         changed = true;
+        ui.data_mut(|d| d.remove::<(usize, usize, String)>(paste_hint_id));
         if !(was_popup_open && (pop_enter || pop_tab)) {
             let cur_idx = output
                 .state
@@ -224,6 +395,229 @@ pub fn render_markdown_editor(
             }
         }
     }
+
+    let (sel_a_ctx, sel_b_ctx) = output
+        .state
+        .cursor
+        .char_range()
+        .map(|r| {
+            let a = r.primary.index;
+            let b = r.secondary.index;
+            if a <= b { (a, b) } else { (b, a) }
+        })
+        .unwrap_or((0, 0));
+
+    let caret_char = output
+        .state
+        .cursor
+        .char_range()
+        .map(|r| r.primary.index);
+    let spell_ctx_id = editor_id.with("spell_ctx_word");
+    let spell_alt_id = editor_id.with("spell_alt_popup");
+    let mut misspelled_rects: Vec<(SpellWordSpan, Vec<Rect>)> = Vec::new();
+    let editor_focused_now = output.response.has_focus() || ui.ctx().memory(|m| m.has_focus(editor_id));
+
+    if prefs.spellcheck && spellchecker.is_ready() {
+        let spell_clip = ui.clip_rect().intersect(output.response.rect);
+        let spell_painter = ui.painter().with_clip_rect(spell_clip);
+        let wave_color = p.danger;
+        for sp in extract_spell_spans(body) {
+            if !spellchecker.is_word_correct(&sp.word) {
+                let rects = word_galley_rects(&output.galley, output.galley_pos, sp.char_start, sp.char_end);
+                let cursor_inside = editor_focused_now
+                    && caret_char.is_some_and(|c| c >= sp.char_start && c <= sp.char_end);
+                if !cursor_inside {
+                    for r in &rects {
+                        draw_wavy_underline(&spell_painter, r.left(), r.right(), r.bottom() - 1.0, wave_color);
+                    }
+                }
+                misspelled_rects.push((sp, rects));
+            }
+        }
+    }
+
+    if output.response.secondary_clicked() {
+        let hit = ui.ctx().pointer_interact_pos().and_then(|mp| {
+            misspelled_rects
+                .iter()
+                .find(|(_, rects)| rects.iter().any(|r| r.expand(2.0).contains(mp)))
+                .map(|(sp, _)| {
+                    let sugs = spellchecker.suggest(&sp.word, 3);
+                    (sp.char_start, sp.char_end, sp.word.clone(), sugs)
+                })
+        });
+        ui.data_mut(|d| {
+            if let Some(data) = hit {
+                d.insert_temp(spell_ctx_id, data);
+            } else {
+                d.remove::<(usize, usize, String, Vec<String>)>(spell_ctx_id);
+            }
+        });
+    }
+
+    let alt_enter = editor_focused_now
+        && ui.ctx().input_mut(|i| {
+            i.modifiers.alt
+                && !i.modifiers.command
+                && i.consume_key(egui::Modifiers::ALT, egui::Key::Enter)
+        });
+    if alt_enter {
+        if let Some(c) = caret_char {
+            if let Some((sp, rects)) = misspelled_rects
+                .iter()
+                .find(|(sp, _)| c >= sp.char_start && c <= sp.char_end)
+            {
+                let sugs = spellchecker.suggest(&sp.word, 3);
+                let pos = rects
+                    .first()
+                    .map(|r| pos2(r.left(), r.bottom() + 4.0))
+                    .unwrap_or_else(|| output.response.rect.left_top() + vec2(12.0, 24.0));
+                ui.data_mut(|d| {
+                    d.insert_temp(
+                        spell_alt_id,
+                        (pos, sp.char_start, sp.char_end, sp.word.clone(), sugs),
+                    );
+                });
+            }
+        }
+    }
+
+    if let Some((popup_pos, cs, ce, word, sugs)) =
+        ui.data(|d| d.get_temp::<(Pos2, usize, usize, String, Vec<String>)>(spell_alt_id))
+    {
+        let mut close_alt = ui.ctx().input(|i| i.key_pressed(egui::Key::Escape));
+        let area_resp = egui::Area::new(spell_alt_id)
+            .order(egui::Order::Foreground)
+            .fixed_pos(popup_pos)
+            .show(ui.ctx(), |ui| {
+                egui::Frame::none()
+                    .fill(p.bg_elevated)
+                    .stroke(Stroke::new(1.0_f32, p.border_subtle))
+                    .rounding(Rounding::same(8.0))
+                    .shadow(p.shadow_floating)
+                    .inner_margin(egui::Margin::same(6.0))
+                    .show(ui, |ui| {
+                        ui.set_width(190.0);
+                        if sugs.is_empty() {
+                            ui.label(
+                                egui::RichText::new(s.spell_no_suggestions)
+                                    .font(font_body(12.0))
+                                    .color(p.text_muted),
+                            );
+                        } else {
+                            for sug in &sugs {
+                                if crate::ui::components::context_menu_row(
+                                    ui,
+                                    p,
+                                    Icon::Check,
+                                    sug,
+                                    false,
+                                )
+                                .clicked()
+                                {
+                                    replace_char_span_in_body(ui, editor_id, body, cs, ce, sug);
+                                    changed = true;
+                                    close_alt = true;
+                                }
+                            }
+                        }
+                        crate::ui::components::hairline_h(ui, p);
+                        if crate::ui::components::context_menu_row(
+                            ui,
+                            p,
+                            Icon::Plus,
+                            s.spell_add_to_dict,
+                            false,
+                        )
+                        .clicked()
+                        {
+                            extra_action = Some(UiAction::AddWordToDictionary(word.clone()));
+                            close_alt = true;
+                        }
+                    });
+            });
+        if ui.ctx().input(|i| i.pointer.any_pressed())
+            && ui
+                .ctx()
+                .pointer_interact_pos()
+                .is_some_and(|mp| !area_resp.response.rect.contains(mp))
+        {
+            close_alt = true;
+        }
+        if close_alt {
+            ui.data_mut(|d| {
+                d.remove::<(Pos2, usize, usize, String, Vec<String>)>(spell_alt_id);
+            });
+        }
+    }
+
+    output.response.context_menu(|ui| {
+        if let Some((cs, ce, word, sugs)) =
+            ui.data(|d| d.get_temp::<(usize, usize, String, Vec<String>)>(spell_ctx_id))
+        {
+            if sugs.is_empty() {
+                ui.label(
+                    egui::RichText::new(s.spell_no_suggestions)
+                        .font(font_body(12.0))
+                        .color(p.text_muted),
+                );
+            } else {
+                for sug in &sugs {
+                    if crate::ui::components::context_menu_row(ui, p, Icon::Check, sug, false)
+                        .clicked()
+                    {
+                        replace_char_span_in_body(ui, editor_id, body, cs, ce, sug);
+                        changed = true;
+                        ui.close_menu();
+                    }
+                }
+            }
+            if crate::ui::components::context_menu_row(
+                ui,
+                p,
+                Icon::Plus,
+                s.spell_add_to_dict,
+                false,
+            )
+            .clicked()
+            {
+                extra_action = Some(UiAction::AddWordToDictionary(word));
+                ui.close_menu();
+            }
+            crate::ui::components::hairline_h(ui, p);
+        }
+
+        if crate::ui::components::context_menu_row(
+            ui,
+            p,
+            Icon::Sparkles,
+            s.toolbar_smart_cleanup,
+            false,
+        )
+        .clicked()
+        {
+            if apply_smart_cleanup(ui, editor_id, body, cleanup_lang) {
+                changed = true;
+            }
+            ui.close_menu();
+        }
+        if sel_a_ctx < sel_b_ctx
+            && crate::ui::components::context_menu_row(
+                ui,
+                p,
+                Icon::FileOutput,
+                s.toolbar_extract_note,
+                false,
+            )
+            .clicked()
+        {
+            extra_action = Some(UiAction::ExtractSelectionToNote {
+                start_char: sel_a_ctx,
+                end_char: sel_b_ctx,
+            });
+            ui.close_menu();
+        }
+    });
 
     // Quiet empty space below the last line: clicking places caret at end of note
     let (tail_rect, tail_resp) =
@@ -381,6 +775,152 @@ pub fn render_markdown_editor(
     let _ = resolved_titles;
 
     (changed, extra_action)
+}
+
+fn replace_char_span_in_body(
+    ui: &Ui,
+    editor_id: egui::Id,
+    body: &mut String,
+    start_char: usize,
+    end_char: usize,
+    replacement: &str,
+) {
+    let bs = char_to_byte(body, start_char);
+    let be = char_to_byte(body, end_char);
+    if bs <= be && be <= body.len() {
+        body.replace_range(bs..be, replacement);
+        let nc = start_char + replacement.chars().count();
+        let mut state = egui::TextEdit::load_state(ui.ctx(), editor_id).unwrap_or_default();
+        state.cursor.set_char_range(Some(egui::text::CCursorRange::one(
+            egui::text::CCursor::new(nc),
+        )));
+        state.store(ui.ctx(), editor_id);
+        ui.memory_mut(|m| m.request_focus(editor_id));
+    }
+}
+
+fn word_galley_rects(
+    galley: &egui::Galley,
+    galley_pos: egui::Pos2,
+    start_char: usize,
+    end_char: usize,
+) -> Vec<Rect> {
+    if start_char >= end_char {
+        return Vec::new();
+    }
+    let c0 = galley.from_ccursor(egui::text::CCursor::new(start_char));
+    let c1 = galley.from_ccursor(egui::text::CCursor::new(end_char));
+    let p0 = galley.pos_from_cursor(&c0);
+    let p1 = galley.pos_from_cursor(&c1);
+    if (p0.min.y - p1.min.y).abs() < 2.0 {
+        let min_x = galley_pos.x + p0.min.x.min(p1.min.x);
+        let max_x = galley_pos.x + p0.min.x.max(p1.min.x);
+        if max_x > min_x + 1.0 {
+            return vec![Rect::from_min_max(
+                pos2(min_x, galley_pos.y + p0.min.y),
+                pos2(max_x, galley_pos.y + p0.max.y),
+            )];
+        }
+    }
+    Vec::new()
+}
+
+fn draw_wavy_underline(
+    painter: &egui::Painter,
+    x_start: f32,
+    x_end: f32,
+    y_base: f32,
+    color: Color32,
+) {
+    if x_end <= x_start + 1.0 {
+        return;
+    }
+    let step = 3.0_f32;
+    let amp = 1.25_f32;
+    let mut pts = Vec::new();
+    let mut x = x_start;
+    let mut up = true;
+    while x < x_end {
+        let y = if up { y_base - amp } else { y_base + amp };
+        pts.push(pos2(x, y));
+        x += step;
+        up = !up;
+    }
+    let last_y = if up { y_base - amp } else { y_base + amp };
+    pts.push(pos2(x_end, last_y));
+    painter.add(egui::Shape::line(pts, Stroke::new(1.1_f32, color)));
+}
+
+fn current_selection_char_range(ui: &Ui, editor_id: egui::Id, body: &str) -> (usize, usize) {
+    let total = body.chars().count();
+    let state = egui::TextEdit::load_state(ui.ctx(), editor_id).unwrap_or_default();
+    state
+        .cursor
+        .char_range()
+        .map(|r| {
+            let a = r.primary.index.min(total);
+            let b = r.secondary.index.min(total);
+            if a <= b { (a, b) } else { (b, a) }
+        })
+        .unwrap_or((total, total))
+}
+
+fn replace_editor_selection(ui: &Ui, editor_id: egui::Id, body: &mut String, replacement: &str) {
+    let (a, b) = current_selection_char_range(ui, editor_id, body);
+    let bs = char_to_byte(body, a);
+    let be = char_to_byte(body, b);
+    body.replace_range(bs..be, replacement);
+    let new_c = a + replacement.chars().count();
+    let mut state = egui::TextEdit::load_state(ui.ctx(), editor_id).unwrap_or_default();
+    state.cursor.set_char_range(Some(egui::text::CCursorRange::one(
+        egui::text::CCursor::new(new_c),
+    )));
+    state.store(ui.ctx(), editor_id);
+    ui.memory_mut(|m| m.request_focus(editor_id));
+}
+
+fn apply_smart_cleanup(
+    ui: &Ui,
+    editor_id: egui::Id,
+    body: &mut String,
+    lang: CleanupLang,
+) -> bool {
+    let (a, b) = current_selection_char_range(ui, editor_id, body);
+    if a < b {
+        let bs = char_to_byte(body, a);
+        let be = char_to_byte(body, b);
+        let cleaned = smart_markdown_cleanup(&body[bs..be], lang);
+        if cleaned == &body[bs..be] {
+            return false;
+        }
+        body.replace_range(bs..be, &cleaned);
+        let new_b = a + cleaned.chars().count();
+        let mut state = egui::TextEdit::load_state(ui.ctx(), editor_id).unwrap_or_default();
+        state.cursor.set_char_range(Some(egui::text::CCursorRange::two(
+            egui::text::CCursor::new(a),
+            egui::text::CCursor::new(new_b),
+        )));
+        state.store(ui.ctx(), editor_id);
+        true
+    } else {
+        let cleaned = smart_markdown_cleanup(body, lang);
+        if cleaned == *body {
+            return false;
+        }
+        *body = cleaned;
+        let end_c = body.chars().count();
+        let mut state = egui::TextEdit::load_state(ui.ctx(), editor_id).unwrap_or_default();
+        let cur = state
+            .cursor
+            .char_range()
+            .map(|r| r.primary.index.min(end_c))
+            .unwrap_or(end_c);
+        state.cursor.set_char_range(Some(egui::text::CCursorRange::one(
+            egui::text::CCursor::new(cur),
+        )));
+        state.store(ui.ctx(), editor_id);
+        true
+    }
 }
 
 fn toolbar_icon_chip(

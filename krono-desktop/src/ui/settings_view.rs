@@ -776,6 +776,27 @@ fn render_tab_scroll(
                         setting_row(
                             ui,
                             p,
+                            s.editor_spellcheck,
+                            s.editor_spellcheck_desc,
+                            56.0,
+                            |ui| {
+                                if toggle_switch(
+                                    ui,
+                                    p,
+                                    "sw_editor_spellcheck",
+                                    &mut cfg.editor_spellcheck,
+                                ) {
+                                    actions.push(UiAction::ConfigChanged);
+                                }
+                            },
+                        );
+                        ui.add_space(12.0);
+                        hairline_h(ui, p);
+                        ui.add_space(12.0);
+
+                        setting_row(
+                            ui,
+                            p,
                             s.md_show_toolbar,
                             s.md_show_toolbar_desc,
                             56.0,

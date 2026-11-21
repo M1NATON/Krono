@@ -1,8 +1,8 @@
 use super::{ImagePickTarget, KronoApp};
 use crate::i18n::{strings, Lang};
 use crate::storage::vault::{
-    import_image_file_to_assets, read_canvas, read_collection, read_note, save_canvas,
-    save_image_bytes_to_assets,
+    create_note_with_tags, import_image_file_to_assets, read_canvas, read_collection, read_note,
+    save_canvas, save_image_bytes_to_assets,
 };
 use crate::ui::{
     components::ToastKind,
@@ -125,6 +125,71 @@ impl KronoApp {
         self.create_and_open_note(&target_arg, None, &md_body);
         let s = strings(self.config.language);
         self.push_toast(s.canvas_export_toast, ToastKind::Success);
+    }
+
+    pub(super) fn convert_canvas_card_to_note(&mut self, node_id: &str, custom_title: &str) {
+        let Some(canvas_path) = self.active_canvas.path.clone() else {
+            return;
+        };
+        let Some(card_text) = self
+            .active_canvas
+            .doc
+            .nodes
+            .iter()
+            .find(|n| n.id == node_id && n.kind == krono_core::canvas::CanvasNodeKind::Text)
+            .map(|n| n.text.clone().unwrap_or_default())
+        else {
+            return;
+        };
+
+        let folder = krono_core::canvas::canvas_folder_for_path(&canvas_path);
+        let folder_disk = self.config.vault_dir.join(&folder);
+        if let Err(e) = std::fs::create_dir_all(&folder_disk) {
+            self.push_toast(e.to_string(), ToastKind::Error);
+            return;
+        }
+
+        let fallback = if self.config.language == Lang::Ru {
+            "Заметка"
+        } else {
+            "Note"
+        };
+        let title = if custom_title.trim().is_empty() {
+            krono_core::canvas::suggest_note_title_from_card(&card_text, fallback)
+        } else {
+            custom_title.trim().to_string()
+        };
+        let target_arg = format!("{folder}/{title}");
+        let existing = self.existing_paths_set();
+        self.watcher.mark_internal_change();
+
+        match create_note_with_tags(
+            &self.config.vault_dir,
+            &target_arg,
+            None,
+            Vec::new(),
+            &card_text,
+            &existing,
+        ) {
+            Ok((rel_path, doc, modified, size)) => {
+                let _ = self.index.upsert_note(&rel_path, &doc, modified, size);
+                self.active_canvas.push_undo();
+                krono_core::canvas::convert_text_node_to_file(
+                    &mut self.active_canvas.doc,
+                    node_id,
+                    &rel_path,
+                );
+                self.save_current_canvas();
+                self.reload_index_caches();
+                self.expand_parents(&rel_path);
+                let s = strings(self.config.language);
+                self.push_toast(
+                    format!("{}: {rel_path}", s.toast_canvas_card_converted),
+                    ToastKind::Success,
+                );
+            }
+            Err(e) => self.push_toast(e, ToastKind::Error),
+        }
     }
 
 

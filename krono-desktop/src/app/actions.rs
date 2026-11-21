@@ -630,6 +630,12 @@ impl KronoApp {
                 UiAction::ExportCanvasToMarkdown => {
                     self.export_active_canvas_to_markdown();
                 }
+                UiAction::ConvertCanvasCardToNote {
+                    node_id,
+                    custom_title,
+                } => {
+                    self.convert_canvas_card_to_note(&node_id, &custom_title);
+                }
                 UiAction::OpenGraphForNode(path) => {
                     self.graph_state
                         .sync_if_needed(&self.notes, &self.collections, &self.all_links);
@@ -657,6 +663,20 @@ impl KronoApp {
                 }
                 UiAction::CreateLinkedBoardForCurrentNote => {
                     self.create_linked_board_for_current_note();
+                }
+                UiAction::ExtractSelectionToNote {
+                    start_char,
+                    end_char,
+                } => {
+                    self.extract_selection_to_note(start_char, end_char);
+                }
+                UiAction::AddWordToDictionary(word) => {
+                    if let Err(e) = self
+                        .spellchecker
+                        .add_user_word(&self.config.vault_dir, &word)
+                    {
+                        self.push_toast(e, ToastKind::Error);
+                    }
                 }
                 UiAction::EmbeddedBoard(eb) => {
                     self.handle_embedded_board_action(eb);

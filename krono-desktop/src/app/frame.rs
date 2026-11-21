@@ -33,6 +33,28 @@ use std::time::Instant;
 impl KronoApp {
     pub(super) fn render_workspace_frame(&mut self, ctx: &egui::Context) {
         self.poll_tmdb_events();
+        self.spellchecker.poll_ready();
+        let embedded_notes = if self.view_mode == ViewMode::Editor
+            && self.editor_mode != crate::ui::EditorMode::Edit
+        {
+            self.collect_embedded_notes_for_body(&self.current_doc.body.clone())
+        } else if self.view_mode == ViewMode::Canvas {
+            let md_paths: Vec<String> = self
+                .active_canvas
+                .doc
+                .nodes
+                .iter()
+                .filter(|n| n.kind == krono_core::canvas::CanvasNodeKind::File)
+                .filter_map(|n| n.file.clone())
+                .filter(|fp| {
+                    krono_core::path::VaultFileKind::from_path(fp)
+                        == Some(krono_core::path::VaultFileKind::Markdown)
+                })
+                .collect();
+            self.collect_embedded_notes_for_paths(&md_paths)
+        } else {
+            std::collections::HashMap::new()
+        };
         let layout = LayoutClass::from_width(ctx.screen_rect().width());
         if layout != self.last_layout_class {
             self.drawer_sidebar_open = false;
@@ -273,6 +295,7 @@ impl KronoApp {
             md_wikilink_autocomplete: self.config.md_wikilink_autocomplete,
             md_auto_lists: self.config.md_auto_lists,
             md_auto_pairs: self.config.md_auto_pairs,
+            spellcheck: self.config.editor_spellcheck,
             md_show_toolbar: self.config.md_show_toolbar,
             md_slash_trigger: self.config.md_slash_trigger,
         };
@@ -359,8 +382,10 @@ impl KronoApp {
                             &self.config.vault_dir,
                             &mut self.image_cache,
                             &self.embedded_boards,
-                            today,
                             &available_boards,
+                            &embedded_notes,
+                            &mut self.spellchecker,
+                            today,
                         ));
                     }
                 }
@@ -463,6 +488,15 @@ impl KronoApp {
                     ));
                 }
                 ViewMode::Canvas => {
+                    let canvas_md_ctx = crate::ui::canvas_view::CanvasMarkdownCtx {
+                        today,
+                        heading_serif: self.config.heading_serif,
+                        resolved_titles: &self.resolved_titles,
+                        copied_code_hash: self.copied_code_hash,
+                        embedded_boards: &self.embedded_boards,
+                        available_boards: &available_boards,
+                        embedded_notes: &embedded_notes,
+                    };
                     actions.extend(render_canvas_view(
                         ctx,
                         ui,
@@ -474,6 +508,7 @@ impl KronoApp {
                         &self.collections,
                         &self.config.vault_dir,
                         &mut self.image_cache,
+                        &canvas_md_ctx,
                     ));
                 }
                 ViewMode::Settings => {

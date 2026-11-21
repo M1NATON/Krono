@@ -1343,7 +1343,23 @@ pub fn render_canvas_view(
                                 );
                                 card_painter.galley(pos2(cap_r.left() + 5.0, cap_r.top() + 2.0), ng, p.text_primary);
                             }
-                        } else if kind == VaultFileKind::Markdown {
+                        } else {
+                            let ic_r = Rect::from_center_size(img_area.center(), vec2(26.0 * zoom, 26.0 * zoom));
+                            draw_icon(&card_painter, ic_r, Icon::Image, p.text_muted);
+                        }
+                        if (is_hovered || selected) && zoom >= 0.48 {
+                            let open_r = Rect::from_center_size(
+                                pos2(inner.right() - 8.0, inner.top() + 8.0),
+                                vec2(18.0, 18.0),
+                            );
+                            card_painter.rect_filled(
+                                open_r,
+                                Rounding::same(4.0),
+                                with_alpha(p.bg_elevated, 0.85),
+                            );
+                            draw_icon(&card_painter, open_r.shrink(3.0), Icon::Maximize, p.accent_text);
+                        }
+                    } else if kind == VaultFileKind::Markdown {
                         let card_scroll_active = selected
                             && state.dragging_node.is_none()
                             && state.resizing_node.is_none()
@@ -1377,7 +1393,7 @@ pub fn render_canvas_view(
                                             lang,
                                             md_ctx.today,
                                             &note_data.body,
-                                            (13.0 * zoom).clamp(9.5, 18.0),
+                                            (13.5 * zoom).clamp(7.5, 18.0),
                                             md_ctx.heading_serif,
                                             md_ctx.resolved_titles,
                                             md_ctx.copied_code_hash,
@@ -1427,22 +1443,6 @@ pub fn render_canvas_view(
                                 title_g,
                                 p.text_primary,
                             );
-                        }
-                    } else {
-                            let ic_r = Rect::from_center_size(img_area.center(), vec2(26.0 * zoom, 26.0 * zoom));
-                            draw_icon(&card_painter, ic_r, Icon::Image, p.text_muted);
-                        }
-                        if (is_hovered || selected) && zoom >= 0.48 {
-                            let open_r = Rect::from_center_size(
-                                pos2(inner.right() - 8.0, inner.top() + 8.0),
-                                vec2(18.0, 18.0),
-                            );
-                            card_painter.rect_filled(
-                                open_r,
-                                Rounding::same(4.0),
-                                with_alpha(p.bg_elevated, 0.85),
-                            );
-                            draw_icon(&card_painter, open_r.shrink(3.0), Icon::Maximize, p.accent_text);
                         }
                     } else {
                         let icon = match kind {
@@ -1689,7 +1689,12 @@ pub fn render_canvas_view(
                 let inner = srect.shrink(pad);
                 let open_r = Rect::from_center_size(pos2(inner.right() - 8.0, inner.top() + 8.0), vec2(18.0, 18.0));
 
-                if node.kind == CanvasNodeKind::File && zoom >= 0.48 && open_r.contains(mp) {
+                let is_md_file = node.kind == CanvasNodeKind::File
+                    && node
+                        .file
+                        .as_deref()
+                        .is_some_and(|fp| VaultFileKind::from_path(fp) == Some(VaultFileKind::Markdown));
+                if node.kind == CanvasNodeKind::File && !is_md_file && zoom >= 0.48 && open_r.contains(mp) {
                     if let Some(fp) = &node.file {
                         open_external_target = Some(fp.clone());
                     }

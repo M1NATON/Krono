@@ -225,24 +225,23 @@ fn render_markdown_preview_inner(
     let s = strings(lang);
     let blocks = parse_blocks(body);
     let mut action: Option<PreviewAction> = None;
-    let body_sz = font_size.clamp(9.5, 20.0);
-    let sz_delta = body_sz - 15.0;
+    let body_sz = font_size.clamp(7.5, 20.0);
 
     for (b_idx, block) in blocks.iter().enumerate() {
         match block {
             Block::Heading { level, spans } => {
                 if b_idx > 0 {
                     ui.add_space(match level {
-                        1 => 14.0,
-                        2 => 10.0,
-                        _ => 6.0,
+                        1 => (body_sz * 0.85).max(5.0),
+                        2 => (body_sz * 0.65).max(4.0),
+                        _ => (body_sz * 0.4).max(3.0),
                     });
                 }
                 let size = match level {
-                    1 => 25.0 + sz_delta,
-                    2 => 20.0 + sz_delta,
-                    3 => 17.0 + sz_delta,
-                    _ => 15.5 + sz_delta,
+                    1 => body_sz * 1.55,
+                    2 => body_sz * 1.28,
+                    3 => body_sz * 1.12,
+                    _ => body_sz * 1.03,
                 };
                 render_spans(
                     ui,
@@ -658,6 +657,7 @@ fn render_markdown_preview_inner(
                     b_idx,
                     headers,
                     rows,
+                    body_sz,
                     heading_serif,
                     resolved_titles,
                     &mut action,
@@ -930,6 +930,7 @@ fn render_md_table(
     b_idx: usize,
     headers: &[Vec<Span>],
     rows: &[Vec<Vec<Span>>],
+    body_sz: f32,
     heading_serif: bool,
     resolved_titles: &HashSet<String>,
     action: &mut Option<PreviewAction>,
@@ -950,10 +951,17 @@ fn render_md_table(
         }
     }
 
-    let min_col_px = if ui.available_width() < 340.0 { 52.0 } else { 100.0 };
+    let pad_x = (body_sz * 0.65).clamp(4.0, 10.0);
+    let pad_y = (body_sz * 0.5).clamp(3.0, 8.0);
+    let char_w = (body_sz * 0.55).max(4.5);
+    let min_col_px = if ui.available_width() < 340.0 || body_sz < 13.0 {
+        (body_sz * 4.2).clamp(32.0, 68.0)
+    } else {
+        100.0
+    };
     let min_widths: Vec<f32> = max_chars
         .iter()
-        .map(|&chars| ((chars.clamp(6, 18) as f32) * 7.8 + 20.0).max(min_col_px))
+        .map(|&chars| ((chars.clamp(6, 18) as f32) * char_w + pad_x * 2.0).max(min_col_px))
         .collect();
     let min_sum: f32 = min_widths.iter().sum();
     let avail_w = ui.available_width().max(120.0);
@@ -994,15 +1002,15 @@ fn render_md_table(
                                     egui::Layout::top_down(egui::Align::Min),
                                     |ui| {
                                         egui::Frame::none()
-                                            .inner_margin(Margin::symmetric(10.0, 8.0))
+                                            .inner_margin(Margin::symmetric(pad_x, pad_y))
                                             .show(ui, |ui| {
-                                                ui.set_width((col_w - 20.0).max(40.0));
+                                                ui.set_width((col_w - pad_x * 2.0).max(20.0));
                                                 if let Some(cell) = headers.get(c) {
                                                     render_spans(
                                                         ui,
                                                         p,
                                                         cell,
-                                                        13.0,
+                                                        (body_sz * 0.92).max(7.0),
                                                         3,
                                                         heading_serif,
                                                         false,
@@ -1059,15 +1067,15 @@ fn render_md_table(
                                     egui::Layout::top_down(egui::Align::Min),
                                     |ui| {
                                         egui::Frame::none()
-                                            .inner_margin(Margin::symmetric(10.0, 8.0))
+                                            .inner_margin(Margin::symmetric(pad_x, pad_y))
                                             .show(ui, |ui| {
-                                                ui.set_width((col_w - 20.0).max(40.0));
+                                                ui.set_width((col_w - pad_x * 2.0).max(20.0));
                                                 if let Some(cell) = row.get(c) {
                                                     render_spans(
                                                         ui,
                                                         p,
                                                         cell,
-                                                        13.5,
+                                                        (body_sz * 0.95).max(7.0),
                                                         0,
                                                         heading_serif,
                                                         false,

@@ -255,27 +255,42 @@ impl KronoApp {
                     || krono_core::path::vault_file_stem(&low).to_lowercase() == stem_t
                     || n.title.trim().to_lowercase() == stem_t
             });
-            let Some(meta) = meta_opt.cloned() else {
-                continue;
+            let (rel_path, modified) = if let Some(meta) = meta_opt {
+                (meta.path.clone(), meta.modified)
+            } else {
+                let candidate = target.trim().replace('\\', "/");
+                let disk_rel = if candidate.to_lowercase().ends_with(".md") {
+                    candidate
+                } else {
+                    format!("{candidate}.md")
+                };
+                if self.config.vault_dir.join(&disk_rel).is_file() {
+                    (disk_rel, 0)
+                } else {
+                    continue;
+                }
             };
-            let key = meta.path.to_lowercase();
+            let key = rel_path.to_lowercase();
             if !visited_keys.insert(key.clone()) {
                 continue;
             }
-            let cached_hit = self
-                .embedded_notes_cache
-                .get(&key)
-                .filter(|(m, _)| *m == meta.modified)
-                .map(|(_, d)| d.clone());
+            let cached_hit = if modified > 0 {
+                self.embedded_notes_cache
+                    .get(&key)
+                    .filter(|(m, _)| *m == modified)
+                    .map(|(_, d)| d.clone())
+            } else {
+                None
+            };
             let data = if let Some(d) = cached_hit {
                 d
-            } else if let Ok((doc, modified, _)) = read_note(&self.config.vault_dir, &meta.path) {
+            } else if let Ok((doc, disk_mod, _)) = read_note(&self.config.vault_dir, &rel_path) {
                 let d = crate::ui::markdown_preview::EmbeddedNoteData {
-                    path: meta.path.clone(),
+                    path: rel_path.clone(),
                     title: doc.frontmatter.title.clone(),
                     body: doc.body,
                 };
-                self.embedded_notes_cache.insert(key.clone(), (modified, d.clone()));
+                self.embedded_notes_cache.insert(key.clone(), (disk_mod, d.clone()));
                 d
             } else {
                 continue;

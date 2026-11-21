@@ -167,7 +167,7 @@ impl Viewport2D {
             self.pan -= delta;
             self.target_pan = self.pan;
             ui.ctx().set_cursor_icon(CursorIcon::Grabbing);
-        } else if bg_resp.hovered() && (allow_left_drag_pan || space_down) {
+        } else if bg_resp.hovered() && space_down {
             ui.ctx().set_cursor_icon(CursorIcon::Grab);
         }
     }

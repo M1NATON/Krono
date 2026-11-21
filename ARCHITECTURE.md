@@ -23,10 +23,16 @@ krono-desktop   UI + storage + sync + config  → зависит от krono-core
 ## krono-desktop (`krono-desktop/src/`)
 ### Точка входа и состояние
 - `main.rs` — окно, шрифты, mod-декларации.
-- `app.rs` — **`KronoApp`** (единственный владелец состояния, impl `eframe::App`). Ключевые методы:
-  - `update` — кадр: `poll_background_events` → `handle_shortcuts` → отрисовка по `ViewMode` → `handle_actions(Vec<UiAction>)`.
-  - `handle_actions` — **единый диспетчер**: UI только возвращает `UiAction`, мутирует состояние только `app.rs`.
-  - `perform_rename / perform_duplicate / perform_delete`, `save_current_{note,collection,canvas}`, `open_or_create_daily_note`, `*_external_conflict_copy` (внешняя правка открытого файла).
+- `app/` — **`KronoApp`** (единственный владелец состояния, impl `eframe::App`), разбит по доменам:
+  - `app/mod.rs` — структура `KronoApp`, `new()`, базовые кэши (`reload_index_caches`, `vault_counts`), таймеры `update` и `on_exit`.
+  - `app/frame.rs` — `render_workspace_frame` (отрисовка панелей, `CentralPanel` по `ViewMode`, drawers, модалки, toasts).
+  - `app/actions.rs` — `handle_actions` (единый диспетчер `Vec<UiAction>`).
+  - `app/notes.rs` — заметки, дневник, `create_from_modal` и доска заметок.
+  - `app/vault_ops.rs` — навигация/вкладки, `perform_rename*`, `toggle_pin`, `perform_duplicate/delete`, `switch_vault`, ассеты.
+  - `app/collections.rs` — коллекции (`*.board.json`/`*.table.json`), перенос задач и встроенные доски.
+  - `app/canvas.rs` — `*.canvas`, экспорт в Markdown, вставка изображений (picker/clipboard/drag&drop).
+  - `app/sync.rs` — `trigger_sync` и `poll_background_events` (watcher, `SyncWorker`, `UpdateWorker`).
+  - `app/shortcuts.rs` — `handle_shortcuts` (глобальные горячие клавиши и перехват вставки изображений).
 - `shot_runner.rs` — автоскриншоты для проверки адаптивности (debug).
 - `config.rs` — `AppConfig` (тема, акцент, язык, vault_dir, GitHub, `md_*` флаги, сниппеты). JSON в `ProjectDirs("io","krono","Krono")`, атомарная запись.
 - `i18n.rs` — `Lang{Ru,En}`, `Strings` (~430 полей), статики `RU`/`EN`, `strings(lang)`. Любая новая строка = поле в `Strings` + значение в обеих таблицах.
@@ -71,4 +77,4 @@ Sync:  SyncWorker(thread) → github::sync_with_github → SyncEvent → poll_ba
 `unwrap/panic` только в тестах · параметризованный SQL · атомарные записи · LF для хэшируемого контента · все пути `/`-нормализованы · core без UI/IO · тексты через `Lang`.
 
 ## Известные слабые места
-Монолиты (`app.rs` ~4k, `canvas_view.rs` ~2.9k, `settings_view.rs` ~2.2k, `collection_view.rs` ~2k строк) · функции рендера с 16–23 параметрами · поллинг watcher'а · токен GitHub в `config.json` открытым текстом · локальная запись раньше коммита при sync.
+Монолиты (`canvas_view.rs` ~2.9k, `settings_view.rs` ~2.2k, `collection_view.rs` ~2k строк) · функции рендера с 16–23 параметрами · поллинг watcher'а · локальная запись раньше коммита при sync.

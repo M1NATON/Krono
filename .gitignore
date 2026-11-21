@@ -20,7 +20,7 @@
 GEMINI.md
 implementation_plan.md
 .antigravityignore
-
+.agents/
 
 # OS / IDE files
 .DS_Store

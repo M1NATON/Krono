@@ -3,6 +3,7 @@ pub mod board_view;
 pub mod calendar_widget;
 pub mod canvas_view;
 pub mod collection_board;
+pub mod collection_gallery;
 pub mod collection_view;
 pub mod command_palette;
 pub mod components;
@@ -173,6 +174,20 @@ impl Default for TableColumnWidths {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SidebarModule {
+    MediaLibrary,
+    English,
+}
+
+#[derive(Clone, Debug)]
+pub struct SidebarModulesState {
+    pub show_block: bool,
+    pub show_media_library: bool,
+    pub show_english: bool,
+    pub study_language: String,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SettingsTab {
     Appearance,
     Editor,
@@ -328,6 +343,8 @@ pub enum UiAction {
     TestGitHubConnection,
     SaveGitHubToken,
     DeleteGitHubToken,
+    SaveTmdbToken,
+    DeleteTmdbToken,
     SetTagFilter(Option<String>),
     ToggleFolder(String),
     MarkDirty,
@@ -345,6 +362,29 @@ pub enum UiAction {
     ConvertRecordToNote {
         record_id: String,
     },
+    CreateMediaReviewNote(String),
+    OpenTmdbSearch,
+    RequestTmdbRecommendations,
+    RequestTmdbSimilar {
+        kind: crate::sync::tmdb::TmdbMediaKind,
+        tmdb_id: String,
+    },
+    RequestTmdbByGenres {
+        kind: crate::sync::tmdb::TmdbMediaKind,
+        genre_keys: Vec<u32>,
+    },
+    TmdbSearch(String),
+    TmdbAddMedia {
+        item: crate::sync::tmdb::TmdbSearchItem,
+        status_opt: String,
+    },
+    OpenSidebarModule(SidebarModule),
+    SetSidebarModules(SidebarModulesState),
+    ToggleSidebarModules,
+    CreateNextEnglishLesson {
+        open_note: bool,
+    },
+    OpenEnglishVocabulary,
     CopyText(String),
     ApplyVaultDir(String),
     OpenVaultFolder,

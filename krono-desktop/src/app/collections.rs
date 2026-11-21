@@ -4,6 +4,13 @@ use crate::storage::vault::{
     create_collection, create_collection_preset, create_note_with_tags, read_collection,
     save_collection,
 };
+use crate::sync::{
+    secrets::load_tmdb_token,
+    tmdb::{
+        spawn_discover_by_genres, spawn_fetch_details, spawn_fetch_recommendations,
+        spawn_search_multi, TmdbEvent, TmdbMediaDetails, TmdbMediaKind, TmdbSearchItem,
+    },
+};
 use crate::ui::{
     components::ToastKind, embedded_board::EmbeddedBoardAction, NavTarget, ViewMode,
 };
@@ -142,7 +149,17 @@ impl KronoApp {
     pub(crate) fn open_collection(&mut self, rel_path: &str) {
         self.flush_unsaved_documents();
         match read_collection(&self.config.vault_dir, rel_path) {
-            Ok((doc, modified, _, _)) => {
+            Ok((mut doc, mut modified, _, _)) => {
+                if doc.localize_media_library_in_place(self.config.language == Lang::Ru) {
+                    self.watcher.mark_internal_change();
+                    if let Ok((m, sz)) = save_collection(&self.config.vault_dir, rel_path, &doc) {
+                        modified = m;
+                        let kind =
+                            VaultFileKind::from_path(rel_path).unwrap_or(VaultFileKind::Table);
+                        let _ = self.index.upsert_collection(rel_path, kind, &doc, m, sz);
+                        self.reload_index_caches();
+                    }
+                }
                 self.active_collection.path = Some(rel_path.to_string());
                 self.active_collection.active_view = doc.default_view;
                 self.active_collection.doc = doc;
@@ -630,6 +647,510 @@ impl KronoApp {
                 self.push_toast(s.tasks_converted_toast, ToastKind::Success);
             }
             Err(e) => self.push_toast(e, ToastKind::Error),
+        }
+    }
+
+    pub(super) fn create_media_review_note(&mut self, record_id: &str) {
+        let Some(col_path) = self.active_collection.path.clone() else {
+            return;
+        };
+        let Some(rec_snap) = self
+            .active_collection
+            .doc
+            .records
+            .iter()
+            .find(|r| r.id == record_id)
+            .cloned()
+        else {
+            return;
+        };
+
+        let is_ru = self.config.language == Lang::Ru;
+        let title = if rec_snap.title.trim().is_empty() {
+            if is_ru { "Рецензия" } else { "Review" }.to_string()
+        } else {
+            rec_snap.title.trim().to_string()
+        };
+        let year = rec_snap
+            .values
+            .get("year")
+            .map(FieldValue::as_text)
+            .unwrap_or_default();
+        let director = rec_snap
+            .values
+            .get("director")
+            .map(FieldValue::as_text)
+            .unwrap_or_default();
+        let genres_raw = rec_snap
+            .values
+            .get("genres")
+            .map(FieldValue::as_text)
+            .unwrap_or_default();
+        let mut genres: Vec<String> = genres_raw
+            .split([',', ';', '/'])
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .collect();
+        for t in &rec_snap.tags {
+            if !genres.iter().any(|g| g.eq_ignore_ascii_case(t)) {
+                genres.push(t.clone());
+            }
+        }
+        let rating = rec_snap
+            .values
+            .get("rating")
+            .map(FieldValue::as_text)
+            .unwrap_or_default();
+        let mini_review = rec_snap
+            .values
+            .get("review")
+            .map(FieldValue::as_text)
+            .filter(|s| !s.trim().is_empty())
+            .unwrap_or_else(|| rec_snap.description.clone());
+
+        let (tags, body) = krono_core::templates::media_review_template(
+            &title,
+            &year,
+            &director,
+            &genres,
+            &rating,
+            &mini_review,
+            is_ru,
+        );
+
+        let folder_prefix = col_path
+            .rsplit_once('/')
+            .map(|(dir, _)| dir)
+            .filter(|dir| !dir.starts_with("daily"));
+        let note_title = if is_ru {
+            format!("{title} — рецензия")
+        } else {
+            format!("{title} — Review")
+        };
+        let target_folder = match folder_prefix {
+            Some(dir) if !dir.is_empty() => {
+                if dir.ends_with("/Рецензии")
+                    || dir.ends_with("/Reviews")
+                    || dir == "Рецензии"
+                    || dir == "Reviews"
+                {
+                    dir.to_string()
+                } else if is_ru {
+                    format!("{dir}/Рецензии")
+                } else {
+                    format!("{dir}/Reviews")
+                }
+            }
+            _ => {
+                if is_ru {
+                    "Кинотека/Рецензии".to_string()
+                } else {
+                    "Media/Reviews".to_string()
+                }
+            }
+        };
+        let raw_title_or_path = format!("{target_folder}/{note_title}");
+        let existing: std::collections::HashSet<String> =
+            self.notes.iter().map(|n| n.path.clone()).collect();
+        match create_note_with_tags(
+            &self.config.vault_dir,
+            &raw_title_or_path,
+            None,
+            tags,
+            &body,
+            &existing,
+        ) {
+            Ok((new_rel_path, new_doc, modified, size)) => {
+                self.last_local_save_at = Some(Instant::now());
+                let _ = self.index.upsert_note(&new_rel_path, &new_doc, modified, size);
+
+                let note_link_col_id = if let Some(col) = self
+                    .active_collection
+                    .doc
+                    .columns
+                    .iter()
+                    .find(|c| c.col_type == ColumnType::NoteLink)
+                {
+                    col.id.clone()
+                } else {
+                    let id = "note_link".to_string();
+                    self.active_collection.doc.columns.push(ColumnDef {
+                        id: id.clone(),
+                        name: if is_ru { "Заметка" } else { "Note" }.to_string(),
+                        col_type: ColumnType::NoteLink,
+                        width: 170.0,
+                        options: Vec::new(),
+                    });
+                    id
+                };
+
+                if let Some(rec) = self
+                    .active_collection
+                    .doc
+                    .records
+                    .iter_mut()
+                    .find(|r| r.id == record_id)
+                {
+                    rec.values.insert(
+                        note_link_col_id,
+                        FieldValue::Text(new_rel_path.clone()),
+                    );
+                }
+                self.active_collection.dirty = true;
+                self.active_collection.editing_record_id = None;
+                self.save_current_collection();
+
+                self.reload_index_caches();
+                self.open_note(&new_rel_path);
+                self.view_mode = ViewMode::Editor;
+                self.previous_view_mode = ViewMode::Editor;
+                self.last_notes_tab_mode = ViewMode::Editor;
+                let s = strings(self.config.language);
+                self.push_toast(s.tasks_converted_toast, ToastKind::Success);
+            }
+            Err(e) => self.push_toast(e, ToastKind::Error),
+        }
+    }
+
+    pub(super) fn poll_tmdb_events(&mut self) {
+        while let Ok(ev) = self.tmdb_rx.try_recv() {
+            match ev {
+                TmdbEvent::SearchDone { query, result } => {
+                    if query != self.active_collection.tmdb_ui.last_dispatched_query
+                        && !self.active_collection.tmdb_ui.last_dispatched_query.is_empty()
+                    {
+                        continue;
+                    }
+                    self.active_collection.tmdb_ui.search_busy = false;
+                    match result {
+                        Ok(items) => {
+                            self.active_collection.tmdb_ui.search_error = None;
+                            self.active_collection.tmdb_ui.search_results = items;
+                        }
+                        Err(e) => {
+                            self.active_collection.tmdb_ui.search_error = Some(e);
+                        }
+                    }
+                }
+                TmdbEvent::DetailsDone {
+                    target_status,
+                    fallback,
+                    result,
+                } => {
+                    let details = match result {
+                        Ok(d) => d,
+                        Err(_) => TmdbMediaDetails {
+                            item: fallback,
+                            genres: Vec::new(),
+                            director: String::new(),
+                        },
+                    };
+                    self.insert_tmdb_media_record(details, &target_status);
+                }
+                TmdbEvent::RecommendationsDone(result) => {
+                    self.active_collection.tmdb_ui.recs_busy = false;
+                    match result {
+                        Ok(items) => {
+                            self.active_collection.tmdb_ui.recs_error = None;
+                            self.active_collection.tmdb_ui.recs_results = items;
+                        }
+                        Err(e) => {
+                            self.active_collection.tmdb_ui.recs_error = Some(e);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    pub(super) fn start_tmdb_search(&mut self, ctx: &eframe::egui::Context, query: String) {
+        let Ok(Some(token)) = load_tmdb_token() else {
+            self.has_saved_tmdb_token = false;
+            return;
+        };
+        self.active_collection.tmdb_ui.search_busy = true;
+        self.active_collection.tmdb_ui.search_error = None;
+        spawn_search_multi(
+            ctx.clone(),
+            self.tmdb_tx.clone(),
+            token.to_string(),
+            query,
+            self.config.language,
+            self.config.effective_tmdb_language(),
+        );
+    }
+
+    pub(super) fn start_tmdb_recommendations(&mut self, ctx: &eframe::egui::Context) {
+        self.active_collection.tmdb_ui.recs_open = true;
+        self.active_collection.tmdb_ui.recs_error = None;
+        if !self.has_saved_tmdb_token {
+            return;
+        }
+        let Ok(Some(token)) = load_tmdb_token() else {
+            self.has_saved_tmdb_token = false;
+            return;
+        };
+
+        let existing_ids: std::collections::HashSet<String> = self
+            .active_collection
+            .doc
+            .records
+            .iter()
+            .filter_map(|r| r.values.get("tmdb_id"))
+            .map(|v| v.as_text().trim().to_string())
+            .filter(|id| !id.is_empty())
+            .collect();
+
+        let mut seeds: Vec<(f64, TmdbMediaKind, String)> = self
+            .active_collection
+            .doc
+            .records
+            .iter()
+            .filter_map(|r| {
+                let rating = r.values.get("rating").and_then(FieldValue::as_number)?;
+                if rating < 8.0 {
+                    return None;
+                }
+                let tmdb_id = r
+                    .values
+                    .get("tmdb_id")
+                    .map(FieldValue::as_text)
+                    .map(|s| s.trim().to_string())
+                    .filter(|s| !s.is_empty())?;
+                let kind = r
+                    .values
+                    .get("media_type")
+                    .map(FieldValue::as_text)
+                    .and_then(|s| TmdbMediaKind::from_select_opt(&s))
+                    .unwrap_or(TmdbMediaKind::Movie);
+                Some((rating, kind, tmdb_id))
+            })
+            .collect();
+        seeds.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
+        let seed_pairs: Vec<(TmdbMediaKind, String)> =
+            seeds.into_iter().take(5).map(|(_, k, id)| (k, id)).collect();
+
+        if seed_pairs.is_empty() {
+            let s = strings(self.config.language);
+            self.active_collection.tmdb_ui.recs_busy = false;
+            self.active_collection.tmdb_ui.recs_results.clear();
+            self.active_collection.tmdb_ui.recs_error = Some(s.tmdb_recs_need_high_rating.to_string());
+            return;
+        }
+
+        self.active_collection.tmdb_ui.recs_busy = true;
+        spawn_fetch_recommendations(
+            ctx.clone(),
+            self.tmdb_tx.clone(),
+            token.to_string(),
+            seed_pairs,
+            existing_ids,
+            self.config.language,
+            self.config.effective_tmdb_language(),
+        );
+    }
+
+    pub(super) fn start_tmdb_add_media(
+        &mut self,
+        ctx: &eframe::egui::Context,
+        item: TmdbSearchItem,
+        status_opt: String,
+    ) {
+        if let Ok(Some(token)) = load_tmdb_token() {
+            spawn_fetch_details(
+                ctx.clone(),
+                self.tmdb_tx.clone(),
+                token.to_string(),
+                item,
+                status_opt,
+                self.config.language,
+                self.config.effective_tmdb_language(),
+            );
+        } else {
+            self.insert_tmdb_media_record(
+                TmdbMediaDetails {
+                    item,
+                    genres: Vec::new(),
+                    director: String::new(),
+                },
+                &status_opt,
+            );
+        }
+    }
+
+    fn insert_tmdb_media_record(&mut self, details: TmdbMediaDetails, status_opt: &str) {
+        let item = details.item;
+        let rec_id = self.active_collection.doc.add_record(
+            &item.title,
+            Some(("status", status_opt)),
+            chrono::Utc::now().timestamp(),
+        );
+        if let Some(rec) = self
+            .active_collection
+            .doc
+            .records
+            .iter_mut()
+            .find(|r| r.id == rec_id)
+        {
+            rec.values.insert(
+                "media_type".into(),
+                FieldValue::Text(item.kind.as_select_opt().into()),
+            );
+            if let Some(year) = item.year {
+                rec.values.insert("year".into(), FieldValue::Number(year as f64));
+            }
+            if !details.genres.is_empty() {
+                let is_ru = self.config.language == Lang::Ru;
+                let mut norm_genres: Vec<String> = Vec::new();
+                for g in &details.genres {
+                    let norm = krono_core::collection::normalize_genre_label(g, is_ru);
+                    if !norm.is_empty()
+                        && !norm_genres
+                            .iter()
+                            .any(|x| x.to_lowercase() == norm.to_lowercase())
+                    {
+                        norm_genres.push(norm);
+                    }
+                }
+                if !norm_genres.is_empty() {
+                    rec.values.insert(
+                        "genres".into(),
+                        FieldValue::Text(norm_genres.join(", ")),
+                    );
+                }
+            }
+            if !details.director.trim().is_empty() {
+                rec.values.insert(
+                    "director".into(),
+                    FieldValue::Text(details.director.trim().to_string()),
+                );
+            }
+            rec.values
+                .insert("tmdb_id".into(), FieldValue::Text(item.tmdb_id));
+            if let Some(pp) = item.poster_path {
+                rec.values.insert("poster_path".into(), FieldValue::Text(pp));
+            }
+            if !item.overview.trim().is_empty() {
+                rec.description = item.overview;
+            }
+        }
+        self.active_collection.dirty = true;
+        self.save_current_collection();
+        let s = strings(self.config.language);
+        self.push_toast(format!("{}: {}", s.tmdb_added_toast, item.title), ToastKind::Success);
+    }
+
+    pub(super) fn start_tmdb_similar(
+        &mut self,
+        ctx: &eframe::egui::Context,
+        kind: TmdbMediaKind,
+        tmdb_id: String,
+    ) {
+        self.active_collection.tmdb_ui.recs_open = true;
+        self.active_collection.tmdb_ui.recs_error = None;
+        let Ok(Some(token)) = load_tmdb_token() else {
+            self.has_saved_tmdb_token = false;
+            return;
+        };
+        let existing_ids: std::collections::HashSet<String> = self
+            .active_collection
+            .doc
+            .records
+            .iter()
+            .filter_map(|r| r.values.get("tmdb_id"))
+            .map(|v| v.as_text().trim().to_string())
+            .filter(|id| !id.is_empty())
+            .collect();
+        self.active_collection.tmdb_ui.recs_busy = true;
+        spawn_fetch_recommendations(
+            ctx.clone(),
+            self.tmdb_tx.clone(),
+            token.to_string(),
+            vec![(kind, tmdb_id)],
+            existing_ids,
+            self.config.language,
+            self.config.effective_tmdb_language(),
+        );
+    }
+
+    pub(super) fn start_tmdb_by_genres(
+        &mut self,
+        ctx: &eframe::egui::Context,
+        kind: TmdbMediaKind,
+        genre_keys: Vec<u32>,
+    ) {
+        self.active_collection.tmdb_ui.recs_open = true;
+        self.active_collection.tmdb_ui.recs_error = None;
+        let Ok(Some(token)) = load_tmdb_token() else {
+            self.has_saved_tmdb_token = false;
+            return;
+        };
+        let existing_ids: std::collections::HashSet<String> = self
+            .active_collection
+            .doc
+            .records
+            .iter()
+            .filter_map(|r| r.values.get("tmdb_id"))
+            .map(|v| v.as_text().trim().to_string())
+            .filter(|id| !id.is_empty())
+            .collect();
+        self.active_collection.tmdb_ui.recs_busy = true;
+        spawn_discover_by_genres(
+            ctx.clone(),
+            self.tmdb_tx.clone(),
+            token.to_string(),
+            kind,
+            genre_keys,
+            existing_ids,
+            self.config.language,
+            self.config.effective_tmdb_language(),
+        );
+    }
+
+    pub(super) fn open_sidebar_module(&mut self, module: crate::ui::SidebarModule) {
+        let is_ru = self.config.language == Lang::Ru;
+        match module {
+            crate::ui::SidebarModule::MediaLibrary => {
+                let found = self.collections.iter().find_map(|c| {
+                    let t = c.title.to_lowercase();
+                    let p = c.path.to_lowercase();
+                    if t.contains("кинотек") || t.contains("media library") || p.contains("media") || p.contains("кинотек") {
+                        return Some(c.path.clone());
+                    }
+                    None
+                });
+                if let Some(path) = found {
+                    self.open_collection(&path);
+                } else {
+                    let raw_path = if is_ru {
+                        "Кинотека/Кинотека"
+                    } else {
+                        "Media/Media Library"
+                    };
+                    let existing = self.existing_paths_set();
+                    self.watcher.mark_internal_change();
+                    match create_collection_preset(
+                        &self.config.vault_dir,
+                        raw_path,
+                        CollectionViewKind::Gallery,
+                        "media_library",
+                        is_ru,
+                        &existing,
+                    ) {
+                        Ok((rel_path, fkind, doc, modified, size)) => {
+                            let _ = self
+                                .index
+                                .upsert_collection(&rel_path, fkind, &doc, modified, size);
+                            self.reload_index_caches();
+                            self.open_collection(&rel_path);
+                        }
+                        Err(e) => self.push_toast(e, ToastKind::Error),
+                    }
+                }
+            }
+            crate::ui::SidebarModule::English => {
+                self.open_or_create_english_workspace();
+            }
         }
     }
 }

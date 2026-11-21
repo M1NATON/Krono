@@ -40,6 +40,9 @@ pub fn render_settings_view(
     has_saved_token: bool,
     token_replace_mode: &mut bool,
     token_draft: &mut String,
+    has_saved_tmdb_token: bool,
+    tmdb_token_replace_mode: &mut bool,
+    tmdb_token_draft: &mut String,
     test_feedback: &Option<(bool, String)>,
     last_sync_info: Option<&str>,
     sync_busy: bool,
@@ -93,6 +96,9 @@ pub fn render_settings_view(
                     has_saved_token,
                     token_replace_mode,
                     token_draft,
+                    has_saved_tmdb_token,
+                    tmdb_token_replace_mode,
+                    tmdb_token_draft,
                     test_feedback,
                     last_sync_info,
                     sync_busy,
@@ -237,6 +243,9 @@ pub fn render_settings_view(
                             has_saved_token,
                             token_replace_mode,
                             token_draft,
+                            has_saved_tmdb_token,
+                            tmdb_token_replace_mode,
+                            tmdb_token_draft,
                             test_feedback,
                             last_sync_info,
                             sync_busy,
@@ -271,6 +280,9 @@ fn render_tab_scroll(
     has_saved_token: bool,
     token_replace_mode: &mut bool,
     token_draft: &mut String,
+    has_saved_tmdb_token: bool,
+    tmdb_token_replace_mode: &mut bool,
+    tmdb_token_draft: &mut String,
     test_feedback: &Option<(bool, String)>,
     last_sync_info: Option<&str>,
     sync_busy: bool,
@@ -571,6 +583,103 @@ fn render_tab_scroll(
                                 }
                             },
                         );
+                    });
+
+                    ui.add_space(14.0);
+                    settings_card(ui, p, |ui| {
+                        ui.label(
+                            egui::RichText::new(s.settings_sb_modules)
+                                .font(font_medium(14.0))
+                                .color(p.text_primary),
+                        );
+                        ui.add_space(2.0);
+                        ui.label(
+                            egui::RichText::new(s.settings_sb_modules_desc)
+                                .font(font_body(12.5))
+                                .color(p.text_secondary),
+                        );
+                        ui.add_space(10.0);
+                        setting_row(ui, p, s.settings_sb_show_block, "", 56.0, |ui| {
+                            if toggle_switch(
+                                ui,
+                                p,
+                                "sw_sb_modules",
+                                &mut cfg.show_sidebar_modules,
+                            ) {
+                                actions.push(UiAction::ConfigChanged);
+                            }
+                        });
+                        if cfg.show_sidebar_modules {
+                            ui.add_space(8.0);
+                            hairline_h(ui, p);
+                            ui.add_space(8.0);
+                            setting_row(ui, p, s.settings_sb_show_media, "", 56.0, |ui| {
+                                if toggle_switch(
+                                    ui,
+                                    p,
+                                    "sw_sb_mod_media",
+                                    &mut cfg.show_module_media_library,
+                                ) {
+                                    actions.push(UiAction::ConfigChanged);
+                                }
+                            });
+                            ui.add_space(8.0);
+                            setting_row(ui, p, s.settings_sb_show_english, "", 56.0, |ui| {
+                                if toggle_switch(
+                                    ui,
+                                    p,
+                                    "sw_sb_mod_english",
+                                    &mut cfg.show_module_english,
+                                ) {
+                                    actions.push(UiAction::ConfigChanged);
+                                }
+                            });
+                            if cfg.show_module_english {
+                                ui.add_space(8.0);
+                                ui.label(
+                                    egui::RichText::new(s.settings_study_lang_label)
+                                        .font(font_body(12.5))
+                                        .color(p.text_secondary),
+                                );
+                                ui.add_space(4.0);
+                                ui.horizontal_wrapped(|ui| {
+                                    ui.spacing_mut().item_spacing = vec2(6.0, 5.0);
+                                    for (id, ru, en) in crate::config::STUDY_LANGUAGE_PRESETS {
+                                        let lbl = if lang == Lang::Ru { *ru } else { *en };
+                                        let active = cfg.study_language.eq_ignore_ascii_case(id)
+                                            || cfg.study_language.eq_ignore_ascii_case(ru);
+                                        let btn = egui::Button::new(
+                                            egui::RichText::new(lbl)
+                                                .font(font_medium(11.5))
+                                                .color(if active { p.accent_text } else { p.text_secondary }),
+                                        )
+                                        .fill(if active { p.accent_soft } else { p.bg_sidebar })
+                                        .stroke(Stroke::new(
+                                            1.0_f32,
+                                            if active { p.accent } else { p.border_hairline },
+                                        ))
+                                        .rounding(Rounding::same(6.0));
+                                        if ui.add(btn).clicked() {
+                                            cfg.study_language = (*id).to_string();
+                                            actions.push(UiAction::ConfigChanged);
+                                        }
+                                    }
+                                });
+                                ui.add_space(6.0);
+                                if styled_text_input(
+                                    ui,
+                                    p,
+                                    &mut cfg.study_language,
+                                    s.settings_study_lang_hint,
+                                    false,
+                                    240.0,
+                                )
+                                .changed()
+                                {
+                                    actions.push(UiAction::ConfigChanged);
+                                }
+                            }
+                        }
                     });
 
                     ui.add_space(14.0);
@@ -1732,6 +1841,124 @@ fn render_tab_scroll(
                                 )
                                 .wrap(),
                             );
+                        });
+                    });
+
+                    ui.add_space(14.0);
+                    settings_card(ui, p, |ui| {
+                        ui.horizontal_wrapped(|ui| {
+                            ui.spacing_mut().item_spacing = vec2(8.0, 4.0);
+                            let (dot_r, _) = ui.allocate_exact_size(vec2(10.0, 16.0), Sense::hover());
+                            paint_badge_dot(
+                                ui.painter(),
+                                dot_r.center(),
+                                if has_saved_tmdb_token { p.success } else { p.text_muted },
+                            );
+                            ui.label(
+                                egui::RichText::new(s.tmdb_section_title)
+                                    .font(font_semibold(14.0))
+                                    .color(p.text_primary),
+                            );
+                            ui.label(
+                                egui::RichText::new(if has_saved_tmdb_token {
+                                    s.tmdb_token_saved
+                                } else {
+                                    s.tmdb_token_missing
+                                })
+                                .font(font_body(12.0))
+                                .color(if has_saved_tmdb_token { p.success } else { p.text_muted }),
+                            );
+                        });
+                        ui.add_space(6.0);
+                        ui.add(
+                            egui::Label::new(
+                                egui::RichText::new(s.tmdb_section_desc)
+                                    .font(font_body(12.5))
+                                    .color(p.text_secondary),
+                            )
+                            .wrap(),
+                        );
+                        ui.add_space(10.0);
+
+                        if has_saved_tmdb_token && !*tmdb_token_replace_mode {
+                            ui.horizontal_wrapped(|ui| {
+                                ui.spacing_mut().item_spacing = vec2(8.0, 6.0);
+                                if secondary_button(ui, p, Some(Icon::Edit), s.gh_token_replace)
+                                    .clicked()
+                                {
+                                    tmdb_token_draft.clear();
+                                    *tmdb_token_replace_mode = true;
+                                }
+                                if secondary_button(ui, p, Some(Icon::Trash), s.gh_token_delete)
+                                    .clicked()
+                                {
+                                    actions.push(UiAction::DeleteTmdbToken);
+                                }
+                            });
+                        } else {
+                            let tok_w = (ui.available_width() - 180.0).max(160.0);
+                            ui.horizontal_wrapped(|ui| {
+                                ui.spacing_mut().item_spacing = vec2(8.0, 6.0);
+                                styled_text_input(
+                                    ui,
+                                    p,
+                                    tmdb_token_draft,
+                                    s.tmdb_token_hint,
+                                    true,
+                                    tok_w,
+                                );
+                                ui.add_enabled_ui(!tmdb_token_draft.trim().is_empty(), |ui| {
+                                    if primary_button(
+                                        ui,
+                                        p,
+                                        Some(Icon::Check),
+                                        s.gh_token_save,
+                                        false,
+                                    )
+                                    .clicked()
+                                    {
+                                        actions.push(UiAction::SaveTmdbToken);
+                                    }
+                                });
+                                if *tmdb_token_replace_mode
+                                    && secondary_button(ui, p, Some(Icon::Close), s.cancel_btn)
+                                        .clicked()
+                                {
+                                    tmdb_token_draft.clear();
+                                    *tmdb_token_replace_mode = false;
+                                }
+                            });
+                        }
+
+                        ui.add_space(12.0);
+                        hairline_h(ui, p);
+                        ui.add_space(10.0);
+                        ui.horizontal_wrapped(|ui| {
+                            ui.spacing_mut().item_spacing = vec2(8.0, 6.0);
+                            ui.label(
+                                egui::RichText::new(s.tmdb_lang_label)
+                                    .font(font_body(12.5))
+                                    .color(p.text_secondary),
+                            );
+                            let mut cur_lang = match cfg.tmdb_language.trim() {
+                                "ru-RU" => "ru-RU",
+                                "en-US" => "en-US",
+                                _ => "",
+                            };
+                            if segmented_control(
+                                ui,
+                                p,
+                                "tmdb_lang_seg",
+                                &mut cur_lang,
+                                &[
+                                    ("", None, s.tmdb_lang_auto),
+                                    ("ru-RU", None, "RU"),
+                                    ("en-US", None, "EN"),
+                                ],
+                            ) {
+                                cfg.tmdb_language = cur_lang.to_string();
+                                actions.push(UiAction::ConfigChanged);
+                            }
                         });
                     });
                 }

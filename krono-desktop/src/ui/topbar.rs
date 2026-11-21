@@ -185,6 +185,7 @@ pub fn render_topbar(
                                     let cicon = match doc.collection_view {
                                         CollectionViewKind::Board => Icon::Board,
                                         CollectionViewKind::Table => Icon::Table,
+                                        CollectionViewKind::Gallery => Icon::Image,
                                     };
                                     let (ir, _) = ui.allocate_exact_size(vec2(14.0, 14.0), Sense::hover());
                                     draw_icon(ui.painter(), ir, cicon, p.accent_text);
@@ -397,6 +398,7 @@ pub fn render_topbar(
                             &[
                                 (CollectionViewKind::Board, Some(Icon::Board), s.col_view_board),
                                 (CollectionViewKind::Table, Some(Icon::Table), s.col_view_table),
+                                (CollectionViewKind::Gallery, Some(Icon::Image), s.col_view_gallery),
                             ],
                         ) {
                             actions.push(UiAction::SetCollectionView(cview));

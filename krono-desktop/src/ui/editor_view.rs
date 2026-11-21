@@ -12,7 +12,7 @@ use crate::ui::markdown_preview::{render_markdown_preview, resolve_embedded_boar
 use crate::ui::theme::{
     font_body, font_bold, font_medium, font_mono, font_serif_bold, ThemePalette,
 };
-use crate::ui::{EditorDocState, EditorMode, EditorPrefs, LayoutClass, UiAction};
+use crate::ui::{EditorDocState, EditorMode, EditorPrefs, LayoutClass, SidebarModule, UiAction};
 use eframe::egui::{
     self, pos2, vec2, CursorIcon, Margin, Rect, Rounding, Sense, Stroke, Ui,
 };
@@ -76,6 +76,10 @@ pub fn render_editor_view(
                 ui.add_space(6.0 + (1.0 - entrance_t) * 6.0);
                 if doc.external_conflict {
                     render_external_conflict_banner(ui, p, lang, &mut actions);
+                    ui.add_space(10.0);
+                }
+                if crate::app::english::is_english_lesson_path(rel_path) {
+                    render_english_lesson_nav_bar(ui, p, lang, rel_path, all_notes, &mut actions);
                     ui.add_space(10.0);
                 }
                 render_document_header(
@@ -195,6 +199,11 @@ pub fn render_editor_view(
                         ui.add_space(10.0);
                     }
 
+                    if crate::app::english::is_english_lesson_path(rel_path) {
+                        render_english_lesson_nav_bar(ui, p, lang, rel_path, all_notes, &mut actions);
+                        ui.add_space(10.0);
+                    }
+
                     render_document_header(
                         ui,
                         p,
@@ -300,6 +309,66 @@ pub fn render_editor_view(
 
     let _ = s;
     actions
+}
+
+fn render_english_lesson_nav_bar(
+    ui: &mut Ui,
+    p: &ThemePalette,
+    lang: Lang,
+    rel_path: &str,
+    all_notes: &[NoteMeta],
+    actions: &mut Vec<UiAction>,
+) {
+    let s = strings(lang);
+    let mut lessons: Vec<&str> = all_notes
+        .iter()
+        .filter(|n| crate::app::english::is_english_lesson_path(&n.path))
+        .map(|n| n.path.as_str())
+        .collect();
+    lessons.sort();
+    let cur_idx = lessons.iter().position(|p| *p == rel_path);
+    let prev_path = cur_idx
+        .and_then(|i| i.checked_sub(1))
+        .and_then(|i| lessons.get(i))
+        .map(|s| (*s).to_string());
+    let next_path = cur_idx
+        .and_then(|i| lessons.get(i + 1))
+        .map(|s| (*s).to_string());
+
+    egui::Frame::none()
+        .fill(p.bg_sidebar)
+        .stroke(Stroke::new(1.0_f32, p.border_hairline))
+        .rounding(Rounding::same(8.0))
+        .inner_margin(Margin::symmetric(10.0, 6.0))
+        .show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            ui.horizontal_wrapped(|ui| {
+                ui.spacing_mut().item_spacing = vec2(6.0, 4.0);
+                ui.add_enabled_ui(prev_path.is_some(), |ui| {
+                    if secondary_button(ui, p, None, s.eng_prev_lesson).clicked() {
+                        if let Some(prev) = prev_path.clone() {
+                            actions.push(UiAction::OpenNote(prev));
+                        }
+                    }
+                });
+                if secondary_button(ui, p, Some(Icon::Canvas), s.eng_map_btn).clicked() {
+                    actions.push(UiAction::OpenSidebarModule(SidebarModule::English));
+                }
+                if secondary_button(ui, p, Some(Icon::Table), s.eng_vocab_btn).clicked() {
+                    actions.push(UiAction::OpenEnglishVocabulary);
+                }
+                ui.add_enabled_ui(next_path.is_some(), |ui| {
+                    if secondary_button(ui, p, None, s.eng_next_lesson).clicked() {
+                        if let Some(next) = next_path.clone() {
+                            actions.push(UiAction::OpenNote(next));
+                        }
+                    }
+                });
+                if primary_button(ui, p, Some(Icon::Plus), s.eng_new_lesson_btn, false).clicked() {
+                    actions.push(UiAction::CreateNextEnglishLesson { open_note: true });
+                }
+            });
+        });
 }
 
 fn render_external_conflict_banner(

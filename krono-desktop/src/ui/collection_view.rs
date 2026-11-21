@@ -1,10 +1,12 @@
 use crate::i18n::{column_type_label, strings, Lang};
+use crate::storage::cover_cache::CoverCache;
 use crate::ui::collection_board::render_custom_board;
+use crate::ui::collection_gallery::{render_custom_gallery, render_tmdb_modals, TmdbUiState};
 use crate::ui::components::{
     focus_once, hairline_h, icon_button, normalize_tag_input, primary_button, reset_focus_gate,
     secondary_button, styled_text_input, tag_autocomplete_input, tag_chip,
 };
-use crate::ui::icons::{draw_icon, Icon};
+use crate::ui::icons::{draw_icon, paint_star, Icon};
 use crate::ui::motion::{anim_bool_eased, ease_in_out_cubic, lerp_color, with_alpha};
 use crate::ui::theme::{font_body, font_medium, font_mono, font_semibold, ThemePalette};
 use crate::ui::{LayoutClass, UiAction};
@@ -14,9 +16,9 @@ use eframe::egui::{
 };
 use krono_core::{
     collection::{
-        record_matches_smart_filter, strip_link_target, ChecklistItem, CollectionDoc,
-        CollectionViewKind, ColorToken, ColumnDef, ColumnType, DateFilterPreset, FieldValue,
-        RecordItem, SavedCollectionView,
+        record_matches_min_number, record_matches_smart_filter, strip_link_target, ChecklistItem,
+        CollectionDoc, CollectionViewKind, ColorToken, ColumnDef, ColumnType, DateFilterPreset,
+        FieldValue, RecordItem, SavedCollectionView,
     },
     daily::SimpleDate,
     note::NoteMeta,
@@ -50,6 +52,8 @@ pub struct CollectionEditorState {
     pub date_filter: DateFilterPreset,
     pub tag_filter: Option<String>,
     pub select_filter: Option<(String, String)>,
+    pub min_number_filter: Option<(String, i32)>,
+    pub genre_filter: Option<String>,
     pub smart_filter_open: bool,
     pub active_saved_view_id: Option<String>,
     pub new_view_name: String,
@@ -76,6 +80,7 @@ pub struct CollectionEditorState {
     pub adding_field_open: bool,
     pub new_field_name: String,
     pub new_field_type: ColumnType,
+    pub tmdb_ui: TmdbUiState,
 }
 
 impl Default for CollectionEditorState {
@@ -92,6 +97,8 @@ impl Default for CollectionEditorState {
             date_filter: DateFilterPreset::All,
             tag_filter: None,
             select_filter: None,
+            min_number_filter: None,
+            genre_filter: None,
             smart_filter_open: false,
             active_saved_view_id: None,
             new_view_name: String::new(),
@@ -116,6 +123,7 @@ impl Default for CollectionEditorState {
             adding_field_open: false,
             new_field_name: String::new(),
             new_field_type: ColumnType::Text,
+            tmdb_ui: TmdbUiState::default(),
         }
     }
 }
@@ -127,6 +135,8 @@ impl CollectionEditorState {
         self.date_filter = DateFilterPreset::All;
         self.tag_filter = None;
         self.select_filter = None;
+        self.min_number_filter = None;
+        self.genre_filter = None;
         self.smart_filter_open = false;
         self.active_saved_view_id = None;
         self.new_view_name.clear();
@@ -147,6 +157,7 @@ impl CollectionEditorState {
         self.new_option_label.clear();
         self.adding_field_open = false;
         self.new_field_name.clear();
+        self.tmdb_ui.reset();
     }
 }
 
@@ -160,9 +171,12 @@ pub fn render_collection_view(
     today: SimpleDate,
     state: &mut CollectionEditorState,
     all_notes: &[NoteMeta],
+    cover_cache: &mut CoverCache,
+    has_tmdb_token: bool,
 ) -> Vec<UiAction> {
     let mut actions = Vec::new();
     let s = strings(lang);
+    cover_cache.poll(ctx);
 
     let Some(rel_path) = state.path.clone() else {
         return actions;
@@ -186,12 +200,26 @@ pub fn render_collection_view(
         CollectionViewKind::Table => {
             render_custom_table(ui, p, lang, layout, today, state, all_notes, &mut actions);
         }
+        CollectionViewKind::Gallery => {
+            render_custom_gallery(
+                ctx,
+                ui,
+                p,
+                lang,
+                today,
+                state,
+                cover_cache,
+                has_tmdb_token,
+                &mut actions,
+            );
+        }
     }
 
     // Modals (Card detail & Column schema)
     render_record_detail_modal(ctx, p, lang, state, all_notes, &available_tags, &mut actions);
     render_column_schema_modal(ctx, p, lang, state, &mut actions);
     render_add_field_modal(ctx, p, lang, state, &mut actions);
+    render_tmdb_modals(ctx, p, lang, state, cover_cache, has_tmdb_token, &mut actions);
 
     let _ = s;
     actions
@@ -308,10 +336,14 @@ fn render_collection_header(
     let has_active_filters = state.date_filter != DateFilterPreset::All
         || state.tag_filter.is_some()
         || state.select_filter.is_some()
+        || state.min_number_filter.is_some()
+        || state.genre_filter.is_some()
         || !state.filter_query.trim().is_empty();
     let filter_sub_active = state.date_filter != DateFilterPreset::All
         || state.tag_filter.is_some()
-        || state.select_filter.is_some();
+        || state.select_filter.is_some()
+        || state.min_number_filter.is_some()
+        || state.genre_filter.is_some();
 
     let render_left_toolbar = |ui: &mut Ui, state: &mut CollectionEditorState| {
         let search_w = if is_mobile {
@@ -351,6 +383,8 @@ fn render_collection_header(
             state.date_filter = DateFilterPreset::All;
             state.tag_filter = None;
             state.select_filter = None;
+            state.min_number_filter = None;
+            state.genre_filter = None;
             state.active_saved_view_id = None;
         }
     };
@@ -569,6 +603,10 @@ fn render_collection_header(
                         .select_col_id
                         .clone()
                         .zip(sv.select_opt_id.clone());
+                    state.min_number_filter = sv
+                        .min_number_col_id
+                        .clone()
+                        .zip(sv.min_number);
                     state.active_view = sv.view_kind;
                     state.active_saved_view_id = Some(sv.id.clone());
                 }
@@ -714,6 +752,11 @@ fn render_collection_header(
                                     .select_filter
                                     .as_ref()
                                     .map(|(_, o)| o.clone()),
+                                min_number_col_id: state
+                                    .min_number_filter
+                                    .as_ref()
+                                    .map(|(c, _)| c.clone()),
+                                min_number: state.min_number_filter.as_ref().map(|(_, v)| *v),
                             });
                             state.active_saved_view_id = Some(vid);
                             state.new_view_name.clear();
@@ -830,6 +873,11 @@ fn render_custom_table(
         .as_ref()
         .map(|(c, o)| (c.as_str(), o.as_str()));
 
+    let min_num_filter = state
+        .min_number_filter
+        .as_ref()
+        .map(|(c, v)| (c.as_str(), *v));
+
     let mut visible_indices: Vec<usize> = state
         .doc
         .records
@@ -844,7 +892,7 @@ fn render_custom_table(
                 state.tag_filter.as_deref(),
                 sel_filter,
                 today,
-            )
+            ) && record_matches_min_number(rec, min_num_filter)
         })
         .map(|(i, _)| i)
         .collect();
@@ -1796,7 +1844,12 @@ fn render_record_detail_modal(
                             .color(p.text_muted),
                     );
                     ui.add_space(6.0);
+                    let mut tech_cols: Vec<&ColumnDef> = Vec::new();
                     for col in &cols_snapshot {
+                        if col.id == "tmdb_id" || col.id == "poster_path" {
+                            tech_cols.push(col);
+                            continue;
+                        }
                         ui.horizontal(|ui| {
                             ui.allocate_ui_with_layout(
                                 vec2(120.0, 26.0),
@@ -1812,7 +1865,41 @@ fn render_record_detail_modal(
                                     );
                                 },
                             );
-                            if render_inline_field_cell(
+                            if col.id == "rating" && col.col_type == ColumnType::Number {
+                                if render_interactive_star_rating(ui, p, rec, &col.id) {
+                                    dirty = true;
+                                }
+                            } else if col.id == "review" && col.col_type == ColumnType::Text {
+                                let mut val = rec
+                                    .values
+                                    .get(&col.id)
+                                    .map(FieldValue::as_text)
+                                    .unwrap_or_default();
+                                egui::Frame::none()
+                                    .fill(p.bg_input)
+                                    .stroke(Stroke::new(1.0_f32, p.border_subtle))
+                                    .rounding(Rounding::same(6.0))
+                                    .inner_margin(Margin::same(8.0))
+                                    .show(ui, |ui| {
+                                        let r = ui.add(
+                                            egui::TextEdit::multiline(&mut val)
+                                                .frame(false)
+                                                .desired_rows(3)
+                                                .desired_width((modal_w - 160.0).max(120.0))
+                                                .hint_text(s.col_record_desc_hint)
+                                                .font(font_body(12.5))
+                                                .text_color(p.text_primary),
+                                        );
+                                        if r.changed() {
+                                            if val.trim().is_empty() {
+                                                rec.values.remove(&col.id);
+                                            } else {
+                                                rec.values.insert(col.id.clone(), FieldValue::Text(val));
+                                            }
+                                            dirty = true;
+                                        }
+                                    });
+                            } else if render_inline_field_cell(
                                 ui,
                                 p,
                                 lang,
@@ -1828,6 +1915,56 @@ fn render_record_detail_modal(
                             }
                         });
                         ui.add_space(4.0);
+                    }
+
+                    if !tech_cols.is_empty() {
+                        ui.add_space(4.0);
+                        egui::CollapsingHeader::new(
+                            egui::RichText::new(s.col_tech_fields)
+                                .font(font_medium(12.0))
+                                .color(p.text_muted),
+                        )
+                        .default_open(false)
+                        .show(ui, |ui| {
+                            for col in tech_cols {
+                                ui.horizontal(|ui| {
+                                    ui.allocate_ui_with_layout(
+                                        vec2(120.0, 26.0),
+                                        Layout::left_to_right(Align::Center),
+                                        |ui| {
+                                            let (ir, _) =
+                                                ui.allocate_exact_size(vec2(14.0, 14.0), Sense::hover());
+                                            draw_icon(
+                                                ui.painter(),
+                                                ir,
+                                                column_type_icon(col.col_type),
+                                                p.text_muted,
+                                            );
+                                            ui.add_space(4.0);
+                                            ui.label(
+                                                egui::RichText::new(&col.name)
+                                                    .font(font_body(12.0))
+                                                    .color(p.text_muted),
+                                            );
+                                        },
+                                    );
+                                    if render_inline_field_cell(
+                                        ui,
+                                        p,
+                                        lang,
+                                        "mdl",
+                                        col,
+                                        rec,
+                                        (modal_w - 140.0).max(120.0),
+                                        all_notes,
+                                        &mut state.modal_note_search,
+                                        actions,
+                                    ) {
+                                        dirty = true;
+                                    }
+                                });
+                            }
+                        });
                     }
 
                     ui.add_space(10.0);
@@ -1959,6 +2096,11 @@ fn render_record_detail_modal(
                         if secondary_button(ui, p, Some(Icon::Trash), s.col_record_delete).clicked() {
                             delete_me = true;
                         }
+                        if secondary_button(ui, p, Some(Icon::FilePlus), s.col_create_review_note)
+                            .clicked()
+                        {
+                            actions.push(UiAction::CreateMediaReviewNote(rec_id.clone()));
+                        }
                         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                             if primary_button(ui, p, None, s.apply_btn, false).clicked() {
                                 close_modal = true;
@@ -1984,6 +2126,102 @@ fn render_record_detail_modal(
     if dirty {
         actions.push(UiAction::MarkCollectionDirty);
     }
+}
+
+fn render_interactive_star_rating(
+    ui: &mut Ui,
+    p: &ThemePalette,
+    rec: &mut RecordItem,
+    col_id: &str,
+) -> bool {
+    let cur = rec
+        .values
+        .get(col_id)
+        .and_then(FieldValue::as_number)
+        .unwrap_or(0.0)
+        .round()
+        .clamp(0.0, 10.0) as i32;
+
+    let step_w = 20.0_f32;
+    let strip_w = step_w * 10.0;
+    let mut clicked_star: Option<i32> = None;
+
+    ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = 8.0;
+        let (strip_rect, strip_resp) = ui.allocate_exact_size(vec2(strip_w, 22.0), Sense::click());
+        let hovered_star = if strip_resp.hovered() {
+            ui.ctx().set_cursor_icon(CursorIcon::PointingHand);
+            strip_resp.hover_pos().map(|pos| {
+                (((pos.x - strip_rect.left()) / step_w).floor() as i32 + 1).clamp(1, 10)
+            })
+        } else {
+            None
+        };
+
+        if strip_resp.clicked() {
+            let pos = strip_resp
+                .interact_pointer_pos()
+                .or_else(|| ui.input(|i| i.pointer.interact_pos()));
+            if let Some(pos) = pos {
+                clicked_star =
+                    Some((((pos.x - strip_rect.left()) / step_w).floor() as i32 + 1).clamp(1, 10));
+            } else if let Some(h) = hovered_star {
+                clicked_star = Some(h);
+            }
+        }
+
+        let shown = hovered_star.unwrap_or(cur);
+        let amber = Color32::from_rgb(245, 158, 11);
+        for star in 1..=10 {
+            let center = pos2(
+                strip_rect.left() + (star as f32 - 0.5) * step_w,
+                strip_rect.center().y,
+            );
+            if star <= shown {
+                paint_star(ui.painter(), center, 7.5, amber, None);
+            } else {
+                paint_star(
+                    ui.painter(),
+                    center,
+                    7.2,
+                    Color32::TRANSPARENT,
+                    Some(Stroke::new(1.1_f32, p.text_muted)),
+                );
+            }
+        }
+
+        let lbl = if shown > 0 {
+            format!("{shown}/10")
+        } else {
+            "—".to_string()
+        };
+        let lbl_color = if hovered_star.is_some() {
+            amber
+        } else if cur > 0 {
+            p.text_primary
+        } else {
+            p.text_muted
+        };
+        ui.add_sized(
+            vec2(42.0, 20.0),
+            egui::Label::new(
+                egui::RichText::new(lbl)
+                    .font(font_mono(12.0))
+                    .color(lbl_color),
+            ),
+        );
+    });
+
+    if let Some(star) = clicked_star {
+        if star == cur {
+            rec.values.remove(col_id);
+        } else {
+            rec.values
+                .insert(col_id.to_string(), FieldValue::Number(f64::from(star)));
+        }
+        return true;
+    }
+    false
 }
 
 fn render_column_schema_modal(

@@ -388,6 +388,19 @@ pub fn create_note_with_preset(
     create_note_with_tags(vault_dir, raw_title_or_path, status, tags, &body, existing_paths)
 }
 
+pub fn create_language_lesson_note(
+    vault_dir: &Path,
+    raw_title_or_path: &str,
+    study_language: &str,
+    lang: Lang,
+    existing_paths: &HashSet<String>,
+) -> Result<(String, NoteDocument, i64, u64), String> {
+    let (_, title) = split_folder_and_title(raw_title_or_path);
+    let (tags, body) =
+        krono_core::templates::language_lesson_template(&title, study_language, lang == Lang::Ru);
+    create_note_with_tags(vault_dir, raw_title_or_path, None, tags, &body, existing_paths)
+}
+
 pub fn rename_note(
     vault_dir: &Path,
     old_rel_path: &str,
@@ -753,7 +766,7 @@ pub fn create_collection(
 ) -> Result<(String, VaultFileKind, CollectionDoc, i64, u64), String> {
     let default_preset = match view_kind {
         CollectionViewKind::Board => "kanban",
-        CollectionViewKind::Table => "general",
+        CollectionViewKind::Table | CollectionViewKind::Gallery => "general",
     };
     create_collection_preset(
         vault_dir,
@@ -776,12 +789,14 @@ pub fn create_collection_preset(
     let (folder, title) = split_folder_and_title(raw_title_or_path);
     let kind = match view_kind {
         CollectionViewKind::Board => VaultFileKind::Board,
-        CollectionViewKind::Table => VaultFileKind::Table,
+        CollectionViewKind::Table | CollectionViewKind::Gallery => VaultFileKind::Table,
     };
     let rel_path = unique_vault_path(folder.as_deref(), &title, kind.extension(), existing_paths);
     let doc = match view_kind {
         CollectionViewKind::Board => CollectionDoc::new_board_preset(&title, preset_id, is_ru),
-        CollectionViewKind::Table => CollectionDoc::new_table_preset(&title, preset_id, is_ru),
+        CollectionViewKind::Table | CollectionViewKind::Gallery => {
+            CollectionDoc::new_table_preset(&title, preset_id, is_ru)
+        }
     };
     let (modified, size) = save_collection(vault_dir, &rel_path, &doc)?;
     Ok((rel_path, kind, doc, modified, size))

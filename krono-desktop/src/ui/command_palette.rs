@@ -95,6 +95,11 @@ pub fn render_command_palette(
             action: UiAction::OpenScratchpad,
         },
         PaletteCommand {
+            icon: Icon::LayoutGrid,
+            label: s.action_toggle_sb_modules,
+            action: UiAction::ToggleSidebarModules,
+        },
+        PaletteCommand {
             icon: Icon::CalendarDays,
             label: s.action_daily_note,
             action: UiAction::OpenTodayNote,

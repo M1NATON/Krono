@@ -2,6 +2,7 @@ mod actions;
 mod canvas;
 mod capture;
 mod collections;
+pub(crate) mod english;
 mod frame;
 mod notes;
 mod shortcuts;
@@ -15,6 +16,7 @@ use crate::notifications::TaskNotificationTracker;
 #[cfg(debug_assertions)]
 use crate::shot_runner::ShotRunner;
 use crate::storage::{
+    cover_cache::CoverCache,
     index::{BacklinkHit, CollectionMeta, RawLinkEdge, SearchHit, VaultIndex, VaultTaskRow},
     vault::{
         ensure_starter_vault, list_vault_folders, migrate_diary_hierarchy, AssetAuditEntry,
@@ -22,7 +24,8 @@ use crate::storage::{
     watcher::VaultWatcher,
 };
 use crate::sync::{
-    secrets::{has_github_token, load_github_token, migrate_legacy_token},
+    secrets::{has_github_token, has_tmdb_token, load_github_token, migrate_legacy_token},
+    tmdb::TmdbEvent,
     updater::{AvailableUpdate, UpdateWorker},
     worker::SyncWorker,
 };
@@ -103,6 +106,7 @@ pub struct KronoApp {
     pub(crate) active_canvas: CanvasEditorState,
     pub(crate) create_modal: CreateModalState,
     pub(crate) image_cache: ImageTextureCache,
+    pub(crate) cover_cache: CoverCache,
     pub(crate) lightbox_image: Option<String>,
     pub(crate) embedded_boards: HashMap<String, CollectionDoc>,
     pending_image_pick: Option<(ImagePickTarget, mpsc::Receiver<Option<PathBuf>>)>,
@@ -158,8 +162,11 @@ pub struct KronoApp {
     pub(crate) settings_tab: SettingsTab,
     vault_draft: String,
     pub(crate) has_saved_github_token: bool,
+    pub(crate) has_saved_tmdb_token: bool,
     token_replace_mode: bool,
     token_draft: Zeroizing<String>,
+    tmdb_token_replace_mode: bool,
+    tmdb_token_draft: Zeroizing<String>,
     test_feedback: Option<(bool, String)>,
     pub(crate) rename_target: Option<String>,
     rename_draft: String,
@@ -216,6 +223,10 @@ pub struct KronoApp {
     // Quick capture (Scratchpad + Tray)
     pub(crate) scratchpad: ScratchpadState,
     tray: SystemTrayHandle,
+
+    // TMDB background channel
+    pub(crate) tmdb_tx: mpsc::Sender<TmdbEvent>,
+    pub(crate) tmdb_rx: mpsc::Receiver<TmdbEvent>,
 
     #[cfg(debug_assertions)]
     pub(crate) shot_runner: Option<ShotRunner>,
@@ -321,6 +332,8 @@ impl KronoApp {
         }
 
         let vault_draft = config.vault_dir.to_string_lossy().to_string();
+        let cover_cache = CoverCache::new(config.vault_dir.clone());
+        let (tmdb_tx, tmdb_rx) = mpsc::channel::<TmdbEvent>();
         let mut app = Self {
             config,
             palette_from: palette,
@@ -346,6 +359,7 @@ impl KronoApp {
             active_canvas: CanvasEditorState::default(),
             create_modal: CreateModalState::default(),
             image_cache: ImageTextureCache::default(),
+            cover_cache,
             lightbox_image: None,
             embedded_boards: HashMap::new(),
             pending_image_pick: None,
@@ -392,8 +406,11 @@ impl KronoApp {
             settings_tab: SettingsTab::Appearance,
             vault_draft,
             has_saved_github_token,
+            has_saved_tmdb_token: has_tmdb_token(),
             token_replace_mode: false,
             token_draft: Zeroizing::new(String::new()),
+            tmdb_token_replace_mode: false,
+            tmdb_token_draft: Zeroizing::new(String::new()),
             test_feedback: None,
             rename_target: None,
             rename_draft: String::new(),
@@ -438,6 +455,8 @@ impl KronoApp {
             update_status_msg: None,
             scratchpad: ScratchpadState::default(),
             tray,
+            tmdb_tx,
+            tmdb_rx,
             #[cfg(debug_assertions)]
             shot_runner,
         };

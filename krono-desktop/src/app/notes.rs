@@ -2,7 +2,7 @@ use super::KronoApp;
 use crate::i18n::Lang;
 use crate::storage::vault::{
     create_canvas_preset, create_collection_preset, create_daily_note_with_template,
-    create_note_with_preset,
+    create_language_lesson_note, create_note_with_preset,
     create_note_with_tags, ensure_daily_hubs_for_date, read_note, save_note,
 };
 use crate::ui::{
@@ -267,24 +267,56 @@ impl KronoApp {
         preset_id: &str,
     ) {
         self.flush_unsaved_documents();
-        let raw_path = if folder.trim().is_empty() {
+        let is_ru = self.config.language == Lang::Ru;
+        let study_dir = self.config.localized_study_language().replace(['/', '\\'], " ");
+        let study_lessons_dir = if is_ru {
+            format!("{study_dir}/Уроки")
+        } else {
+            format!("{study_dir}/Lessons")
+        };
+        let auto_folder: Option<String> = if folder.trim().is_empty() && !title.contains('/') {
+            match preset_id {
+                "media_library" => Some(if is_ru { "Кинотека" } else { "Media" }.to_string()),
+                "vocabulary" => Some(study_dir.clone()),
+                "english_lesson" => Some(study_lessons_dir),
+                _ => None,
+            }
+        } else {
+            None
+        };
+        let effective_folder = if folder.trim().is_empty() {
+            auto_folder.as_deref().unwrap_or("")
+        } else {
+            folder.trim()
+        };
+        let raw_path = if effective_folder.is_empty() {
             title.trim().to_string()
         } else {
-            format!("{}/{}", folder.trim().trim_matches('/'), title.trim())
+            format!("{}/{}", effective_folder.trim_matches('/'), title.trim())
         };
         let existing = self.existing_paths_set();
-        let is_ru = self.config.language == Lang::Ru;
         self.watcher.mark_internal_change();
 
         match kind {
             CreateItemKind::Note => {
-                match create_note_with_preset(
-                    &self.config.vault_dir,
-                    &raw_path,
-                    preset_id,
-                    self.config.language,
-                    &existing,
-                ) {
+                let res = if preset_id == "english_lesson" {
+                    create_language_lesson_note(
+                        &self.config.vault_dir,
+                        &raw_path,
+                        self.config.effective_study_language(),
+                        self.config.language,
+                        &existing,
+                    )
+                } else {
+                    create_note_with_preset(
+                        &self.config.vault_dir,
+                        &raw_path,
+                        preset_id,
+                        self.config.language,
+                        &existing,
+                    )
+                };
+                match res {
                     Ok((rel_path, doc, modified, size)) => {
                         let _ = self.index.upsert_note(&rel_path, &doc, modified, size);
                         self.reload_index_caches();

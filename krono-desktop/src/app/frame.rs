@@ -24,7 +24,7 @@ use crate::ui::{
     topbar::{render_recent_tabs_bar, render_topbar},
     vault_map_view::render_vault_map_view,
     CalendarUiState, EditorDocState, EditorPrefs, LayoutClass, PagesTreeUiState, SettingsTab,
-    SyncUiState, TopbarDocContext, UiAction, ViewMode,
+    SidebarModulesState, SyncUiState, TopbarDocContext, UiAction, ViewMode,
 };
 use eframe::egui::{self, Margin};
 use krono_core::path::VaultFileKind;
@@ -32,6 +32,7 @@ use std::time::Instant;
 
 impl KronoApp {
     pub(super) fn render_workspace_frame(&mut self, ctx: &egui::Context) {
+        self.poll_tmdb_events();
         let layout = LayoutClass::from_width(ctx.screen_rect().width());
         if layout != self.last_layout_class {
             self.drawer_sidebar_open = false;
@@ -134,6 +135,12 @@ impl KronoApp {
                 &mut cal_ui,
                 sync_ui,
                 due_tasks_badge,
+                SidebarModulesState {
+                    show_block: self.config.show_sidebar_modules,
+                    show_media_library: self.config.show_module_media_library,
+                    show_english: self.config.show_module_english,
+                    study_language: self.config.study_language.clone(),
+                },
             ));
             if desktop_sidebar_t > 0.99 && (sb_w - self.config.sidebar_width).abs() > 1.0 {
                 self.config.sidebar_width = sb_w;
@@ -451,6 +458,8 @@ impl KronoApp {
                         today,
                         &mut self.active_collection,
                         &self.notes,
+                        &mut self.cover_cache,
+                        self.has_saved_tmdb_token,
                     ));
                 }
                 ViewMode::Canvas => {
@@ -479,6 +488,9 @@ impl KronoApp {
                         self.has_saved_github_token,
                         &mut self.token_replace_mode,
                         &mut self.token_draft,
+                        self.has_saved_tmdb_token,
+                        &mut self.tmdb_token_replace_mode,
+                        &mut self.tmdb_token_draft,
                         &self.test_feedback,
                         last_sync_info.as_deref(),
                         sync_busy,
@@ -532,6 +544,12 @@ impl KronoApp {
                 &mut cal_ui,
                 sync_ui,
                 due_tasks_badge,
+                SidebarModulesState {
+                    show_block: self.config.show_sidebar_modules,
+                    show_media_library: self.config.show_module_media_library,
+                    show_english: self.config.show_module_english,
+                    study_language: self.config.study_language.clone(),
+                },
             );
             actions.extend(d_actions);
             if dismissed {

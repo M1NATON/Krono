@@ -2,6 +2,7 @@ use zeroize::{Zeroize, Zeroizing};
 
 pub const KEYRING_SERVICE: &str = "io.krono.Krono";
 pub const KEYRING_USER: &str = "github_token";
+pub const KEYRING_TMDB_USER: &str = "tmdb_api_key";
 
 pub trait SecretBackend {
     fn get(&self) -> Result<Option<Zeroizing<String>>, String>;
@@ -68,6 +69,67 @@ pub fn delete_github_token() -> Result<(), String> {
 
 pub fn has_github_token() -> bool {
     matches!(load_github_token(), Ok(Some(_)))
+}
+
+pub struct TmdbKeyring;
+
+impl TmdbKeyring {
+    fn entry() -> Result<keyring::Entry, String> {
+        keyring::Entry::new(KEYRING_SERVICE, KEYRING_TMDB_USER)
+            .map_err(|e| format!("keyring init error: {e}"))
+    }
+}
+
+impl SecretBackend for TmdbKeyring {
+    fn get(&self) -> Result<Option<Zeroizing<String>>, String> {
+        let entry = Self::entry()?;
+        match entry.get_password() {
+            Ok(secret) => {
+                if secret.trim().is_empty() {
+                    Ok(None)
+                } else {
+                    Ok(Some(Zeroizing::new(secret)))
+                }
+            }
+            Err(keyring::Error::NoEntry) => Ok(None),
+            Err(e) => Err(format!("keyring read error: {e}")),
+        }
+    }
+
+    fn set(&self, secret: &str) -> Result<(), String> {
+        let trimmed = secret.trim();
+        if trimmed.is_empty() {
+            return Err("token cannot be empty".to_string());
+        }
+        let entry = Self::entry()?;
+        entry
+            .set_password(trimmed)
+            .map_err(|e| format!("keyring write error: {e}"))
+    }
+
+    fn delete(&self) -> Result<(), String> {
+        let entry = Self::entry()?;
+        match entry.delete_credential() {
+            Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
+            Err(e) => Err(format!("keyring delete error: {e}")),
+        }
+    }
+}
+
+pub fn load_tmdb_token() -> Result<Option<Zeroizing<String>>, String> {
+    TmdbKeyring.get()
+}
+
+pub fn save_tmdb_token(token: &str) -> Result<(), String> {
+    TmdbKeyring.set(token)
+}
+
+pub fn delete_tmdb_token() -> Result<(), String> {
+    TmdbKeyring.delete()
+}
+
+pub fn has_tmdb_token() -> bool {
+    matches!(load_tmdb_token(), Ok(Some(_)))
 }
 
 /// Moves a non-empty legacy plaintext token into `backend` and wipes `legacy_token`
@@ -158,5 +220,20 @@ mod tests {
         let migrated = migrate_legacy_token_with(&mut legacy, &backend).unwrap();
         assert!(!migrated);
         assert!(legacy.is_empty());
+    }
+
+    #[test]
+    fn tmdb_token_save_load_delete_via_backend() {
+        let backend = MockBackend {
+            stored: RefCell::new(None),
+            fail_set: false,
+        };
+        backend.set("tmdb_v4_key").unwrap();
+        assert_eq!(
+            backend.get().unwrap().as_deref().map(String::as_str),
+            Some("tmdb_v4_key")
+        );
+        backend.delete().unwrap();
+        assert!(backend.get().unwrap().is_none());
     }
 }

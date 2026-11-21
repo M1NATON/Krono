@@ -99,6 +99,19 @@ pub struct CustomSlashSnippet {
     pub content: String,
 }
 
+pub const STUDY_LANGUAGE_PRESETS: &[(&str, &str, &str)] = &[
+    ("English", "Английский", "English"),
+    ("Spanish", "Испанский", "Spanish"),
+    ("German", "Немецкий", "German"),
+    ("French", "Французский", "French"),
+    ("Japanese", "Японский", "Japanese"),
+    ("Armenian", "Армянский", "Armenian"),
+];
+
+fn default_study_language() -> String {
+    "English".to_string()
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(default)]
 pub struct AppConfig {
@@ -140,6 +153,52 @@ pub struct AppConfig {
     pub sidebar_open: bool,
     pub inspector_open: bool,
     pub sidebar_width: f32,
+    #[serde(default = "default_true")]
+    pub show_sidebar_modules: bool,
+    #[serde(default = "default_true")]
+    pub show_module_media_library: bool,
+    #[serde(default = "default_true")]
+    pub show_module_english: bool,
+    #[serde(default)]
+    pub tmdb_language: String,
+    #[serde(default = "default_study_language")]
+    pub study_language: String,
+}
+
+impl AppConfig {
+    pub fn effective_tmdb_language(&self) -> &'static str {
+        match self.tmdb_language.trim() {
+            "ru-RU" => "ru-RU",
+            "en-US" => "en-US",
+            _ => match self.language {
+                Lang::Ru => "ru-RU",
+                Lang::En => "en-US",
+            },
+        }
+    }
+
+    pub fn effective_study_language(&self) -> &str {
+        let t = self.study_language.trim();
+        if t.is_empty() {
+            "English"
+        } else {
+            t
+        }
+    }
+
+    pub fn localized_study_language(&self) -> String {
+        let cur = self.effective_study_language();
+        if let Some((_, ru, en)) = STUDY_LANGUAGE_PRESETS
+            .iter()
+            .find(|(id, ru, en)| id.eq_ignore_ascii_case(cur) || ru.eq_ignore_ascii_case(cur) || en.eq_ignore_ascii_case(cur))
+        {
+            return match self.language {
+                Lang::Ru => (*ru).to_string(),
+                Lang::En => (*en).to_string(),
+            };
+        }
+        cur.to_string()
+    }
 }
 
 fn default_true() -> bool {
@@ -181,6 +240,11 @@ impl Default for AppConfig {
             sidebar_open: true,
             inspector_open: false,
             sidebar_width: 244.0,
+            show_sidebar_modules: true,
+            show_module_media_library: true,
+            show_module_english: true,
+            tmdb_language: String::new(),
+            study_language: default_study_language(),
         }
     }
 }

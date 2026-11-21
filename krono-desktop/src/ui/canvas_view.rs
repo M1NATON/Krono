@@ -2023,6 +2023,19 @@ pub fn render_canvas_view(
                 {
                     state.marquee_mode = !state.marquee_mode;
                 }
+                if state
+                    .path
+                    .as_deref()
+                    .is_some_and(crate::app::english::is_english_canvas_path)
+                {
+                    if primary_button(ui, p, Some(Icon::Plus), s.eng_new_lesson_btn, false).clicked()
+                    {
+                        actions.push(UiAction::CreateNextEnglishLesson { open_note: false });
+                    }
+                    if secondary_button(ui, p, Some(Icon::Table), s.eng_vocab_btn).clicked() {
+                        actions.push(UiAction::OpenEnglishVocabulary);
+                    }
+                }
                 if icon_button(ui, p, Icon::Magnet, s.canvas_snap_grid, state.snap_to_grid).clicked() {
                     state.snap_to_grid = !state.snap_to_grid;
                 }

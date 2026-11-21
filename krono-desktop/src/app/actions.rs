@@ -257,6 +257,14 @@ impl KronoApp {
                 UiAction::ToggleLang => {
                     self.config.language = self.config.language.toggle();
                     let _ = self.config.save();
+                    if self.active_collection.path.is_some()
+                        && self
+                            .active_collection
+                            .doc
+                            .localize_media_library_in_place(self.config.language == Lang::Ru)
+                    {
+                        self.save_current_collection();
+                    }
                 }
                 UiAction::OpenPalette => {
                     self.palette_open = true;
@@ -353,6 +361,35 @@ impl KronoApp {
                         }
                     }
                 }
+                UiAction::SaveTmdbToken => {
+                    let trimmed = self.tmdb_token_draft.trim().to_string();
+                    if !trimmed.is_empty() {
+                        match crate::sync::secrets::save_tmdb_token(&trimmed) {
+                            Ok(()) => {
+                                self.tmdb_token_draft.zeroize();
+                                self.tmdb_token_draft.clear();
+                                self.has_saved_tmdb_token = true;
+                                self.tmdb_token_replace_mode = false;
+                                let s = strings(self.config.language);
+                                self.push_toast(s.tmdb_token_saved_toast, ToastKind::Success);
+                            }
+                            Err(e) => self.push_toast(e, ToastKind::Error),
+                        }
+                    }
+                }
+                UiAction::DeleteTmdbToken => {
+                    match crate::sync::secrets::delete_tmdb_token() {
+                        Ok(()) => {
+                            self.tmdb_token_draft.zeroize();
+                            self.tmdb_token_draft.clear();
+                            self.has_saved_tmdb_token = false;
+                            self.tmdb_token_replace_mode = false;
+                            let s = strings(self.config.language);
+                            self.push_toast(s.tmdb_token_deleted_toast, ToastKind::Info);
+                        }
+                        Err(e) => self.push_toast(e, ToastKind::Error),
+                    }
+                }
                 UiAction::SetTagFilter(tag) => self.active_tag_filter = tag,
                 UiAction::ToggleFolder(folder) => {
                     if !self.expanded_folders.remove(&folder) {
@@ -403,6 +440,62 @@ impl KronoApp {
                 UiAction::ConvertRecordToNote { record_id } => {
                     self.convert_record_to_note(&record_id);
                 }
+                UiAction::CreateMediaReviewNote(record_id) => {
+                    self.create_media_review_note(&record_id);
+                }
+                UiAction::OpenTmdbSearch => {
+                    self.active_collection.tmdb_ui.search_open = true;
+                    self.active_collection.tmdb_ui.search_error = None;
+                }
+                UiAction::RequestTmdbRecommendations => {
+                    self.start_tmdb_recommendations(ctx);
+                }
+                UiAction::RequestTmdbSimilar { kind, tmdb_id } => {
+                    self.start_tmdb_similar(ctx, kind, tmdb_id);
+                }
+                UiAction::RequestTmdbByGenres { kind, genre_keys } => {
+                    self.start_tmdb_by_genres(ctx, kind, genre_keys);
+                }
+                UiAction::TmdbSearch(query) => {
+                    self.start_tmdb_search(ctx, query);
+                }
+                UiAction::TmdbAddMedia { item, status_opt } => {
+                    self.start_tmdb_add_media(ctx, item, status_opt);
+                }
+                UiAction::OpenSidebarModule(module) => {
+                    self.open_sidebar_module(module);
+                }
+                UiAction::SetSidebarModules(st) => {
+                    let was_shown = self.config.show_sidebar_modules;
+                    self.config.show_sidebar_modules = st.show_block;
+                    self.config.show_module_media_library = st.show_media_library;
+                    self.config.show_module_english = st.show_english;
+                    if !st.study_language.trim().is_empty() {
+                        self.config.study_language = st.study_language.trim().to_string();
+                    }
+                    let _ = self.config.save();
+                    if was_shown && !st.show_block {
+                        let s = strings(self.config.language);
+                        self.push_toast(s.sb_modules_hidden_toast, ToastKind::Info);
+                    }
+                }
+                UiAction::ToggleSidebarModules => {
+                    self.config.show_sidebar_modules = !self.config.show_sidebar_modules;
+                    if self.config.show_sidebar_modules
+                        && !self.config.show_module_media_library
+                        && !self.config.show_module_english
+                    {
+                        self.config.show_module_media_library = true;
+                        self.config.show_module_english = true;
+                    }
+                    let _ = self.config.save();
+                }
+                UiAction::CreateNextEnglishLesson { open_note } => {
+                    self.create_next_english_lesson(open_note);
+                }
+                UiAction::OpenEnglishVocabulary => {
+                    self.open_english_vocabulary();
+                }
                 UiAction::CopyText(text) => {
                     self.copied_code_hash = Some(hash_str(&text));
                     self.copied_code_at = Some(Instant::now());
@@ -429,6 +522,14 @@ impl KronoApp {
                 UiAction::ConfigChanged => {
                     self.set_target_palette(ctx, false);
                     let _ = self.config.save();
+                    if self.active_collection.path.is_some()
+                        && self
+                            .active_collection
+                            .doc
+                            .localize_media_library_in_place(self.config.language == Lang::Ru)
+                    {
+                        self.save_current_collection();
+                    }
                 }
                 UiAction::TogglePin(path) => {
                     self.toggle_pin(&path);

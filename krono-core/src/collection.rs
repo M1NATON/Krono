@@ -32,6 +32,10 @@ pub struct SavedCollectionView {
     pub select_col_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub select_opt_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub min_number_col_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub min_number: Option<i32>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default, Serialize, Deserialize)]
@@ -40,6 +44,7 @@ pub enum CollectionViewKind {
     #[default]
     Board,
     Table,
+    Gallery,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default, Serialize, Deserialize)]
@@ -823,6 +828,197 @@ impl CollectionDoc {
                 }
                 doc
             }
+            "media_library" => {
+                let title_loc = if is_ru && title.eq_ignore_ascii_case("Media Library") {
+                    "Кинотека".to_string()
+                } else {
+                    title.to_string()
+                };
+                let mut doc = Self {
+                    schema_version: 1,
+                    title: title_loc,
+                    pinned: false,
+                    default_view: CollectionViewKind::Gallery,
+                    group_by_column: Some("status".to_string()),
+                    columns: vec![
+                        ColumnDef {
+                            id: "media_type".into(),
+                            name: if is_ru { "Тип" } else { "Type" }.into(),
+                            col_type: ColumnType::Select,
+                            width: 112.0,
+                            options: vec![
+                                SelectOption {
+                                    id: "movie".into(),
+                                    label: if is_ru { "Фильм" } else { "Movie" }.into(),
+                                    color: ColorToken::Blue,
+                                },
+                                SelectOption {
+                                    id: "tv".into(),
+                                    label: if is_ru { "Сериал" } else { "Series" }.into(),
+                                    color: ColorToken::Violet,
+                                },
+                            ],
+                        },
+                        ColumnDef {
+                            id: "status".into(),
+                            name: if is_ru { "Статус" } else { "Status" }.into(),
+                            col_type: ColumnType::Select,
+                            width: 155.0,
+                            options: vec![
+                                SelectOption {
+                                    id: "watchlist".into(),
+                                    label: if is_ru { "Хочу посмотреть" } else { "Watchlist" }.into(),
+                                    color: ColorToken::Slate,
+                                },
+                                SelectOption {
+                                    id: "watching".into(),
+                                    label: if is_ru { "Смотрю" } else { "Watching" }.into(),
+                                    color: ColorToken::Amber,
+                                },
+                                SelectOption {
+                                    id: "watched".into(),
+                                    label: if is_ru { "Посмотрел" } else { "Watched" }.into(),
+                                    color: ColorToken::Green,
+                                },
+                                SelectOption {
+                                    id: "dropped".into(),
+                                    label: if is_ru { "Бросил" } else { "Dropped" }.into(),
+                                    color: ColorToken::Rose,
+                                },
+                            ],
+                        },
+                        ColumnDef {
+                            id: "rating".into(),
+                            name: if is_ru { "Оценка" } else { "Rating" }.into(),
+                            col_type: ColumnType::Number,
+                            options: Vec::new(),
+                            width: 90.0,
+                        },
+                        ColumnDef {
+                            id: "year".into(),
+                            name: if is_ru { "Год" } else { "Year" }.into(),
+                            col_type: ColumnType::Number,
+                            options: Vec::new(),
+                            width: 84.0,
+                        },
+                        ColumnDef {
+                            id: "genres".into(),
+                            name: if is_ru { "Жанры" } else { "Genres" }.into(),
+                            col_type: ColumnType::Text,
+                            options: Vec::new(),
+                            width: 170.0,
+                        },
+                        ColumnDef {
+                            id: "director".into(),
+                            name: if is_ru {
+                                "Режиссёр / Создатель"
+                            } else {
+                                "Director / Creator"
+                            }
+                            .into(),
+                            col_type: ColumnType::Text,
+                            options: Vec::new(),
+                            width: 180.0,
+                        },
+                        ColumnDef {
+                            id: "progress".into(),
+                            name: if is_ru { "Прогресс" } else { "Progress" }.into(),
+                            col_type: ColumnType::Text,
+                            options: Vec::new(),
+                            width: 110.0,
+                        },
+                        ColumnDef {
+                            id: "review".into(),
+                            name: if is_ru { "Мини-отзыв" } else { "Mini-review" }.into(),
+                            col_type: ColumnType::Text,
+                            options: Vec::new(),
+                            width: 240.0,
+                        },
+                        ColumnDef {
+                            id: "note_link".into(),
+                            name: if is_ru { "Заметка" } else { "Review Note" }.into(),
+                            col_type: ColumnType::NoteLink,
+                            options: Vec::new(),
+                            width: 170.0,
+                        },
+                        ColumnDef {
+                            id: "tmdb_id".into(),
+                            name: "TMDB ID".into(),
+                            col_type: ColumnType::Text,
+                            options: Vec::new(),
+                            width: 100.0,
+                        },
+                        ColumnDef {
+                            id: "poster_path".into(),
+                            name: if is_ru { "Постер" } else { "Poster" }.into(),
+                            col_type: ColumnType::Text,
+                            options: Vec::new(),
+                            width: 180.0,
+                        },
+                    ],
+                    records: Vec::new(),
+                    saved_views: vec![
+                        SavedCollectionView {
+                            id: "view_watchlist".into(),
+                            name: if is_ru { "Хочу посмотреть" } else { "Watchlist" }.into(),
+                            view_kind: CollectionViewKind::Gallery,
+                            select_col_id: Some("status".into()),
+                            select_opt_id: Some("watchlist".into()),
+                            ..Default::default()
+                        },
+                        SavedCollectionView {
+                            id: "view_watching".into(),
+                            name: if is_ru { "Смотрю" } else { "Watching" }.into(),
+                            view_kind: CollectionViewKind::Gallery,
+                            select_col_id: Some("status".into()),
+                            select_opt_id: Some("watching".into()),
+                            ..Default::default()
+                        },
+                        SavedCollectionView {
+                            id: "view_favorites".into(),
+                            name: if is_ru { "Избранное (8+)" } else { "Favorites (8+)" }.into(),
+                            view_kind: CollectionViewKind::Gallery,
+                            min_number_col_id: Some("rating".into()),
+                            min_number: Some(8),
+                            ..Default::default()
+                        },
+                    ],
+                };
+                let sample_title = if is_ru { "Интерстеллар" } else { "Interstellar" };
+                let r1 = doc.add_record(sample_title, Some(("status", "watched")), 1);
+                if let Some(rec) = doc.records.iter_mut().find(|r| r.id == r1) {
+                    rec.values.insert("media_type".into(), FieldValue::Text("movie".into()));
+                    rec.values.insert("rating".into(), FieldValue::Number(9.0));
+                    rec.values.insert("year".into(), FieldValue::Number(2014.0));
+                    rec.values.insert(
+                        "genres".into(),
+                        FieldValue::Text(
+                            if is_ru { "Фантастика, Драма" } else { "Sci-Fi, Drama" }.into(),
+                        ),
+                    );
+                    rec.values.insert(
+                        "director".into(),
+                        FieldValue::Text(
+                            if is_ru {
+                                "Кристофер Нолан"
+                            } else {
+                                "Christopher Nolan"
+                            }
+                            .into(),
+                        ),
+                    );
+                    rec.values.insert(
+                        "review".into(),
+                        FieldValue::Text(if is_ru {
+                            "Эталонная научная фантастика и музыка Ханса Циммера."
+                        } else {
+                            "Benchmark sci-fi with an unforgettable Hans Zimmer score."
+                        }
+                        .into()),
+                    );
+                }
+                doc
+            }
             _ => Self::new_table(title, is_ru),
         }
     }
@@ -1499,6 +1695,216 @@ pub fn record_matches_smart_filter(
     true
 }
 
+/// Normalizes a genre string (case/synonym-insensitive) so `Drama` and `драма` collapse to one chip.
+pub fn normalize_genre_label(raw: &str, is_ru: bool) -> String {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return String::new();
+    }
+    let lower = trimmed.to_lowercase();
+    if is_ru {
+        match lower.as_str() {
+            "drama" | "драма" => return "Драма".to_string(),
+            "sci-fi" | "science fiction" | "фантастика" | "научная фантастика" => {
+                return "Фантастика".to_string()
+            }
+            "thriller" | "триллер" => return "Триллер".to_string(),
+            "comedy" | "комедия" => return "Комедия".to_string(),
+            "action" | "боевик" => return "Боевик".to_string(),
+            "crime" | "криминал" => return "Криминал".to_string(),
+            "animation" | "anime" | "мультфильм" | "анимация" | "аниме" => {
+                return "Анимация".to_string()
+            }
+            "fantasy" | "фэнтези" => return "Фэнтези".to_string(),
+            "mystery" | "детектив" => return "Детектив".to_string(),
+            "documentary" | "документальный" | "документальное" => {
+                return "Документальное".to_string()
+            }
+            "horror" | "ужасы" => return "Ужасы".to_string(),
+            "romance" | "мелодрама" => return "Мелодрама".to_string(),
+            "adventure" | "приключения" => return "Приключения".to_string(),
+            "family" | "семейный" => return "Семейный".to_string(),
+            "biography" | "биография" => return "Биография".to_string(),
+            "history" | "история" | "исторический" => return "История".to_string(),
+            _ => {}
+        }
+    } else {
+        match lower.as_str() {
+            "drama" | "драма" => return "Drama".to_string(),
+            "sci-fi" | "science fiction" | "фантастика" | "научная фантастика" => {
+                return "Sci-Fi".to_string()
+            }
+            "thriller" | "триллер" => return "Thriller".to_string(),
+            "comedy" | "комедия" => return "Comedy".to_string(),
+            "action" | "боевик" => return "Action".to_string(),
+            "crime" | "криминал" => return "Crime".to_string(),
+            "animation" | "мультфильм" | "анимация" => return "Animation".to_string(),
+            "fantasy" | "фэнтези" => return "Fantasy".to_string(),
+            "mystery" | "детектив" => return "Mystery".to_string(),
+            "documentary" | "документальный" | "документальное" => {
+                return "Documentary".to_string()
+            }
+            "horror" | "ужасы" => return "Horror".to_string(),
+            "romance" | "мелодрама" => return "Romance".to_string(),
+            "adventure" | "приключения" => return "Adventure".to_string(),
+            "family" | "семейный" => return "Family".to_string(),
+            "biography" | "биография" => return "Biography".to_string(),
+            "history" | "история" | "исторический" => return "History".to_string(),
+            _ => {}
+        }
+    }
+    let mut chars = lower.chars();
+    match chars.next() {
+        Some(first) => {
+            let mut out: String = first.to_uppercase().collect();
+            out.push_str(chars.as_str());
+            out
+        }
+        None => String::new(),
+    }
+}
+
+impl CollectionDoc {
+    /// Localizes legacy English labels/saved views and normalizes genres in a Media Library doc in-place.
+    pub fn localize_media_library_in_place(&mut self, is_ru: bool) -> bool {
+        let is_media = self
+            .columns
+            .iter()
+            .any(|c| c.id == "tmdb_id" || c.id == "poster_path");
+        if !is_media {
+            return false;
+        }
+        let mut changed = false;
+        let expected_title = if is_ru { "Кинотека" } else { "Media Library" };
+        let alt_title = if is_ru { "Media Library" } else { "Кинотека" };
+        if self.title == alt_title {
+            self.title = expected_title.to_string();
+            changed = true;
+        }
+        for col in &mut self.columns {
+            let target_name = if is_ru {
+                match col.id.as_str() {
+                    "media_type" => Some("Тип"),
+                    "status" => Some("Статус"),
+                    "rating" => Some("Оценка"),
+                    "year" => Some("Год"),
+                    "genres" => Some("Жанры"),
+                    "director" => Some("Режиссёр / Создатель"),
+                    "progress" => Some("Прогресс"),
+                    "review" => Some("Мини-отзыв"),
+                    "note_link" => Some("Заметка"),
+                    "poster_path" => Some("Постер"),
+                    _ => None,
+                }
+            } else {
+                match col.id.as_str() {
+                    "media_type" => Some("Type"),
+                    "status" => Some("Status"),
+                    "rating" => Some("Rating"),
+                    "year" => Some("Year"),
+                    "genres" => Some("Genres"),
+                    "director" => Some("Director / Creator"),
+                    "progress" => Some("Progress"),
+                    "review" => Some("Mini-review"),
+                    "note_link" => Some("Review Note"),
+                    "poster_path" => Some("Poster"),
+                    _ => None,
+                }
+            };
+            if let Some(name) = target_name {
+                if col.name != name {
+                    col.name = name.to_string();
+                    changed = true;
+                }
+            }
+            if col.id == "media_type" || col.id == "status" {
+                for opt in &mut col.options {
+                    let target_opt = if is_ru {
+                        match opt.id.as_str() {
+                            "movie" => Some("Фильм"),
+                            "tv" => Some("Сериал"),
+                            "watchlist" => Some("Хочу посмотреть"),
+                            "watching" => Some("Смотрю"),
+                            "watched" => Some("Посмотрел"),
+                            "dropped" => Some("Бросил"),
+                            _ => None,
+                        }
+                    } else {
+                        match opt.id.as_str() {
+                            "movie" => Some("Movie"),
+                            "tv" => Some("Series"),
+                            "watchlist" => Some("Watchlist"),
+                            "watching" => Some("Watching"),
+                            "watched" => Some("Watched"),
+                            "dropped" => Some("Dropped"),
+                            _ => None,
+                        }
+                    };
+                    if let Some(lbl) = target_opt {
+                        if opt.label != lbl {
+                            opt.label = lbl.to_string();
+                            changed = true;
+                        }
+                    }
+                }
+            }
+        }
+        for sv in &mut self.saved_views {
+            let target_sv = if is_ru {
+                match sv.id.as_str() {
+                    "view_watchlist" => Some("Хочу посмотреть"),
+                    "view_watching" => Some("Смотрю"),
+                    "view_favorites" => Some("Избранное (8+)"),
+                    _ => None,
+                }
+            } else {
+                match sv.id.as_str() {
+                    "view_watchlist" => Some("Watchlist"),
+                    "view_watching" => Some("Watching"),
+                    "view_favorites" => Some("Favorites (8+)"),
+                    _ => None,
+                }
+            };
+            if let Some(name) = target_sv {
+                if sv.name != name {
+                    sv.name = name.to_string();
+                    changed = true;
+                }
+            }
+        }
+        for rec in &mut self.records {
+            if let Some(FieldValue::Text(raw_genres)) = rec.values.get("genres").cloned() {
+                let mut norm_list: Vec<String> = Vec::new();
+                for part in raw_genres.split([',', ';', '/']) {
+                    let norm = normalize_genre_label(part, is_ru);
+                    if !norm.is_empty()
+                        && !norm_list.iter().any(|x| x.to_lowercase() == norm.to_lowercase())
+                    {
+                        norm_list.push(norm);
+                    }
+                }
+                let joined = norm_list.join(", ");
+                if joined != raw_genres && !joined.is_empty() {
+                    rec.values.insert("genres".into(), FieldValue::Text(joined));
+                    changed = true;
+                }
+            }
+        }
+        changed
+    }
+}
+
+/// Checks an optional numeric lower-bound filter (`col_id >= min_val`), used by Saved Views such as "Favorites (8+)".
+pub fn record_matches_min_number(rec: &RecordItem, min_filter: Option<(&str, i32)>) -> bool {
+    let Some((col_id, min_val)) = min_filter else {
+        return true;
+    };
+    rec.values
+        .get(col_id)
+        .and_then(FieldValue::as_number)
+        .is_some_and(|n| n >= min_val as f64)
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SortDirection {
     Asc,
@@ -1746,11 +2152,9 @@ mod tests {
             id: "v1".into(),
             name: "Срочные UI".into(),
             view_kind: CollectionViewKind::Board,
-            query: String::new(),
             date_preset: DateFilterPreset::Next7Days,
             tag: Some("ui".into()),
-            select_col_id: None,
-            select_opt_id: None,
+            ..Default::default()
         });
 
         let json = board.serialize_pretty().unwrap();
@@ -1842,5 +2246,92 @@ mod tests {
             .map(|r| r.title.as_str())
             .collect();
         assert_eq!(due_titles, vec!["resilient", "ephemeral"]);
+    }
+
+    #[test]
+    fn gallery_view_and_min_number_filter_roundtrip() {
+        let legacy_json = r#"{"id":"v1","name":"Old","view_kind":"board"}"#;
+        let legacy: SavedCollectionView = serde_json::from_str(legacy_json).unwrap();
+        assert_eq!(legacy.view_kind, CollectionViewKind::Board);
+        assert_eq!(legacy.min_number_col_id, None);
+        assert_eq!(legacy.min_number, None);
+
+        let fav = SavedCollectionView {
+            id: "fav".into(),
+            name: "8+".into(),
+            view_kind: CollectionViewKind::Gallery,
+            min_number_col_id: Some("rating".into()),
+            min_number: Some(8),
+            ..Default::default()
+        };
+        let encoded = serde_json::to_string(&fav).unwrap();
+        assert!(encoded.contains("\"gallery\""));
+        let decoded: SavedCollectionView = serde_json::from_str(&encoded).unwrap();
+        assert_eq!(decoded, fav);
+
+        let mut r_ok = RecordItem { id: "1".into(), title: "A".into(), ..Default::default() };
+        r_ok.values.insert("rating".into(), FieldValue::Number(8.0));
+        let mut r_low = RecordItem { id: "2".into(), title: "B".into(), ..Default::default() };
+        r_low.values.insert("rating".into(), FieldValue::Number(7.9));
+        let r_empty = RecordItem { id: "3".into(), title: "C".into(), ..Default::default() };
+
+        assert!(record_matches_min_number(&r_ok, Some(("rating", 8))));
+        assert!(!record_matches_min_number(&r_low, Some(("rating", 8))));
+        assert!(!record_matches_min_number(&r_empty, Some(("rating", 8))));
+        assert!(record_matches_min_number(&r_empty, None));
+    }
+
+    #[test]
+    fn media_library_preset_schema_and_views() {
+        let mut doc = CollectionDoc::new_table_preset("Кинотека", "media_library", true);
+        assert_eq!(doc.default_view, CollectionViewKind::Gallery);
+        assert_eq!(doc.columns.len(), 11);
+        assert_eq!(doc.saved_views.len(), 3);
+        let fav = &doc.saved_views[2];
+        assert_eq!(fav.min_number_col_id.as_deref(), Some("rating"));
+        assert_eq!(fav.min_number, Some(8));
+
+        let r_low = doc.add_record("Film Low", Some(("status", "watched")), 2);
+        if let Some(rec) = doc.records.iter_mut().find(|r| r.id == r_low) {
+            rec.values.insert("rating".into(), FieldValue::Number(7.0));
+        }
+        let matches: Vec<&str> = doc
+            .records
+            .iter()
+            .filter(|r| record_matches_min_number(r, Some(("rating", 8))))
+            .map(|r| r.title.as_str())
+            .collect();
+        assert_eq!(matches, vec!["Интерстеллар"]);
+    }
+
+    #[test]
+    fn normalizes_genres_and_localizes_media_library() {
+        assert_eq!(normalize_genre_label("Drama", true), "Драма");
+        assert_eq!(normalize_genre_label(" драма ", true), "Драма");
+        assert_eq!(normalize_genre_label("Sci-Fi", true), "Фантастика");
+        assert_eq!(normalize_genre_label("Драма", false), "Drama");
+
+        let mut doc = CollectionDoc::new_table_preset("Media Library", "media_library", false);
+        if let Some(rec) = doc.records.first_mut() {
+            rec.values
+                .insert("genres".into(), FieldValue::Text("Drama, драма, Sci-Fi".into()));
+        }
+        assert!(doc.localize_media_library_in_place(true));
+        assert_eq!(doc.title, "Кинотека");
+        assert_eq!(doc.saved_views[0].name, "Хочу посмотреть");
+        assert_eq!(doc.saved_views[2].name, "Избранное (8+)");
+        assert_eq!(
+            doc.records[0].values.get("genres").map(FieldValue::as_text).as_deref(),
+            Some("Драма, Фантастика")
+        );
+
+        assert!(doc.localize_media_library_in_place(false));
+        assert_eq!(doc.title, "Media Library");
+        assert_eq!(doc.saved_views[0].name, "Watchlist");
+        assert_eq!(doc.saved_views[2].name, "Favorites (8+)");
+        assert_eq!(
+            doc.records[0].values.get("genres").map(FieldValue::as_text).as_deref(),
+            Some("Drama, Sci-Fi")
+        );
     }
 }

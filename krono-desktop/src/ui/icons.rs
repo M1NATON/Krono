@@ -77,6 +77,7 @@ pub enum Icon {
     Sort,
     Map,
     Image,
+    Star,
     SwapArrows,
     LayoutGrid,
     SelectBox,
@@ -156,6 +157,7 @@ fn lucide_char(icon: Icon) -> Option<char> {
         | Icon::Sort
         | Icon::Map
         | Icon::Image
+        | Icon::Star
         | Icon::SwapArrows
         | Icon::LayoutGrid
         | Icon::SelectBox => None,
@@ -257,6 +259,10 @@ pub fn draw_icon(painter: &Painter, rect: Rect, icon: Icon, color: Color32) {
             painter.add(egui::Shape::line(pts, Stroke::new(sw * 0.85, color)));
             return;
         }
+        Icon::Star => {
+            paint_star(painter, c, side * 0.44, color, None);
+            return;
+        }
         Icon::SwapArrows => {
             let dx = side * 0.30;
             let dy = side * 0.18;
@@ -333,6 +339,50 @@ pub fn draw_icon(painter: &Painter, rect: Rect, icon: Icon, color: Color32) {
         [pos2(x_left + sw * 0.4, y_mid), pos2(x_right, y_bot)],
         Stroke::new(sw * 1.05, color),
     );
+}
+
+/// Draws a crisp 5-pointed star using 10 triangles around `center` (concave polygon safe).
+pub fn paint_star(
+    painter: &Painter,
+    center: Pos2,
+    radius: f32,
+    fill: Color32,
+    stroke: Option<Stroke>,
+) {
+    use std::f32::consts::{FRAC_PI_2, TAU};
+    let inner_r = radius * 0.42;
+    let mut outer = [Pos2::ZERO; 5];
+    let mut inner = [Pos2::ZERO; 5];
+    let mut ring = Vec::with_capacity(10);
+
+    for i in 0..5 {
+        let a_out = -FRAC_PI_2 + (i as f32) * (TAU / 5.0);
+        let a_in = a_out + TAU / 10.0;
+        let po = pos2(center.x + radius * a_out.cos(), center.y + radius * a_out.sin());
+        let pi = pos2(center.x + inner_r * a_in.cos(), center.y + inner_r * a_in.sin());
+        outer[i] = po;
+        inner[i] = pi;
+        ring.push(po);
+        ring.push(pi);
+    }
+
+    if fill != Color32::TRANSPARENT {
+        for i in 0..5 {
+            painter.add(egui::Shape::convex_polygon(
+                vec![center, outer[i], inner[i]],
+                fill,
+                Stroke::NONE,
+            ));
+            painter.add(egui::Shape::convex_polygon(
+                vec![center, inner[i], outer[(i + 1) % 5]],
+                fill,
+                Stroke::NONE,
+            ));
+        }
+    }
+    if let Some(st) = stroke {
+        painter.add(egui::Shape::closed_line(ring, st));
+    }
 }
 
 pub fn draw_sync_icon(painter: &Painter, rect: Rect, color: Color32, angle_rad: f32) {

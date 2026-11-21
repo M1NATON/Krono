@@ -10,7 +10,7 @@ use crate::ui::motion::{anim_bool_eased, anim_value_smooth, lerp_color, with_alp
 use crate::ui::theme::{font_body, font_medium, font_mono, font_semibold, ThemePalette};
 use crate::ui::{
     CalendarUiState, CreateItemKind, PagesKindFilter, PagesSortOrder, PagesTreeUiState,
-    SettingsTab, SyncUiState, UiAction, ViewMode,
+    SettingsTab, SidebarModule, SidebarModulesState, SyncUiState, UiAction, ViewMode,
 };
 use eframe::egui::{
     self, pos2, vec2, Color32, CursorIcon, Margin, Rect, Rounding, Sense, Stroke, Ui,
@@ -148,6 +148,7 @@ pub fn render_sidebar(
     cal: &mut CalendarUiState<'_>,
     sync: SyncUiState<'_>,
     due_tasks_badge: usize,
+    modules: SidebarModulesState,
 ) -> Vec<UiAction> {
     let mut actions = Vec::new();
     let target_w = (*sidebar_width).clamp(210.0, 340.0);
@@ -192,6 +193,7 @@ pub fn render_sidebar(
             cal,
             sync,
             due_tasks_badge,
+            modules,
             &mut actions,
         );
     });
@@ -223,6 +225,7 @@ pub fn render_sidebar_drawer(
     cal: &mut CalendarUiState<'_>,
     sync: SyncUiState<'_>,
     due_tasks_badge: usize,
+    modules: SidebarModulesState,
 ) -> (Vec<UiAction>, bool) {
     let mut actions = Vec::new();
     let mut dismiss = false;
@@ -282,6 +285,7 @@ pub fn render_sidebar_drawer(
                             cal,
                             sync,
                             due_tasks_badge,
+                            modules,
                             &mut actions,
                         );
                     }
@@ -311,6 +315,7 @@ pub fn render_sidebar_drawer(
                 | UiAction::StartCreateSubfolder(_)
                 | UiAction::ReturnToNotesTab
                 | UiAction::SetViewMode(_)
+                | UiAction::OpenSidebarModule(_)
                 | UiAction::OpenPalette
                 | UiAction::OpenSettings(_)
                 | UiAction::CloseSettings
@@ -342,6 +347,7 @@ fn render_sidebar_contents(
     cal: &mut CalendarUiState<'_>,
     sync: SyncUiState<'_>,
     due_tasks_badge: usize,
+    modules: SidebarModulesState,
     actions: &mut Vec<UiAction>,
 ) {
     let s = strings(lang);
@@ -512,6 +518,109 @@ fn render_sidebar_contents(
     ui.add_space(10.0);
     hairline_h(ui, p);
     ui.add_space(10.0);
+
+    // 3b. Configurable Quick Modules (Media Library / English)
+    if modules.show_block {
+        ui.horizontal(|ui| {
+            ui.label(
+                egui::RichText::new(s.sb_modules_title)
+                    .font(font_medium(11.0))
+                    .color(p.text_muted),
+            );
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                let cfg_pop = ui.make_persistent_id("sb_modules_cfg_pop");
+                let cfg_btn = icon_button(ui, p, Icon::Settings, s.sb_modules_title, false);
+                if cfg_btn.clicked() {
+                    ui.memory_mut(|m| m.toggle_popup(cfg_pop));
+                }
+                egui::popup_below_widget(
+                    ui,
+                    cfg_pop,
+                    &cfg_btn,
+                    egui::PopupCloseBehavior::CloseOnClickOutside,
+                    |ui| {
+                        ui.set_min_width(205.0);
+                        let mut next = modules.clone();
+                        let mut changed = false;
+                        if ui.checkbox(&mut next.show_media_library, s.sb_module_media).changed() {
+                            changed = true;
+                        }
+                        if ui.checkbox(&mut next.show_english, s.sb_module_english).changed() {
+                            changed = true;
+                        }
+                        if next.show_english {
+                            ui.add_space(4.0);
+                            ui.label(
+                                egui::RichText::new(s.settings_study_lang_label)
+                                    .font(font_body(11.0))
+                                    .color(p.text_muted),
+                            );
+                            ui.horizontal_wrapped(|ui| {
+                                ui.spacing_mut().item_spacing = vec2(4.0, 4.0);
+                                for (id, ru, en) in crate::config::STUDY_LANGUAGE_PRESETS {
+                                    let lbl = if lang == Lang::Ru { *ru } else { *en };
+                                    let active = next.study_language.eq_ignore_ascii_case(id)
+                                        || next.study_language.eq_ignore_ascii_case(ru);
+                                    if ui.selectable_label(active, lbl).clicked() {
+                                        next.study_language = (*id).to_string();
+                                        changed = true;
+                                    }
+                                }
+                            });
+                            let r = ui.add(
+                                egui::TextEdit::singleline(&mut next.study_language)
+                                    .hint_text(s.settings_study_lang_hint)
+                                    .desired_width(185.0),
+                            );
+                            if r.changed() {
+                                changed = true;
+                            }
+                        }
+                        ui.separator();
+                        if ui.button(s.sb_modules_hide).clicked() {
+                            next.show_block = false;
+                            changed = true;
+                            ui.memory_mut(|m| m.close_popup());
+                        }
+                        if changed {
+                            actions.push(UiAction::SetSidebarModules(next));
+                        }
+                    },
+                );
+            });
+        });
+        ui.add_space(4.0);
+        if modules.show_media_library {
+            if sidebar_row(ui, p, "sb_mod_media", Icon::Image, s.sb_module_media, None, false, 0.0)
+                .clicked()
+            {
+                actions.push(UiAction::OpenSidebarModule(SidebarModule::MediaLibrary));
+            }
+        }
+        if modules.show_english {
+            let disp_lang = crate::config::STUDY_LANGUAGE_PRESETS
+                .iter()
+                .find(|(id, ru, en)| {
+                    modules.study_language.eq_ignore_ascii_case(id)
+                        || modules.study_language.eq_ignore_ascii_case(ru)
+                        || modules.study_language.eq_ignore_ascii_case(en)
+                })
+                .map(|(_, ru, en)| if lang == Lang::Ru { *ru } else { *en })
+                .unwrap_or_else(|| {
+                    let t = modules.study_language.trim();
+                    if t.is_empty() { "English" } else { t }
+                });
+            let lang_label = format!("{}: {}", s.sb_module_english, disp_lang);
+            if sidebar_row(ui, p, "sb_mod_english", Icon::Globe, &lang_label, None, false, 0.0)
+                .clicked()
+            {
+                actions.push(UiAction::OpenSidebarModule(SidebarModule::English));
+            }
+        }
+        ui.add_space(10.0);
+        hairline_h(ui, p);
+        ui.add_space(10.0);
+    }
 
     // 4. Diary Calendar + Pages Tree + Tag Cloud
     let scroll_h = (ui.available_height() - 48.0).max(80.0);

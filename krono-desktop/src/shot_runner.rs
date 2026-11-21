@@ -728,21 +728,16 @@ impl KronoApp {
                 id: "sv_today".into(),
                 name: "На сегодня".into(),
                 view_kind: CollectionViewKind::Board,
-                query: String::new(),
                 date_preset: DateFilterPreset::Today,
-                tag: None,
-                select_col_id: None,
-                select_opt_id: None,
+                ..Default::default()
             },
             SavedCollectionView {
                 id: "sv_ui".into(),
                 name: "Тег #ui".into(),
                 view_kind: CollectionViewKind::Board,
-                query: String::new(),
                 date_preset: DateFilterPreset::All,
                 tag: Some("ui".into()),
-                select_col_id: None,
-                select_opt_id: None,
+                ..Default::default()
             },
         ];
 

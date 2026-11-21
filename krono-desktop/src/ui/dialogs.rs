@@ -97,9 +97,9 @@ fn presets_for_kind(kind: CreateItemKind) -> &'static [CreatePreset] {
             CreatePreset {
                 id: "english_lesson",
                 icon: Icon::Globe,
-                title_ru: "Урок английского",
+                title_ru: "Урок языка",
                 desc_ru: "Словарь, грамматика и практика",
-                title_en: "English Lesson",
+                title_en: "Language Lesson",
                 desc_en: "Vocabulary, grammar & practice",
             },
         ],
@@ -173,10 +173,18 @@ fn presets_for_kind(kind: CreateItemKind) -> &'static [CreatePreset] {
             CreatePreset {
                 id: "vocabulary",
                 icon: Icon::Globe,
-                title_ru: "Словарь (English)",
+                title_ru: "Словарь",
                 desc_ru: "Слова, уровень и повторение",
                 title_en: "Vocabulary (SRS)",
                 desc_en: "Words, level & spaced review",
+            },
+            CreatePreset {
+                id: "media_library",
+                icon: Icon::Image,
+                title_ru: "Кинотека",
+                desc_ru: "Фильмы и сериалы, постеры, TMDB",
+                title_en: "Media Library",
+                desc_en: "Movies & TV, posters & TMDB",
             },
         ],
         CreateItemKind::Canvas => &[

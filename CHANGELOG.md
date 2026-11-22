@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.3.1 (2026-11-22)
+
+### Highlights
+- **Media Library 2.0**: компактная 2-строчная шапка, Spotlight-модалка добавления (TMDB для кино/сериалов + OpenLibrary для книг + ручной ввод), защита от дублей, 2-колоночный просмотр карточки с постером и адаптивными полями, случайный подбор «Подобрать».
+- **Standalone Floating Scratchpad**: независимый always-on-top viewport поверх всех окон без разворачивания главного окна Krono, перетаскивание за шапку, глобальный хоткей (`Ctrl+Shift+Space` с fallback).
+- **Settings 2.0 & Customizable Keybindings**: 3 логические группы настроек, живой поиск по настройкам (RU/EN), настраиваемые горячие клавиши с детектором и подсветкой конфликтов.
+- **UX & Navigation**: сохранение фильтров в `.krono/ui_state.json`, архив выполненных задач с датой (`✅ YYYY-MM-DD`), кириллический поиск/автодополнение тегов, полная клавиатурная навигация (`Ctrl+Tab`, `Ctrl+1..9`, `Alt+1..3`, стрелки в сайдбаре/доске/галерее).
+- **Editor, Performance & Release Automation**: фикс выделения больших участков текста и автоскролла в редакторе, оптимизация SQLite FTS5 и графа (spatial hash grid), автоматическое определение версии приложения из Git-тега (`KRONO_APP_VERSION`).
+
 ## 0.2.0-beta.1 (2026-11-20)
 
 First public cross-platform beta of Krono (`Windows`, `Linux`, `macOS Apple Silicon`, `macOS Intel`).

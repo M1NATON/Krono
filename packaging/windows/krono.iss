@@ -1,5 +1,5 @@
 #ifndef MyAppVersion
-  #define MyAppVersion "0.2.0-beta.1"
+  #define MyAppVersion "0.3.1"
 #endif
 #ifndef BinaryPath
   #define BinaryPath "..\..\target\x86_64-pc-windows-msvc\release\krono-desktop.exe"
@@ -8,7 +8,7 @@
   #define OutputDirPath "..\..\dist"
 #endif
 #ifndef OutputFileBase
-  #define OutputFileBase "krono-v0.2.0-beta.1-windows-x86_64-setup"
+  #define OutputFileBase "krono-v0.3.1-windows-x86_64-setup"
 #endif
 
 [Setup]

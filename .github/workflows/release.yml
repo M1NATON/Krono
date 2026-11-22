@@ -7,9 +7,9 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: "Version label for manual dry-run artifact build (e.g. v0.2.0-beta.1)"
+        description: "Version label for manual dry-run artifact build (e.g. v0.3.1)"
         required: true
-        default: "v0.2.0-beta.1"
+        default: "v0.3.1"
 
 permissions:
   contents: write
@@ -59,7 +59,10 @@ jobs:
           else
             TAG="${GITHUB_REF_NAME}"
           fi
+          CLEAN_VER="${TAG#v}"
           echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
+          echo "version=${CLEAN_VER}" >> "$GITHUB_OUTPUT"
+          echo "KRONO_VERSION=${CLEAN_VER}" >> "$GITHUB_ENV"
 
       - name: Install Linux graphics & windowing dev libraries
         if: matrix.platform == 'linux'
@@ -95,6 +98,8 @@ jobs:
         run: echo "MACOSX_DEPLOYMENT_TARGET=${{ matrix.macos_target }}" >> "$GITHUB_ENV"
 
       - name: Build release binary
+        env:
+          KRONO_VERSION: ${{ steps.meta.outputs.version }}
         run: cargo build --release --locked --target "${{ matrix.target }}" -p krono-desktop
 
       - name: Package Windows Installer (.exe) & Portable ZIP

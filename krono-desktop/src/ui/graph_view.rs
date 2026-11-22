@@ -256,7 +256,15 @@ impl GraphState {
     }
 
     pub fn step_warm_up(&mut self, ticks: usize) {
-        for _ in 0..ticks {
+        let n = self.nodes.len();
+        let effective = if n > 1000 {
+            ticks.min(24)
+        } else if n > 400 {
+            ticks.min(60)
+        } else {
+            ticks
+        };
+        for _ in 0..effective {
             self.step_physics(0.016);
         }
     }
@@ -277,19 +285,61 @@ impl GraphState {
 
         let mut forces = vec![Vec2::ZERO; n];
 
-        for i in 0..n {
-            for j in (i + 1)..n {
-                let mut diff = self.nodes[i].pos - self.nodes[j].pos;
-                let mut d2 = diff.length_sq();
-                if d2 < 1.0 {
-                    diff = vec2(((i % 7) as f32 - 3.0) * 0.4 + 0.5, ((j % 5) as f32 - 2.0) * 0.4 + 0.3);
-                    d2 = diff.length_sq().max(1.0);
+        if n <= 250 {
+            for i in 0..n {
+                for j in (i + 1)..n {
+                    let mut diff = self.nodes[i].pos - self.nodes[j].pos;
+                    let mut d2 = diff.length_sq();
+                    if d2 < 1.0 {
+                        diff = vec2(((i % 7) as f32 - 3.0) * 0.4 + 0.5, ((j % 5) as f32 - 2.0) * 0.4 + 0.3);
+                        d2 = diff.length_sq().max(1.0);
+                    }
+                    let d = d2.sqrt().max(24.0);
+                    let mag = k_rep / (d * d);
+                    let f = (diff / d) * mag;
+                    forces[i] += f;
+                    forces[j] -= f;
                 }
-                let d = d2.sqrt().max(24.0);
-                let mag = k_rep / (d * d);
-                let f = (diff / d) * mag;
-                forces[i] += f;
-                forces[j] -= f;
+            }
+        } else {
+            let cell_size = 325.0_f32;
+            let cutoff_sq = 650.0_f32 * 650.0_f32;
+            let mut grid: HashMap<(i32, i32), Vec<usize>> = HashMap::with_capacity(n);
+            for (idx, node) in self.nodes.iter().enumerate() {
+                let cx = (node.pos.x / cell_size).floor() as i32;
+                let cy = (node.pos.y / cell_size).floor() as i32;
+                grid.entry((cx, cy)).or_default().push(idx);
+            }
+            for i in 0..n {
+                let pi = self.nodes[i].pos;
+                let cx = (pi.x / cell_size).floor() as i32;
+                let cy = (pi.y / cell_size).floor() as i32;
+                for dx in -1..=1 {
+                    for dy in -1..=1 {
+                        let Some(bucket) = grid.get(&(cx + dx, cy + dy)) else {
+                            continue;
+                        };
+                        for &j in bucket {
+                            if j <= i {
+                                continue;
+                            }
+                            let mut diff = pi - self.nodes[j].pos;
+                            let mut d2 = diff.length_sq();
+                            if d2 > cutoff_sq {
+                                continue;
+                            }
+                            if d2 < 1.0 {
+                                diff = vec2(((i % 7) as f32 - 3.0) * 0.4 + 0.5, ((j % 5) as f32 - 2.0) * 0.4 + 0.3);
+                                d2 = diff.length_sq().max(1.0);
+                            }
+                            let d = d2.sqrt().max(24.0);
+                            let mag = k_rep / (d * d);
+                            let f = (diff / d) * mag;
+                            forces[i] += f;
+                            forces[j] -= f;
+                        }
+                    }
+                }
             }
         }
 

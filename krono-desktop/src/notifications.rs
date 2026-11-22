@@ -102,6 +102,7 @@ mod tests {
             clean_text: text.to_string(),
             done,
             due_date: due,
+            completed_at: None,
             priority: None,
             recurrence: None,
             tags: Vec::new(),

@@ -257,6 +257,74 @@ impl KronoApp {
         self.persist_open_tabs_state();
     }
 
+    pub(super) fn sync_and_save_vault_ui_state(&mut self) {
+        let mut next = self.vault_ui_state.clone();
+        next.sidebar = crate::config::SidebarFilterState {
+            pages_filter: self.pages_filter,
+            pages_sort: self.pages_sort,
+            tree_tab: self.sidebar_tree_tab,
+            active_tags: self.active_tag_filters.clone(),
+            tag_mode: self.tag_filter_mode,
+        };
+        next.table = crate::config::TableFilterState {
+            filter_query: self.table_filter_query.clone(),
+            status_filter: self
+                .table_status_filter
+                .map(|st| st.as_yaml_str().to_string()),
+            sort: self.table_sort,
+        };
+        next.board_sort = self.board_sort;
+        if let Some(ref path) = self.active_collection.path {
+            next.collections
+                .insert(path.clone(), self.active_collection.to_filter_state());
+        }
+        if next != self.vault_ui_state {
+            self.vault_ui_state = next;
+            let _ = self.vault_ui_state.save(&self.config.vault_dir);
+        }
+    }
+
+    fn active_tab_index(&self) -> Option<usize> {
+        self.recent_tabs.iter().position(|t| match t {
+            NavTarget::Note(p) => {
+                self.view_mode == ViewMode::Editor && self.selected_path.as_deref() == Some(p.as_str())
+            }
+            NavTarget::Collection(p) => {
+                self.view_mode == ViewMode::Collection
+                    && self.active_collection.path.as_deref() == Some(p.as_str())
+            }
+            NavTarget::Canvas(p) => {
+                self.view_mode == ViewMode::Canvas
+                    && self.active_canvas.path.as_deref() == Some(p.as_str())
+            }
+            NavTarget::View(_) => false,
+        })
+    }
+
+    pub(super) fn switch_tab_relative(&mut self, delta: isize) {
+        let len = self.recent_tabs.len();
+        if len == 0 {
+            return;
+        }
+        let cur = self.active_tab_index().unwrap_or(0) as isize;
+        let next = (cur + delta).rem_euclid(len as isize) as usize;
+        let target = self.recent_tabs[next].clone();
+        self.navigate_to_target(target, false);
+    }
+
+    pub(super) fn switch_tab_index(&mut self, idx: usize) {
+        if let Some(target) = self.recent_tabs.get(idx).cloned() {
+            self.navigate_to_target(target, false);
+        }
+    }
+
+    pub(super) fn close_active_tab(&mut self) {
+        if let Some(idx) = self.active_tab_index() {
+            let target = self.recent_tabs[idx].clone();
+            self.close_tab_and_update_view(&target);
+        }
+    }
+
     pub(crate) fn build_empty_recent_entries(&self) -> Vec<EmptyRecentEntry> {
         let mut out = Vec::new();
         let mut seen = std::collections::HashSet::new();

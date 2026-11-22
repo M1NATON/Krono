@@ -5,6 +5,7 @@ mod cli;
 mod config;
 mod export_pdf;
 mod i18n;
+mod keybindings;
 mod notifications;
 #[cfg(debug_assertions)]
 mod shot_runner;

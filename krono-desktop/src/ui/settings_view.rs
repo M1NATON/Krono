@@ -2,12 +2,12 @@ use crate::config::{
     AccentPreset, AppConfig, CustomSlashSnippet, EditorWidth, SlashTrigger, StartupMode,
     ThemePreset,
 };
-use crate::i18n::{strings, Lang};
+use crate::i18n::{strings, Lang, Strings};
 use crate::storage::vault::{list_custom_templates, AssetAuditEntry};
 use crate::sync::updater::{AvailableUpdate, CURRENT_APP_VERSION};
 use crate::ui::components::{
     hairline_h, icon_button, keycap_badge, paint_badge_dot, primary_button, secondary_button,
-    segmented_control, shortcut_label, styled_text_input, toggle_switch,
+    segmented_control, styled_text_input, toggle_switch,
 };
 use crate::ui::icons::{draw_icon, Icon};
 use crate::ui::image_cache::ImageTextureCache;
@@ -55,11 +55,15 @@ pub fn render_settings_view(
     asset_audit_only_unused: &mut bool,
     vault_dir: &Path,
     image_cache: &mut ImageTextureCache,
+    recording_shortcut: &mut Option<crate::keybindings::ShortcutAction>,
     update_ui: UpdateUiState<'_>,
 ) -> Vec<UiAction> {
     let lang = cfg.language;
     let s = strings(lang);
     let mut actions = Vec::new();
+    if *tab != SettingsTab::Shortcuts {
+        *recording_shortcut = None;
+    }
 
     let avail = ui.available_width();
     let max_w = 880.0_f32.min((avail - 8.0).max(260.0));
@@ -74,12 +78,14 @@ pub fn render_settings_view(
 
             if compact_tabs {
                 let nav_items = [
+                    (SettingsTab::General, Some(Icon::Settings), s.settings_tab_general),
                     (SettingsTab::Appearance, Some(Icon::Palette), s.settings_tab_appearance),
                     (SettingsTab::Editor, Some(Icon::Type), s.settings_tab_editor),
-                    (SettingsTab::MarkdownHelp, Some(Icon::CircleHelp), s.settings_tab_md_help),
+                    (SettingsTab::Shortcuts, Some(Icon::Keyboard), s.settings_tab_shortcuts),
                     (SettingsTab::Storage, Some(Icon::HardDrive), s.settings_tab_storage),
                     (SettingsTab::GitHub, Some(Icon::GitHub), s.settings_tab_github),
-                    (SettingsTab::Shortcuts, Some(Icon::Keyboard), s.settings_tab_shortcuts),
+                    (SettingsTab::About, Some(Icon::Sync), s.settings_tab_about),
+                    (SettingsTab::MarkdownHelp, Some(Icon::CircleHelp), s.settings_tab_md_help),
                 ];
                 egui::ScrollArea::horizontal()
                     .id_salt("settings_top_tabs")
@@ -111,123 +117,269 @@ pub fn render_settings_view(
                     asset_audit_only_unused,
                     vault_dir,
                     image_cache,
+                    recording_shortcut,
                     update_ui,
                     &mut actions,
                 );
             } else {
-                let nav_w = 194.0;
+                let nav_w = 210.0;
                 let content_w = (max_w - nav_w - 28.0).max(320.0);
 
                 ui.horizontal_top(|ui| {
                     ui.vertical(|ui| {
                         ui.set_width(nav_w);
-                        ui.spacing_mut().item_spacing.y = 4.0;
-                        let nav_items = [
-                            (SettingsTab::Appearance, Icon::Palette, s.settings_tab_appearance),
-                            (SettingsTab::Editor, Icon::Type, s.settings_tab_editor),
-                            (SettingsTab::MarkdownHelp, Icon::CircleHelp, s.settings_tab_md_help),
-                            (SettingsTab::Storage, Icon::HardDrive, s.settings_tab_storage),
-                            (SettingsTab::GitHub, Icon::GitHub, s.settings_tab_github),
-                            (SettingsTab::Shortcuts, Icon::Keyboard, s.settings_tab_shortcuts),
-                        ];
+                        ui.spacing_mut().item_spacing.y = 3.0;
 
-                        struct NavSlot {
-                            tab: SettingsTab,
-                            icon: Icon,
-                            label: &'static str,
-                            rect: Rect,
-                            resp: egui::Response,
-                            active: bool,
-                        }
-
-                        let mut slots = Vec::with_capacity(nav_items.len());
-                        let mut active_rect: Option<Rect> = None;
-                        for (t_val, icon, label) in nav_items {
-                            let (rect, resp) =
-                                ui.allocate_exact_size(vec2(nav_w, 34.0), Sense::click());
-                            let active = *tab == t_val;
-                            if active {
-                                active_rect = Some(rect);
+                        let search_id = egui::Id::new("settings_search_query");
+                        let mut search_q = ui
+                            .ctx()
+                            .data(|d| d.get_temp::<String>(search_id))
+                            .unwrap_or_default();
+                        ui.horizontal(|ui| {
+                            let inp_w = if search_q.trim().is_empty() {
+                                nav_w
+                            } else {
+                                (nav_w - 28.0).max(120.0)
+                            };
+                            styled_text_input(
+                                ui,
+                                p,
+                                &mut search_q,
+                                s.settings_search_hint,
+                                false,
+                                inp_w,
+                            );
+                            if !search_q.trim().is_empty()
+                                && icon_button(ui, p, Icon::Close, s.col_clear_filters, false)
+                                    .clicked()
+                            {
+                                search_q.clear();
                             }
-                            slots.push(NavSlot {
-                                tab: t_val,
-                                icon,
-                                label,
-                                rect,
-                                resp,
-                                active,
-                            });
-                        }
+                        });
+                        ui.add_space(8.0);
 
-                        if let Some(target) = active_rect {
-                            let pill_y = anim_value_smooth(
-                                ui.ctx(),
-                                egui::Id::new("settings_nav_pill_y"),
-                                target.top(),
-                                0.16,
-                            );
-                            let pill_r =
-                                Rect::from_min_size(pos2(target.left(), pill_y), target.size());
-                            ui.painter()
-                                .rect_filled(pill_r, Rounding::same(7.0), p.bg_selected);
-                            let bar_r = Rect::from_center_size(
-                                pos2(pill_r.left() + 3.0, pill_r.center().y),
-                                vec2(2.5, 16.0),
-                            );
-                            ui.painter()
-                                .rect_filled(bar_r, Rounding::same(1.5), p.accent);
-                        }
-
-                        for slot in slots {
-                            let hov_t = anim_bool_eased(
-                                ui.ctx(),
-                                ui.make_persistent_id(("settings_nav", slot.label)),
-                                slot.resp.hovered(),
-                                0.10,
-                            );
-                            if !slot.active && hov_t > 0.01 {
-                                ui.painter().rect_filled(
-                                    slot.rect,
-                                    Rounding::same(7.0),
-                                    with_alpha(p.bg_hover, hov_t),
+                        if !search_q.trim().is_empty() {
+                            let catalog = settings_search_catalog(s);
+                            let matches = filter_settings_catalog(&catalog, &search_q);
+                            if matches.is_empty() {
+                                ui.label(
+                                    egui::RichText::new(s.settings_search_empty)
+                                        .font(font_body(12.0))
+                                        .color(p.text_muted),
                                 );
+                            } else {
+                                for idx in matches.into_iter().take(12) {
+                                    let entry = &catalog[idx];
+                                    let (rect, resp) =
+                                        ui.allocate_exact_size(vec2(nav_w, 40.0), Sense::click());
+                                    if resp.hovered() {
+                                        ui.painter().rect_filled(
+                                            rect,
+                                            Rounding::same(7.0),
+                                            p.bg_hover,
+                                        );
+                                    }
+                                    let tg = ui.painter().layout_no_wrap(
+                                        entry.title.to_string(),
+                                        font_medium(12.5),
+                                        p.text_primary,
+                                    );
+                                    let sg = ui.painter().layout_no_wrap(
+                                        entry.tab_label.to_string(),
+                                        font_body(10.5),
+                                        p.text_muted,
+                                    );
+                                    ui.painter().galley(
+                                        pos2(rect.left() + 10.0, rect.top() + 5.0),
+                                        tg,
+                                        p.text_primary,
+                                    );
+                                    ui.painter().galley(
+                                        pos2(rect.left() + 10.0, rect.top() + 21.0),
+                                        sg,
+                                        p.text_muted,
+                                    );
+                                    if resp.on_hover_cursor(CursorIcon::PointingHand).clicked() {
+                                        *tab = entry.tab;
+                                        search_q.clear();
+                                    }
+                                }
                             }
-                            let icon_col = if slot.active {
-                                p.accent_text
-                            } else {
-                                lerp_color(p.text_muted, p.text_secondary, hov_t)
-                            };
-                            let text_col = if slot.active {
-                                p.text_primary
-                            } else {
-                                lerp_color(p.text_secondary, p.text_primary, hov_t)
-                            };
-                            let ir = Rect::from_center_size(
-                                pos2(slot.rect.left() + 17.0, slot.rect.center().y),
-                                vec2(15.0, 15.0),
-                            );
-                            draw_icon(ui.painter(), ir, slot.icon, icon_col);
-                            let g = ui.painter().layout_no_wrap(
-                                slot.label.to_string(),
-                                if slot.active {
-                                    font_medium(13.5)
+                        } else {
+                            enum NavRow {
+                                Header(&'static str),
+                                Divider,
+                                Item(SettingsTab, Icon, &'static str),
+                            }
+                            let nav_rows = [
+                                NavRow::Header(s.settings_nav_group_app),
+                                NavRow::Item(SettingsTab::General, Icon::Settings, s.settings_tab_general),
+                                NavRow::Item(SettingsTab::Appearance, Icon::Palette, s.settings_tab_appearance),
+                                NavRow::Item(SettingsTab::Editor, Icon::Type, s.settings_tab_editor),
+                                NavRow::Item(SettingsTab::Shortcuts, Icon::Keyboard, s.settings_tab_shortcuts),
+                                NavRow::Header(s.settings_nav_group_data),
+                                NavRow::Item(SettingsTab::Storage, Icon::HardDrive, s.settings_tab_storage),
+                                NavRow::Item(SettingsTab::GitHub, Icon::GitHub, s.settings_tab_github),
+                                NavRow::Divider,
+                                NavRow::Header(s.settings_nav_group_system),
+                                NavRow::Item(SettingsTab::About, Icon::Sync, s.settings_tab_about),
+                                NavRow::Item(SettingsTab::MarkdownHelp, Icon::CircleHelp, s.settings_tab_md_help),
+                            ];
+
+                            struct NavSlot {
+                                tab: SettingsTab,
+                                icon: Icon,
+                                label: &'static str,
+                                rect: Rect,
+                                resp: egui::Response,
+                                active: bool,
+                            }
+
+                            let mut slots = Vec::new();
+                            let mut active_rect: Option<Rect> = None;
+                            for (row_i, row) in nav_rows.into_iter().enumerate() {
+                                match row {
+                                    NavRow::Divider => {
+                                        ui.add_space(6.0);
+                                        hairline_h(ui, p);
+                                        ui.add_space(4.0);
+                                    }
+                                    NavRow::Header(title) => {
+                                        if row_i > 0 {
+                                            ui.add_space(8.0);
+                                        }
+                                        let (hrect, _) = ui.allocate_exact_size(
+                                            vec2(nav_w, 18.0),
+                                            Sense::hover(),
+                                        );
+                                        let hg = ui.painter().layout_no_wrap(
+                                            title.to_string(),
+                                            font_semibold(10.0),
+                                            p.text_muted,
+                                        );
+                                        ui.painter().galley(
+                                            pos2(hrect.left() + 10.0, hrect.center().y - hg.size().y * 0.5),
+                                            hg,
+                                            p.text_muted,
+                                        );
+                                    }
+                                    NavRow::Item(t_val, icon, label) => {
+                                        let (rect, resp) = ui.allocate_exact_size(
+                                            vec2(nav_w, 33.0),
+                                            Sense::click(),
+                                        );
+                                        let active = *tab == t_val;
+                                        if active {
+                                            active_rect = Some(rect);
+                                        }
+                                        slots.push(NavSlot {
+                                            tab: t_val,
+                                            icon,
+                                            label,
+                                            rect,
+                                            resp,
+                                            active,
+                                        });
+                                    }
+                                }
+                            }
+
+                            if let Some(target) = active_rect {
+                                let pill_y = anim_value_smooth(
+                                    ui.ctx(),
+                                    egui::Id::new("settings_nav_pill_y"),
+                                    target.top(),
+                                    0.16,
+                                );
+                                let pill_r =
+                                    Rect::from_min_size(pos2(target.left(), pill_y), target.size());
+                                ui.painter()
+                                    .rect_filled(pill_r, Rounding::same(7.0), p.bg_selected);
+                                let bar_r = Rect::from_center_size(
+                                    pos2(pill_r.left() + 3.0, pill_r.center().y),
+                                    vec2(2.5, 16.0),
+                                );
+                                ui.painter()
+                                    .rect_filled(bar_r, Rounding::same(1.5), p.accent);
+                            }
+
+                            for slot in slots {
+                                let hov_t = anim_bool_eased(
+                                    ui.ctx(),
+                                    ui.make_persistent_id(("settings_nav", slot.label)),
+                                    slot.resp.hovered(),
+                                    0.10,
+                                );
+                                if !slot.active && hov_t > 0.01 {
+                                    ui.painter().rect_filled(
+                                        slot.rect,
+                                        Rounding::same(7.0),
+                                        with_alpha(p.bg_hover, hov_t),
+                                    );
+                                }
+                                let icon_col = if slot.active {
+                                    p.accent_text
                                 } else {
-                                    font_body(13.5)
-                                },
-                                text_col,
-                            );
-                            ui.painter().galley(
-                                pos2(
-                                    slot.rect.left() + 34.0,
-                                    slot.rect.center().y - g.size().y * 0.5,
-                                ),
-                                g,
-                                text_col,
-                            );
-                            if slot.resp.on_hover_cursor(CursorIcon::PointingHand).clicked() {
-                                *tab = slot.tab;
+                                    lerp_color(p.text_muted, p.text_secondary, hov_t)
+                                };
+                                let text_col = if slot.active {
+                                    p.text_primary
+                                } else {
+                                    lerp_color(p.text_secondary, p.text_primary, hov_t)
+                                };
+                                let ir = Rect::from_center_size(
+                                    pos2(slot.rect.left() + 17.0, slot.rect.center().y),
+                                    vec2(15.0, 15.0),
+                                );
+                                draw_icon(ui.painter(), ir, slot.icon, icon_col);
+                                let g = ui.painter().layout_no_wrap(
+                                    slot.label.to_string(),
+                                    if slot.active {
+                                        font_medium(13.0)
+                                    } else {
+                                        font_body(13.0)
+                                    },
+                                    text_col,
+                                );
+                                ui.painter().galley(
+                                    pos2(
+                                        slot.rect.left() + 34.0,
+                                        slot.rect.center().y - g.size().y * 0.5,
+                                    ),
+                                    g,
+                                    text_col,
+                                );
+                                if slot.tab == SettingsTab::About {
+                                    let ver_txt = format!("v{CURRENT_APP_VERSION}");
+                                    let vg = ui.painter().layout_no_wrap(
+                                        ver_txt,
+                                        font_mono(10.5),
+                                        p.text_muted,
+                                    );
+                                    let right_pad = if update_ui.available.is_some() { 18.0 } else { 8.0 };
+                                    ui.painter().galley(
+                                        pos2(
+                                            slot.rect.right() - right_pad - vg.size().x,
+                                            slot.rect.center().y - vg.size().y * 0.5,
+                                        ),
+                                        vg,
+                                        p.text_muted,
+                                    );
+                                    if update_ui.available.is_some() {
+                                        paint_badge_dot(
+                                            ui.painter(),
+                                            pos2(slot.rect.right() - 10.0, slot.rect.center().y),
+                                            p.accent,
+                                        );
+                                    }
+                                }
+                                if slot.resp.on_hover_cursor(CursorIcon::PointingHand).clicked() {
+                                    *tab = slot.tab;
+                                }
                             }
                         }
+
+                        ui.ctx().data_mut(|d| d.insert_temp(search_id, search_q));
                     });
 
                     ui.add_space(28.0);
@@ -258,6 +410,7 @@ pub fn render_settings_view(
                             asset_audit_only_unused,
                             vault_dir,
                             image_cache,
+                            recording_shortcut,
                             update_ui,
                             &mut actions,
                         );
@@ -295,6 +448,7 @@ fn render_tab_scroll(
     asset_audit_only_unused: &mut bool,
     vault_dir: &Path,
     image_cache: &mut ImageTextureCache,
+    recording_shortcut: &mut Option<crate::keybindings::ShortcutAction>,
     update_ui: UpdateUiState<'_>,
     actions: &mut Vec<UiAction>,
 ) {
@@ -312,79 +466,12 @@ fn render_tab_scroll(
             }
 
             match tab {
-                SettingsTab::Appearance => {
-                    section_intro(ui, p, s.settings_tab_appearance, s.settings_appearance_desc);
+                SettingsTab::General => {
+                    section_intro(ui, p, s.settings_tab_general, s.settings_general_desc);
                     ui.add_space(14.0);
 
+                    settings_group_heading(ui, p, s.settings_grp_lang_startup);
                     settings_card(ui, p, |ui| {
-                        ui.label(
-                            egui::RichText::new(s.settings_themes_heading)
-                                .font(font_medium(13.5))
-                                .color(p.text_primary),
-                        );
-                        ui.add_space(12.0);
-
-                        let theme_cols = if ui.available_width() < 420.0 { 2 } else { 3 };
-                        for row in ThemePreset::ALL.chunks(theme_cols) {
-                            ui.columns(row.len(), |cols| {
-                                for (idx, &preset) in row.iter().enumerate() {
-                                    if theme_preview_card(
-                                        &mut cols[idx],
-                                        p,
-                                        lang,
-                                        preset,
-                                        cfg.accent,
-                                        cfg.theme == preset,
-                                    )
-                                    .clicked()
-                                    {
-                                        cfg.select_theme(preset);
-                                        actions.push(UiAction::ConfigChanged);
-                                    }
-                                }
-                            });
-                            ui.add_space(10.0);
-                        }
-                    });
-
-                    ui.add_space(14.0);
-
-                    settings_card(ui, p, |ui| {
-                        setting_row(
-                            ui,
-                            p,
-                            s.settings_accent_heading,
-                            s.settings_accent_desc,
-                            170.0,
-                            |ui| {
-                                ui.allocate_ui_with_layout(
-                                    vec2(162.0, 26.0),
-                                    Layout::left_to_right(Align::Center),
-                                    |ui| {
-                                        ui.spacing_mut().item_spacing.x = 8.0;
-                                        for acc in AccentPreset::ALL {
-                                            if accent_swatch_button(
-                                                ui,
-                                                p,
-                                                lang,
-                                                acc,
-                                                cfg.accent == acc,
-                                            )
-                                            .clicked()
-                                            {
-                                                cfg.accent = acc;
-                                                actions.push(UiAction::ConfigChanged);
-                                            }
-                                        }
-                                    },
-                                );
-                            },
-                        );
-
-                        ui.add_space(12.0);
-                        hairline_h(ui, p);
-                        ui.add_space(12.0);
-
                         setting_row(
                             ui,
                             p,
@@ -413,62 +500,6 @@ fn render_tab_scroll(
                         setting_row(
                             ui,
                             p,
-                            s.settings_ui_zoom,
-                            s.settings_ui_zoom_desc,
-                            210.0,
-                            |ui| {
-                                ui.horizontal(|ui| {
-                                    if secondary_button(ui, p, None, "−").clicked() {
-                                        cfg.ui_zoom = crate::config::AppConfig::clamp_ui_zoom(
-                                            cfg.ui_zoom - 0.10,
-                                        );
-                                        actions.push(UiAction::ConfigChanged);
-                                    }
-                                    let pct = (cfg.ui_zoom * 100.0).round() as i32;
-                                    ui.label(
-                                        egui::RichText::new(format!("{pct}%"))
-                                            .font(font_mono(12.5))
-                                            .color(p.text_primary),
-                                    );
-                                    if secondary_button(ui, p, None, "+").clicked() {
-                                        cfg.ui_zoom = crate::config::AppConfig::clamp_ui_zoom(
-                                            cfg.ui_zoom + 0.10,
-                                        );
-                                        actions.push(UiAction::ConfigChanged);
-                                    }
-                                    if secondary_button(ui, p, None, s.settings_ui_zoom_reset).clicked() {
-                                        cfg.ui_zoom = 1.0;
-                                        actions.push(UiAction::ConfigChanged);
-                                    }
-                                });
-                            },
-                        );
-
-                        ui.add_space(12.0);
-                        hairline_h(ui, p);
-                        ui.add_space(12.0);
-
-                        setting_row(
-                            ui,
-                            p,
-                            s.settings_custom_titlebar,
-                            s.settings_custom_titlebar_desc,
-                            56.0,
-                            |ui| {
-                                if toggle_switch(
-                                    ui,
-                                    p,
-                                    "sw_custom_titlebar",
-                                    &mut cfg.custom_titlebar,
-                                ) {
-                                    actions.push(UiAction::ConfigChanged);
-                                }
-                            },
-                        );
-                        hairline_h(ui, p);
-                        setting_row(
-                            ui,
-                            p,
                             s.settings_startup_mode,
                             s.settings_startup_mode_desc,
                             240.0,
@@ -491,162 +522,10 @@ fn render_tab_scroll(
                                 }
                             },
                         );
-                        hairline_h(ui, p);
-                        setting_row(
-                            ui,
-                            p,
-                            s.settings_vault_autolock,
-                            s.settings_vault_autolock_desc,
-                            180.0,
-                            |ui| {
-                                if segmented_control(
-                                    ui,
-                                    p,
-                                    "settings_autolock_seg",
-                                    &mut cfg.vault_autolock_minutes,
-                                    &[
-                                        (5u32, None, "5m"),
-                                        (10u32, None, "10m"),
-                                        (15u32, None, "15m"),
-                                        (0u32, None, s.settings_autolock_off),
-                                    ],
-                                ) {
-                                    actions.push(UiAction::ConfigChanged);
-                                }
-                            },
-                        );
                     });
 
                     ui.add_space(14.0);
-
-                    settings_card(ui, p, |ui| {
-                        let nav_hdr = if lang == Lang::Ru {
-                            "Пункты боковой панели"
-                        } else {
-                            "Sidebar Navigation Items"
-                        };
-                        ui.label(
-                            egui::RichText::new(nav_hdr)
-                                .font(font_medium(13.5))
-                                .color(p.text_primary),
-                        );
-                        ui.add_space(8.0);
-                        for (id, lbl, val) in [
-                            ("sw_nav_tasks", s.nav_tasks, &mut cfg.nav_show_tasks),
-                            ("sw_nav_table", s.nav_table, &mut cfg.nav_show_table),
-                            ("sw_nav_board", s.nav_board, &mut cfg.nav_show_board),
-                            ("sw_nav_graph", s.nav_graph, &mut cfg.nav_show_graph),
-                            ("sw_nav_overview", s.nav_overview, &mut cfg.nav_show_overview),
-                        ] {
-                            ui.horizontal(|ui| {
-                                ui.label(
-                                    egui::RichText::new(lbl)
-                                        .font(font_body(13.0))
-                                        .color(p.text_secondary),
-                                );
-                                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                                    if toggle_switch(ui, p, id, val) {
-                                        actions.push(UiAction::ConfigChanged);
-                                    }
-                                });
-                            });
-                            ui.add_space(4.0);
-                        }
-                    });
-                }
-
-                SettingsTab::Editor => {
-                    section_intro(ui, p, s.settings_tab_editor, s.settings_editor_desc);
-                    ui.add_space(14.0);
-
-                    settings_card(ui, p, |ui| {
-                        setting_row(
-                            ui,
-                            p,
-                            s.settings_font_size,
-                            s.settings_font_size_desc,
-                            230.0,
-                            |ui| {
-                                let mut sz = cfg.editor_font_size.round() as i32;
-                                if segmented_control(
-                                    ui,
-                                    p,
-                                    "settings_fontsize_seg",
-                                    &mut sz,
-                                    &[
-                                        (14, None, "14"),
-                                        (15, None, "15"),
-                                        (16, None, "16"),
-                                        (17, None, "17"),
-                                        (18, None, "18"),
-                                    ],
-                                ) {
-                                    cfg.editor_font_size = sz as f32;
-                                    actions.push(UiAction::ConfigChanged);
-                                }
-                            },
-                        );
-
-                        ui.add_space(12.0);
-                        hairline_h(ui, p);
-                        ui.add_space(12.0);
-
-                        setting_row(
-                            ui,
-                            p,
-                            s.settings_heading_style,
-                            s.settings_heading_style_desc,
-                            180.0,
-                            |ui| {
-                                let mut serif = cfg.heading_serif;
-                                if segmented_control(
-                                    ui,
-                                    p,
-                                    "settings_heading_style_seg",
-                                    &mut serif,
-                                    &[
-                                        (true, None, s.heading_serif),
-                                        (false, None, s.heading_sans),
-                                    ],
-                                ) {
-                                    cfg.heading_serif = serif;
-                                    actions.push(UiAction::ConfigChanged);
-                                }
-                            },
-                        );
-
-                        ui.add_space(12.0);
-                        hairline_h(ui, p);
-                        ui.add_space(12.0);
-
-                        setting_row(
-                            ui,
-                            p,
-                            s.settings_column_width,
-                            s.settings_column_width_desc,
-                            250.0,
-                            |ui| {
-                                let mut width = cfg.editor_width;
-                                if segmented_control(
-                                    ui,
-                                    p,
-                                    "settings_width_seg",
-                                    &mut width,
-                                    &[
-                                        (EditorWidth::Compact, None, s.width_compact),
-                                        (EditorWidth::Normal, None, s.width_normal),
-                                        (EditorWidth::Wide, None, s.width_wide),
-                                    ],
-                                ) {
-                                    cfg.editor_width = width;
-                                    actions.push(UiAction::ConfigChanged);
-                                }
-                            },
-                        );
-                    });
-
-                    ui.add_space(14.0);
-
+                    settings_group_heading(ui, p, s.settings_grp_behavior);
                     settings_card(ui, p, |ui| {
                         setting_row(
                             ui,
@@ -687,57 +566,51 @@ fn render_tab_scroll(
                                 }
                             },
                         );
-
-                        ui.add_space(12.0);
-                        hairline_h(ui, p);
-                        ui.add_space(12.0);
-
-                        setting_row(
-                            ui,
-                            p,
-                            s.settings_show_footer,
-                            s.settings_show_footer_desc,
-                            56.0,
-                            |ui| {
-                                if toggle_switch(
-                                    ui,
-                                    p,
-                                    "sw_show_footer",
-                                    &mut cfg.show_editor_footer,
-                                ) {
-                                    actions.push(UiAction::ConfigChanged);
-                                }
-                            },
-                        );
-
-                        ui.add_space(12.0);
-                        hairline_h(ui, p);
-                        ui.add_space(12.0);
-
-                        setting_row(
-                            ui,
-                            p,
-                            s.settings_show_inspector,
-                            s.settings_show_inspector_desc,
-                            56.0,
-                            |ui| {
-                                if toggle_switch(
-                                    ui,
-                                    p,
-                                    "sw_show_inspector",
-                                    &mut cfg.inspector_open,
-                                ) {
-                                    actions.push(UiAction::ConfigChanged);
-                                }
-                            },
-                        );
                     });
 
                     ui.add_space(14.0);
+                    settings_group_heading(ui, p, s.settings_grp_sidebar);
                     settings_card(ui, p, |ui| {
+                        let nav_hdr = if lang == Lang::Ru {
+                            "Пункты боковой панели"
+                        } else {
+                            "Sidebar Navigation Items"
+                        };
+                        ui.label(
+                            egui::RichText::new(nav_hdr)
+                                .font(font_medium(13.5))
+                                .color(p.text_primary),
+                        );
+                        ui.add_space(8.0);
+                        for (id, lbl, val) in [
+                            ("sw_nav_tasks", s.nav_tasks, &mut cfg.nav_show_tasks),
+                            ("sw_nav_table", s.nav_table, &mut cfg.nav_show_table),
+                            ("sw_nav_board", s.nav_board, &mut cfg.nav_show_board),
+                            ("sw_nav_graph", s.nav_graph, &mut cfg.nav_show_graph),
+                            ("sw_nav_overview", s.nav_overview, &mut cfg.nav_show_overview),
+                        ] {
+                            ui.horizontal(|ui| {
+                                ui.label(
+                                    egui::RichText::new(lbl)
+                                        .font(font_body(13.0))
+                                        .color(p.text_secondary),
+                                );
+                                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                                    if toggle_switch(ui, p, id, val) {
+                                        actions.push(UiAction::ConfigChanged);
+                                    }
+                                });
+                            });
+                            ui.add_space(4.0);
+                        }
+
+                        ui.add_space(10.0);
+                        hairline_h(ui, p);
+                        ui.add_space(10.0);
+
                         ui.label(
                             egui::RichText::new(s.settings_sb_modules)
-                                .font(font_medium(14.0))
+                                .font(font_medium(13.5))
                                 .color(p.text_primary),
                         );
                         ui.add_space(2.0);
@@ -829,8 +702,276 @@ fn render_tab_scroll(
                             }
                         }
                     });
+                }
+
+                SettingsTab::Appearance => {
+                    section_intro(ui, p, s.settings_tab_appearance, s.settings_appearance_desc);
+                    ui.add_space(14.0);
+
+                    settings_card(ui, p, |ui| {
+                        ui.label(
+                            egui::RichText::new(s.settings_themes_heading)
+                                .font(font_medium(13.5))
+                                .color(p.text_primary),
+                        );
+                        ui.add_space(12.0);
+
+                        let theme_cols = if ui.available_width() < 420.0 { 2 } else { 3 };
+                        for row in ThemePreset::ALL.chunks(theme_cols) {
+                            ui.columns(row.len(), |cols| {
+                                for (idx, &preset) in row.iter().enumerate() {
+                                    if theme_preview_card(
+                                        &mut cols[idx],
+                                        p,
+                                        lang,
+                                        preset,
+                                        cfg.accent,
+                                        cfg.theme == preset,
+                                    )
+                                    .clicked()
+                                    {
+                                        cfg.select_theme(preset);
+                                        actions.push(UiAction::ConfigChanged);
+                                    }
+                                }
+                            });
+                            ui.add_space(10.0);
+                        }
+                    });
 
                     ui.add_space(14.0);
+
+                    settings_card(ui, p, |ui| {
+                        setting_row(
+                            ui,
+                            p,
+                            s.settings_accent_heading,
+                            s.settings_accent_desc,
+                            170.0,
+                            |ui| {
+                                ui.allocate_ui_with_layout(
+                                    vec2(162.0, 26.0),
+                                    Layout::left_to_right(Align::Center),
+                                    |ui| {
+                                        ui.spacing_mut().item_spacing.x = 8.0;
+                                        for acc in AccentPreset::ALL {
+                                            if accent_swatch_button(
+                                                ui,
+                                                p,
+                                                lang,
+                                                acc,
+                                                cfg.accent == acc,
+                                            )
+                                            .clicked()
+                                            {
+                                                cfg.accent = acc;
+                                                actions.push(UiAction::ConfigChanged);
+                                            }
+                                        }
+                                    },
+                                );
+                            },
+                        );
+                    });
+
+                    ui.add_space(14.0);
+                    settings_group_heading(ui, p, s.settings_grp_window);
+                    settings_card(ui, p, |ui| {
+                        setting_row(
+                            ui,
+                            p,
+                            s.settings_ui_zoom,
+                            s.settings_ui_zoom_desc,
+                            210.0,
+                            |ui| {
+                                ui.horizontal(|ui| {
+                                    if secondary_button(ui, p, None, "−").clicked() {
+                                        cfg.ui_zoom = crate::config::AppConfig::clamp_ui_zoom(
+                                            cfg.ui_zoom - 0.10,
+                                        );
+                                        actions.push(UiAction::ConfigChanged);
+                                    }
+                                    let pct = (cfg.ui_zoom * 100.0).round() as i32;
+                                    ui.label(
+                                        egui::RichText::new(format!("{pct}%"))
+                                            .font(font_mono(12.5))
+                                            .color(p.text_primary),
+                                    );
+                                    if secondary_button(ui, p, None, "+").clicked() {
+                                        cfg.ui_zoom = crate::config::AppConfig::clamp_ui_zoom(
+                                            cfg.ui_zoom + 0.10,
+                                        );
+                                        actions.push(UiAction::ConfigChanged);
+                                    }
+                                    if secondary_button(ui, p, None, s.settings_ui_zoom_reset).clicked() {
+                                        cfg.ui_zoom = 1.0;
+                                        actions.push(UiAction::ConfigChanged);
+                                    }
+                                });
+                            },
+                        );
+
+                        ui.add_space(12.0);
+                        hairline_h(ui, p);
+                        ui.add_space(12.0);
+
+                        setting_row(
+                            ui,
+                            p,
+                            s.settings_custom_titlebar,
+                            s.settings_custom_titlebar_desc,
+                            56.0,
+                            |ui| {
+                                if toggle_switch(
+                                    ui,
+                                    p,
+                                    "sw_custom_titlebar",
+                                    &mut cfg.custom_titlebar,
+                                ) {
+                                    actions.push(UiAction::ConfigChanged);
+                                }
+                            },
+                        );
+
+                        ui.add_space(12.0);
+                        hairline_h(ui, p);
+                        ui.add_space(12.0);
+
+                        setting_row(
+                            ui,
+                            p,
+                            s.settings_show_footer,
+                            s.settings_show_footer_desc,
+                            56.0,
+                            |ui| {
+                                if toggle_switch(
+                                    ui,
+                                    p,
+                                    "sw_show_footer",
+                                    &mut cfg.show_editor_footer,
+                                ) {
+                                    actions.push(UiAction::ConfigChanged);
+                                }
+                            },
+                        );
+
+                        ui.add_space(12.0);
+                        hairline_h(ui, p);
+                        ui.add_space(12.0);
+
+                        setting_row(
+                            ui,
+                            p,
+                            s.settings_show_inspector,
+                            s.settings_show_inspector_desc,
+                            56.0,
+                            |ui| {
+                                if toggle_switch(
+                                    ui,
+                                    p,
+                                    "sw_show_inspector",
+                                    &mut cfg.inspector_open,
+                                ) {
+                                    actions.push(UiAction::ConfigChanged);
+                                }
+                            },
+                        );
+                    });
+                }
+
+                SettingsTab::Editor => {
+                    section_intro(ui, p, s.settings_tab_editor, s.settings_editor_desc);
+                    ui.add_space(14.0);
+
+                    settings_group_heading(ui, p, s.settings_grp_typography);
+                    settings_card(ui, p, |ui| {
+                        setting_row(
+                            ui,
+                            p,
+                            s.settings_font_size,
+                            s.settings_font_size_desc,
+                            230.0,
+                            |ui| {
+                                let mut sz = cfg.editor_font_size.round() as i32;
+                                if segmented_control(
+                                    ui,
+                                    p,
+                                    "settings_fontsize_seg",
+                                    &mut sz,
+                                    &[
+                                        (14, None, "14"),
+                                        (15, None, "15"),
+                                        (16, None, "16"),
+                                        (17, None, "17"),
+                                        (18, None, "18"),
+                                    ],
+                                ) {
+                                    cfg.editor_font_size = sz as f32;
+                                    actions.push(UiAction::ConfigChanged);
+                                }
+                            },
+                        );
+
+                        ui.add_space(12.0);
+                        hairline_h(ui, p);
+                        ui.add_space(12.0);
+
+                        setting_row(
+                            ui,
+                            p,
+                            s.settings_heading_style,
+                            s.settings_heading_style_desc,
+                            180.0,
+                            |ui| {
+                                let mut serif = cfg.heading_serif;
+                                if segmented_control(
+                                    ui,
+                                    p,
+                                    "settings_heading_style_seg",
+                                    &mut serif,
+                                    &[
+                                        (true, None, s.heading_serif),
+                                        (false, None, s.heading_sans),
+                                    ],
+                                ) {
+                                    cfg.heading_serif = serif;
+                                    actions.push(UiAction::ConfigChanged);
+                                }
+                            },
+                        );
+
+                        ui.add_space(12.0);
+                        hairline_h(ui, p);
+                        ui.add_space(12.0);
+
+                        setting_row(
+                            ui,
+                            p,
+                            s.settings_column_width,
+                            s.settings_column_width_desc,
+                            250.0,
+                            |ui| {
+                                let mut width = cfg.editor_width;
+                                if segmented_control(
+                                    ui,
+                                    p,
+                                    "settings_width_seg",
+                                    &mut width,
+                                    &[
+                                        (EditorWidth::Compact, None, s.width_compact),
+                                        (EditorWidth::Normal, None, s.width_normal),
+                                        (EditorWidth::Wide, None, s.width_wide),
+                                    ],
+                                ) {
+                                    cfg.editor_width = width;
+                                    actions.push(UiAction::ConfigChanged);
+                                }
+                            },
+                        );
+                    });
+
+                    ui.add_space(14.0);
+                    settings_group_heading(ui, p, s.settings_grp_smart_input);
 
                     // Markdown Assist toggles & trigger config
                     settings_card(ui, p, |ui| {
@@ -1016,6 +1157,7 @@ fn render_tab_scroll(
                     });
 
                     ui.add_space(14.0);
+                    settings_group_heading(ui, p, s.settings_grp_templates);
 
                     // Daily Note Template selector (.krono/templates/*.md)
                     settings_card(ui, p, |ui| {
@@ -1071,11 +1213,13 @@ fn render_tab_scroll(
 
                     // Custom Slash Commands / Snippets editor
                     settings_card(ui, p, |ui| {
-                        ui.label(
+                        egui::CollapsingHeader::new(
                             egui::RichText::new(s.md_snippets_heading)
                                 .font(font_medium(14.0))
                                 .color(p.text_primary),
-                        );
+                        )
+                        .default_open(!cfg.custom_slash_snippets.is_empty())
+                        .show(ui, |ui| {
                         ui.add_space(2.0);
                         ui.add(
                             egui::Label::new(
@@ -1192,6 +1336,7 @@ fn render_tab_scroll(
                                 actions.push(UiAction::ConfigChanged);
                             }
                         }
+                        });
                     });
                 }
 
@@ -1203,6 +1348,7 @@ fn render_tab_scroll(
                     section_intro(ui, p, s.settings_tab_storage, s.settings_storage_desc);
                     ui.add_space(14.0);
 
+                    settings_group_heading(ui, p, s.settings_grp_vault_loc);
                     settings_card(ui, p, |ui| {
                         ui.label(
                             egui::RichText::new(s.settings_vault_dir)
@@ -1241,7 +1387,35 @@ fn render_tab_scroll(
                     });
 
                     ui.add_space(14.0);
+                    settings_group_heading(ui, p, s.settings_grp_security);
+                    settings_card(ui, p, |ui| {
+                        setting_row(
+                            ui,
+                            p,
+                            s.settings_vault_autolock,
+                            s.settings_vault_autolock_desc,
+                            180.0,
+                            |ui| {
+                                if segmented_control(
+                                    ui,
+                                    p,
+                                    "settings_autolock_seg",
+                                    &mut cfg.vault_autolock_minutes,
+                                    &[
+                                        (5u32, None, "5m"),
+                                        (10u32, None, "10m"),
+                                        (15u32, None, "15m"),
+                                        (0u32, None, s.settings_autolock_off),
+                                    ],
+                                ) {
+                                    actions.push(UiAction::ConfigChanged);
+                                }
+                            },
+                        );
+                    });
 
+                    ui.add_space(14.0);
+                    settings_group_heading(ui, p, s.settings_grp_maintenance);
                     settings_card(ui, p, |ui| {
                         ui.label(
                             egui::RichText::new(s.settings_index_heading)
@@ -1526,7 +1700,11 @@ fn render_tab_scroll(
                         }
                     });
 
-                    ui.add_space(16.0);
+                }
+
+                SettingsTab::About => {
+                    section_intro(ui, p, s.settings_tab_about, s.settings_about_desc);
+                    ui.add_space(14.0);
                     settings_card(ui, p, |ui| {
                         ui.horizontal(|ui| {
                             let (ir, _) = ui.allocate_exact_size(vec2(16.0, 18.0), Sense::hover());
@@ -2165,74 +2343,244 @@ fn render_tab_scroll(
                 }
 
                 SettingsTab::Shortcuts => {
-                    section_intro(ui, p, s.settings_tab_shortcuts, s.settings_shortcuts_desc);
-                    ui.add_space(14.0);
+                    use crate::keybindings::{
+                        capture_pressed_combo, find_conflicts, ShortcutAction, ShortcutCategory,
+                    };
 
-                    let rows = [
-                        (s.sc_palette, shortcut_label("K")),
-                        (s.sc_new_note, shortcut_label("N")),
-                        (s.sc_daily_note, shortcut_label("D")),
-                        (s.sc_save_note, shortcut_label("S")),
-                        (
-                            s.sc_format,
-                            if cfg!(target_os = "macos") {
-                                "⌘B / I / E".to_string()
-                            } else {
-                                "Ctrl+B / I / E".to_string()
-                            },
-                        ),
-                        (
-                            s.sc_sync_now,
-                            if cfg!(target_os = "macos") {
-                                "⇧⌘S".to_string()
-                            } else {
-                                "Ctrl+Shift+S".to_string()
-                            },
-                        ),
-                        (s.sc_toggle_sidebar, shortcut_label("\\")),
-                        (
-                            s.sc_toggle_inspector,
-                            if cfg!(target_os = "macos") {
-                                "⇧⌘I".to_string()
-                            } else {
-                                "Ctrl+Shift+I".to_string()
-                            },
-                        ),
-                        (s.sc_open_graph, shortcut_label("G")),
-                        (s.sc_open_settings, shortcut_label(",")),
-                        (s.sc_close_overlay, "Esc".to_string()),
-                    ];
+                    if let Some(rec_action) = *recording_shortcut {
+                        if ui.ctx().input(|i| i.key_pressed(egui::Key::Escape)) {
+                            *recording_shortcut = None;
+                        } else if let Some(combo) = ui.ctx().input(capture_pressed_combo) {
+                            cfg.keybindings.set(rec_action, combo);
+                            *recording_shortcut = None;
+                            actions.push(UiAction::ConfigChanged);
+                        }
+                    }
 
-                    settings_card(ui, p, |ui| {
-                        for (idx, (desc, keys)) in rows.iter().enumerate() {
-                            if idx > 0 {
-                                ui.add_space(9.0);
-                                hairline_h(ui, p);
-                                ui.add_space(9.0);
-                            }
-                            let left_w = (ui.available_width() - 104.0).max(120.0);
-                            ui.horizontal(|ui| {
-                                ui.vertical(|ui| {
-                                    ui.set_width(left_w);
-                                    ui.add(
-                                        egui::Label::new(
-                                            egui::RichText::new(*desc)
-                                                .font(font_body(13.0))
-                                                .color(p.text_primary),
-                                        )
-                                        .wrap(),
-                                    );
-                                });
-                                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                                    keycap_badge(ui, p, keys);
-                                });
+                    let conflicts = find_conflicts(&cfg.keybindings);
+
+                    ui.horizontal(|ui| {
+                        ui.vertical(|ui| {
+                            section_intro(ui, p, s.settings_tab_shortcuts, s.settings_shortcuts_desc);
+                        });
+                        if cfg.keybindings.has_any_overrides() {
+                            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                                if secondary_button(ui, p, Some(Icon::RotateCcw), s.sc_reset_all)
+                                    .clicked()
+                                {
+                                    cfg.keybindings.reset_all();
+                                    *recording_shortcut = None;
+                                    actions.push(UiAction::ConfigChanged);
+                                }
                             });
                         }
                     });
+                    ui.add_space(12.0);
+
+                    if !conflicts.is_empty() {
+                        egui::Frame::none()
+                            .fill(with_alpha(p.danger, 0.12))
+                            .stroke(Stroke::new(1.2_f32, p.danger))
+                            .rounding(Rounding::same(8.0))
+                            .inner_margin(Margin::symmetric(12.0, 10.0))
+                            .show(ui, |ui| {
+                                ui.set_width(ui.available_width());
+                                ui.horizontal(|ui| {
+                                    let (ir, _) =
+                                        ui.allocate_exact_size(vec2(16.0, 16.0), Sense::hover());
+                                    draw_icon(ui.painter(), ir, Icon::Alert, p.danger);
+                                    ui.add_space(6.0);
+                                    ui.label(
+                                        egui::RichText::new(format!(
+                                            "{} {}",
+                                            s.sc_conflict_banner,
+                                            conflicts.len()
+                                        ))
+                                        .font(font_semibold(13.0))
+                                        .color(p.danger),
+                                    );
+                                });
+                            });
+                        ui.add_space(12.0);
+                    }
+
+                    for cat in ShortcutCategory::ALL {
+                        let cat_title = match cat {
+                            ShortcutCategory::TabsNav => s.sc_cat_tabs,
+                            ShortcutCategory::FocusZones => s.sc_cat_focus,
+                            ShortcutCategory::SearchCreate => s.sc_cat_search,
+                            ShortcutCategory::EditorView => s.sc_cat_editor,
+                        };
+                        ui.label(
+                            egui::RichText::new(cat_title)
+                                .font(font_semibold(13.5))
+                                .color(p.text_secondary),
+                        );
+                        ui.add_space(6.0);
+
+                        let cat_actions: Vec<ShortcutAction> = ShortcutAction::ALL
+                            .iter()
+                            .copied()
+                            .filter(|a| a.category() == *cat)
+                            .collect();
+
+                        settings_card(ui, p, |ui| {
+                            for (idx, action) in cat_actions.iter().copied().enumerate() {
+                                if idx > 0 {
+                                    ui.add_space(6.0);
+                                    hairline_h(ui, p);
+                                    ui.add_space(6.0);
+                                }
+                                let conflict_others = conflicts.get(&action);
+                                let is_conflict = conflict_others.is_some();
+                                let is_rec = *recording_shortcut == Some(action);
+                                let customized = cfg.keybindings.is_customized(action);
+                                let combo = cfg.keybindings.combo_for(action);
+
+                                let row_frame = if is_conflict {
+                                    egui::Frame::none()
+                                        .fill(with_alpha(p.danger, 0.08))
+                                        .stroke(Stroke::new(1.2_f32, p.danger))
+                                        .rounding(Rounding::same(7.0))
+                                        .inner_margin(Margin::symmetric(8.0, 6.0))
+                                } else {
+                                    egui::Frame::none()
+                                        .inner_margin(Margin::symmetric(2.0, 2.0))
+                                };
+
+                                row_frame.show(ui, |ui| {
+                                    ui.set_width(ui.available_width());
+                                    let left_w = (ui.available_width() - 210.0).max(120.0);
+                                    ui.horizontal(|ui| {
+                                        ui.vertical(|ui| {
+                                            ui.set_width(left_w);
+                                            ui.add(
+                                                egui::Label::new(
+                                                    egui::RichText::new(action.label(lang))
+                                                        .font(font_body(13.0))
+                                                        .color(if is_conflict {
+                                                            p.danger
+                                                        } else {
+                                                            p.text_primary
+                                                        }),
+                                                )
+                                                .wrap(),
+                                            );
+                                            if let Some(others) = conflict_others {
+                                                let names: Vec<&str> = others
+                                                    .iter()
+                                                    .map(|o| o.label(lang))
+                                                    .collect();
+                                                ui.horizontal(|ui| {
+                                                    let (ir, _) = ui.allocate_exact_size(
+                                                        vec2(12.0, 12.0),
+                                                        Sense::hover(),
+                                                    );
+                                                    draw_icon(
+                                                        ui.painter(),
+                                                        ir,
+                                                        Icon::Alert,
+                                                        p.danger,
+                                                    );
+                                                    ui.add(
+                                                        egui::Label::new(
+                                                            egui::RichText::new(format!(
+                                                                "{} {}",
+                                                                s.sc_conflict_with,
+                                                                names.join(", ")
+                                                            ))
+                                                            .font(font_medium(11.5))
+                                                            .color(p.danger),
+                                                        )
+                                                        .wrap(),
+                                                    );
+                                                });
+                                            }
+                                        });
+
+                                        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                                            ui.spacing_mut().item_spacing.x = 6.0;
+                                            let btn_text = if is_rec {
+                                                s.sc_recording_prompt.to_string()
+                                            } else {
+                                                combo.format_display()
+                                            };
+                                            let btn_fill = if is_rec {
+                                                p.accent_soft
+                                            } else if is_conflict {
+                                                with_alpha(p.danger, 0.14)
+                                            } else {
+                                                p.bg_input
+                                            };
+                                            let btn_stroke = if is_rec {
+                                                Stroke::new(1.5_f32, p.accent)
+                                            } else if is_conflict {
+                                                Stroke::new(1.2_f32, p.danger)
+                                            } else {
+                                                Stroke::new(1.0_f32, p.border_subtle)
+                                            };
+                                            let btn_fg = if is_rec {
+                                                p.accent_text
+                                            } else if is_conflict {
+                                                p.danger
+                                            } else {
+                                                p.text_primary
+                                            };
+                                            let key_btn = ui.add(
+                                                egui::Button::new(
+                                                    egui::RichText::new(btn_text)
+                                                        .font(font_mono(12.0))
+                                                        .color(btn_fg),
+                                                )
+                                                .fill(btn_fill)
+                                                .stroke(btn_stroke)
+                                                .rounding(Rounding::same(6.0))
+                                                .min_size(vec2(96.0, 26.0)),
+                                            );
+                                            if key_btn
+                                                .on_hover_cursor(CursorIcon::PointingHand)
+                                                .clicked()
+                                            {
+                                                *recording_shortcut = if is_rec {
+                                                    None
+                                                } else {
+                                                    Some(action)
+                                                };
+                                            }
+                                            if customized {
+                                                if icon_button(
+                                                    ui,
+                                                    p,
+                                                    Icon::RotateCcw,
+                                                    s.sc_reset_one,
+                                                    false,
+                                                )
+                                                .clicked()
+                                                {
+                                                    cfg.keybindings.reset(action);
+                                                    if is_rec {
+                                                        *recording_shortcut = None;
+                                                    }
+                                                    actions.push(UiAction::ConfigChanged);
+                                                }
+                                            }
+                                        });
+                                    });
+                                });
+                            }
+                        });
+                        ui.add_space(12.0);
+                    }
+
+                    ui.label(
+                        egui::RichText::new(s.sc_fixed_note)
+                            .font(font_body(11.5))
+                            .color(p.text_muted),
+                    );
                 }
             }
 
-            ui.add_space(28.0);
+            ui.add_space(56.0);
         });
 }
 
@@ -2875,4 +3223,194 @@ fn segmented_filter_btn(
         fg,
     );
     resp.on_hover_cursor(CursorIcon::PointingHand)
+}
+
+fn settings_group_heading(ui: &mut Ui, p: &ThemePalette, label: &str) {
+    ui.label(
+        egui::RichText::new(label)
+            .font(font_semibold(10.5))
+            .color(p.text_muted),
+    );
+    ui.add_space(4.0);
+}
+
+struct SettingsSearchEntry {
+    title: &'static str,
+    keywords: &'static str,
+    tab: SettingsTab,
+    tab_label: &'static str,
+}
+
+fn settings_search_catalog(s: &Strings) -> Vec<SettingsSearchEntry> {
+    vec![
+        SettingsSearchEntry {
+            title: s.settings_language,
+            keywords: "language интерфейс язык русский english",
+            tab: SettingsTab::General,
+            tab_label: s.settings_tab_general,
+        },
+        SettingsSearchEntry {
+            title: s.settings_startup_mode,
+            keywords: "startup запуск вкладки старт",
+            tab: SettingsTab::General,
+            tab_label: s.settings_tab_general,
+        },
+        SettingsSearchEntry {
+            title: s.settings_auto_save,
+            keywords: "autosave автосохранение сохранение",
+            tab: SettingsTab::General,
+            tab_label: s.settings_tab_general,
+        },
+        SettingsSearchEntry {
+            title: s.settings_task_notifications,
+            keywords: "notifications уведомления задачи",
+            tab: SettingsTab::General,
+            tab_label: s.settings_tab_general,
+        },
+        SettingsSearchEntry {
+            title: s.settings_sb_modules,
+            keywords: "sidebar modules кинотека английский язык модули",
+            tab: SettingsTab::General,
+            tab_label: s.settings_tab_general,
+        },
+        SettingsSearchEntry {
+            title: s.settings_themes_heading,
+            keywords: "theme тема оформление graphite oled everforest paper",
+            tab: SettingsTab::Appearance,
+            tab_label: s.settings_tab_appearance,
+        },
+        SettingsSearchEntry {
+            title: s.settings_accent_heading,
+            keywords: "accent color акцент цвет",
+            tab: SettingsTab::Appearance,
+            tab_label: s.settings_tab_appearance,
+        },
+        SettingsSearchEntry {
+            title: s.settings_ui_zoom,
+            keywords: "zoom масштаб размер окна",
+            tab: SettingsTab::Appearance,
+            tab_label: s.settings_tab_appearance,
+        },
+        SettingsSearchEntry {
+            title: s.settings_custom_titlebar,
+            keywords: "titlebar заголовок рамка окно",
+            tab: SettingsTab::Appearance,
+            tab_label: s.settings_tab_appearance,
+        },
+        SettingsSearchEntry {
+            title: s.settings_show_footer,
+            keywords: "footer подвал статистика слова",
+            tab: SettingsTab::Appearance,
+            tab_label: s.settings_tab_appearance,
+        },
+        SettingsSearchEntry {
+            title: s.settings_show_inspector,
+            keywords: "inspector инспектор правая панель",
+            tab: SettingsTab::Appearance,
+            tab_label: s.settings_tab_appearance,
+        },
+        SettingsSearchEntry {
+            title: s.settings_font_size,
+            keywords: "font шрифт размер типографика",
+            tab: SettingsTab::Editor,
+            tab_label: s.settings_tab_editor,
+        },
+        SettingsSearchEntry {
+            title: s.md_assist_heading,
+            keywords: "slash викиссылки автосписки автопары орфография zen",
+            tab: SettingsTab::Editor,
+            tab_label: s.settings_tab_editor,
+        },
+        SettingsSearchEntry {
+            title: s.settings_daily_template,
+            keywords: "template шаблон дневник сниппеты snippets",
+            tab: SettingsTab::Editor,
+            tab_label: s.settings_tab_editor,
+        },
+        SettingsSearchEntry {
+            title: s.settings_tab_shortcuts,
+            keywords: "shortcuts hotkeys клавиши хоткеи",
+            tab: SettingsTab::Shortcuts,
+            tab_label: s.settings_tab_shortcuts,
+        },
+        SettingsSearchEntry {
+            title: s.settings_vault_dir,
+            keywords: "vault папка хранилище путь",
+            tab: SettingsTab::Storage,
+            tab_label: s.settings_tab_storage,
+        },
+        SettingsSearchEntry {
+            title: s.settings_vault_autolock,
+            keywords: "autolock security пароль шифрование автоблокировка",
+            tab: SettingsTab::Storage,
+            tab_label: s.settings_tab_storage,
+        },
+        SettingsSearchEntry {
+            title: s.settings_index_heading,
+            keywords: "index fts5 индекс вложения assets",
+            tab: SettingsTab::Storage,
+            tab_label: s.settings_tab_storage,
+        },
+        SettingsSearchEntry {
+            title: s.settings_tab_github,
+            keywords: "github sync token репозиторий токен синк",
+            tab: SettingsTab::GitHub,
+            tab_label: s.settings_tab_github,
+        },
+        SettingsSearchEntry {
+            title: s.tmdb_section_title,
+            keywords: "tmdb кинотека постеры api ключ",
+            tab: SettingsTab::GitHub,
+            tab_label: s.settings_tab_github,
+        },
+        SettingsSearchEntry {
+            title: s.update_section_title,
+            keywords: "update version обновления версия бета",
+            tab: SettingsTab::About,
+            tab_label: s.settings_tab_about,
+        },
+        SettingsSearchEntry {
+            title: s.settings_tab_md_help,
+            keywords: "markdown шпаргалка синтаксис",
+            tab: SettingsTab::MarkdownHelp,
+            tab_label: s.settings_tab_md_help,
+        },
+    ]
+}
+
+fn filter_settings_catalog(entries: &[SettingsSearchEntry], query: &str) -> Vec<usize> {
+    let q = query.trim().to_lowercase();
+    if q.is_empty() {
+        return Vec::new();
+    }
+    entries
+        .iter()
+        .enumerate()
+        .filter(|(_, e)| {
+            e.title.to_lowercase().contains(&q)
+                || e.tab_label.to_lowercase().contains(&q)
+                || e.keywords.to_lowercase().contains(&q)
+        })
+        .map(|(i, _)| i)
+        .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn settings_search_finds_ru_and_en_entries() {
+        let ru = strings(Lang::Ru);
+        let cat_ru = settings_search_catalog(ru);
+        let hits_ru = filter_settings_catalog(&cat_ru, "шифр");
+        assert!(!hits_ru.is_empty());
+        assert_eq!(cat_ru[hits_ru[0]].tab, SettingsTab::Storage);
+
+        let en = strings(Lang::En);
+        let cat_en = settings_search_catalog(en);
+        let hits_en = filter_settings_catalog(&cat_en, "update");
+        assert!(!hits_en.is_empty());
+        assert_eq!(cat_en[hits_en[0]].tab, SettingsTab::About);
+    }
 }

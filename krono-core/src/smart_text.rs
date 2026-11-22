@@ -873,6 +873,123 @@ pub fn plan_extract_selection(selection: &str, fallback_title: &str) -> Option<E
     })
 }
 
+fn is_word_char(c: char) -> bool {
+    c.is_alphanumeric() || c == '_'
+}
+
+fn is_hspace(c: char) -> bool {
+    c.is_whitespace() && c != '\n' && c != '\r'
+}
+
+fn char_idx_to_byte(s: &str, char_idx: usize) -> usize {
+    s.char_indices()
+        .nth(char_idx)
+        .map(|(b, _)| b)
+        .unwrap_or(s.len())
+}
+
+/// Computes the previous Unicode word boundary (in char indices) for Ctrl+Backspace.
+pub fn prev_word_boundary_char(text: &str, cursor_char: usize) -> usize {
+    let chars: Vec<char> = text.chars().collect();
+    let mut i = cursor_char.min(chars.len());
+    if i == 0 {
+        return 0;
+    }
+    if chars[i - 1] == '\n' {
+        return if i >= 2 && chars[i - 2] == '\r' { i - 2 } else { i - 1 };
+    }
+    while i > 0 && is_hspace(chars[i - 1]) {
+        i -= 1;
+    }
+    if i == 0 || chars[i - 1] == '\n' || chars[i - 1] == '\r' {
+        return i;
+    }
+    if is_word_char(chars[i - 1]) {
+        while i > 0 && is_word_char(chars[i - 1]) {
+            i -= 1;
+        }
+    } else {
+        while i > 0 && !is_word_char(chars[i - 1]) && !chars[i - 1].is_whitespace() {
+            i -= 1;
+        }
+    }
+    i
+}
+
+/// Computes the next Unicode word boundary (in char indices) for Ctrl+Delete.
+pub fn next_word_boundary_char(text: &str, cursor_char: usize) -> usize {
+    let chars: Vec<char> = text.chars().collect();
+    let len = chars.len();
+    let mut i = cursor_char.min(len);
+    if i >= len {
+        return len;
+    }
+    if chars[i] == '\r' {
+        return if i + 1 < len && chars[i + 1] == '\n' { i + 2 } else { i + 1 };
+    }
+    if chars[i] == '\n' {
+        return i + 1;
+    }
+    while i < len && is_hspace(chars[i]) {
+        i += 1;
+    }
+    if i >= len || chars[i] == '\n' || chars[i] == '\r' {
+        return i;
+    }
+    if is_word_char(chars[i]) {
+        while i < len && is_word_char(chars[i]) {
+            i += 1;
+        }
+    } else {
+        while i < len && !is_word_char(chars[i]) && !chars[i].is_whitespace() {
+            i += 1;
+        }
+    }
+    i
+}
+
+/// Deletes the active selection or the Unicode word before the cursor. Returns new cursor char index.
+pub fn delete_word_backward(text: &mut String, sel_start: usize, sel_end: usize) -> Option<usize> {
+    let total = text.chars().count();
+    let a = sel_start.min(sel_end).min(total);
+    let b = sel_start.max(sel_end).min(total);
+    if a < b {
+        let bs = char_idx_to_byte(text, a);
+        let be = char_idx_to_byte(text, b);
+        text.replace_range(bs..be, "");
+        return Some(a);
+    }
+    let prev = prev_word_boundary_char(text, a);
+    if prev == a {
+        return None;
+    }
+    let bs = char_idx_to_byte(text, prev);
+    let be = char_idx_to_byte(text, a);
+    text.replace_range(bs..be, "");
+    Some(prev)
+}
+
+/// Deletes the active selection or the Unicode word after the cursor. Returns new cursor char index.
+pub fn delete_word_forward(text: &mut String, sel_start: usize, sel_end: usize) -> Option<usize> {
+    let total = text.chars().count();
+    let a = sel_start.min(sel_end).min(total);
+    let b = sel_start.max(sel_end).min(total);
+    if a < b {
+        let bs = char_idx_to_byte(text, a);
+        let be = char_idx_to_byte(text, b);
+        text.replace_range(bs..be, "");
+        return Some(a);
+    }
+    let next = next_word_boundary_char(text, a);
+    if next == a {
+        return None;
+    }
+    let bs = char_idx_to_byte(text, a);
+    let be = char_idx_to_byte(text, next);
+    text.replace_range(bs..be, "");
+    Some(a)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -932,5 +1049,35 @@ mod tests {
         assert_eq!(plan.title, "Новый раздел");
         assert_eq!(plan.body, "Текст абзаца");
         assert_eq!(plan.replacement_link, "[[Новый раздел]]");
+    }
+
+    #[test]
+    fn unicode_word_deletion_handles_cyrillic_latin_punctuation_and_lines() {
+        let mut s = "Привет, мир_123  тест".to_string();
+        let c = s.chars().count();
+        let c = delete_word_backward(&mut s, c, c).unwrap();
+        assert_eq!(s, "Привет, мир_123  ");
+        let c = delete_word_backward(&mut s, c, c).unwrap();
+        assert_eq!(s, "Привет, ");
+        let c = delete_word_backward(&mut s, c, c).unwrap();
+        assert_eq!(s, "Привет");
+        let c = delete_word_backward(&mut s, c, c).unwrap();
+        assert_eq!(s, "");
+        assert_eq!(c, 0);
+        assert_eq!(delete_word_backward(&mut s, 0, 0), None);
+
+        let mut line = "строка 1\nстрока 2".to_string();
+        let pos = "строка 1\n".chars().count();
+        let c2 = delete_word_backward(&mut line, pos, pos).unwrap();
+        assert_eq!(line, "строка 1строка 2");
+        assert_eq!(c2, "строка 1".chars().count());
+
+        let mut fwd = "hello мир, тест".to_string();
+        assert_eq!(delete_word_forward(&mut fwd, 0, 0), Some(0));
+        assert_eq!(fwd, " мир, тест");
+        assert_eq!(delete_word_forward(&mut fwd, 0, 0), Some(0));
+        assert_eq!(fwd, ", тест");
+        assert_eq!(delete_word_forward(&mut fwd, 1, 4), Some(1));
+        assert_eq!(fwd, ",ст");
     }
 }

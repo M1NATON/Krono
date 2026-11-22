@@ -307,12 +307,10 @@ impl KronoApp {
             }
         }
 
-        if self
-            .active_tag_filter
-            .as_deref()
-            .is_some_and(|t| t.eq_ignore_ascii_case(&old_norm))
-        {
-            self.active_tag_filter = Some(new_norm.clone());
+        for active in &mut self.active_tag_filters {
+            if active.eq_ignore_ascii_case(&old_norm) {
+                *active = new_norm.clone();
+            }
         }
         self.reload_index_caches();
         self.tag_rename.open = false;

@@ -157,7 +157,7 @@ pub(crate) fn apply_headers(req: ureq::Request, token: &str) -> ureq::Request {
     req.set("Authorization", &auth)
         .set("Accept", "application/vnd.github+json")
         .set("X-GitHub-Api-Version", "2022-11-28")
-        .set("User-Agent", "Krono-Desktop/0.2")
+        .set("User-Agent", concat!("Krono-Desktop/", env!("KRONO_APP_VERSION")))
 }
 
 pub(crate) fn format_ureq_err(err: ureq::Error, lang: Lang) -> String {

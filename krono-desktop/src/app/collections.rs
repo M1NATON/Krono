@@ -8,7 +8,8 @@ use crate::sync::{
     secrets::load_tmdb_token,
     tmdb::{
         spawn_discover_by_genres, spawn_fetch_details, spawn_fetch_recommendations,
-        spawn_search_multi, TmdbEvent, TmdbMediaDetails, TmdbMediaKind, TmdbSearchItem,
+        spawn_search_books, spawn_search_multi, BookSearchItem, TmdbEvent, TmdbMediaDetails,
+        TmdbMediaKind, TmdbSearchItem,
     },
 };
 use crate::ui::{
@@ -147,6 +148,11 @@ impl KronoApp {
 
 
     pub(crate) fn open_collection(&mut self, rel_path: &str) {
+        if let Some(prev_path) = self.active_collection.path.clone() {
+            self.vault_ui_state
+                .collections
+                .insert(prev_path, self.active_collection.to_filter_state());
+        }
         self.flush_unsaved_documents();
         match read_collection(&self.config.vault_dir, rel_path) {
             Ok((mut doc, mut modified, _, _)) => {
@@ -167,6 +173,10 @@ impl KronoApp {
                 self.active_collection.dirty = false;
                 self.active_collection.last_edit_at = None;
                 self.active_collection.reset_transient();
+                if let Some(saved_filters) = self.vault_ui_state.collections.get(rel_path).cloned()
+                {
+                    self.active_collection.apply_filter_state(&saved_filters);
+                }
                 self.expand_parents(rel_path);
                 if self.view_mode != ViewMode::Collection {
                     self.view_anim_at = Some(Instant::now());
@@ -832,11 +842,36 @@ impl KronoApp {
                         }
                     }
                 }
+                TmdbEvent::BookSearchDone { query, result } => {
+                    if query != self.active_collection.tmdb_ui.last_dispatched_book_query
+                        && !self
+                            .active_collection
+                            .tmdb_ui
+                            .last_dispatched_book_query
+                            .is_empty()
+                    {
+                        continue;
+                    }
+                    self.active_collection.tmdb_ui.book_search_busy = false;
+                    match result {
+                        Ok(items) => {
+                            self.active_collection.tmdb_ui.book_search_error = None;
+                            self.active_collection.tmdb_ui.book_search_results = items;
+                        }
+                        Err(e) => {
+                            self.active_collection.tmdb_ui.book_search_error = Some(e);
+                        }
+                    }
+                }
                 TmdbEvent::DetailsDone {
                     target_status,
                     fallback,
                     result,
                 } => {
+                    self.active_collection
+                        .tmdb_ui
+                        .pending_add_keys
+                        .remove(&fallback.tmdb_id);
                     let details = match result {
                         Ok(d) => d,
                         Err(_) => TmdbMediaDetails {
@@ -950,12 +985,72 @@ impl KronoApp {
         );
     }
 
+    pub(super) fn start_book_search(&mut self, ctx: &eframe::egui::Context, query: String) {
+        self.active_collection.tmdb_ui.book_search_busy = true;
+        self.active_collection.tmdb_ui.book_search_error = None;
+        spawn_search_books(ctx.clone(), self.tmdb_tx.clone(), query, self.config.language);
+    }
+
+    pub(super) fn insert_book_media_record(&mut self, item: BookSearchItem, status_opt: &str) {
+        let is_ru = self.config.language == Lang::Ru;
+        crate::ui::collection_gallery::ensure_media_type_option(
+            &mut self.active_collection.doc,
+            "book",
+            is_ru,
+        );
+        let rec_id = self.active_collection.doc.add_record(
+            &item.title,
+            Some(("status", status_opt)),
+            chrono::Utc::now().timestamp(),
+        );
+        if let Some(rec) = self
+            .active_collection
+            .doc
+            .records
+            .iter_mut()
+            .find(|r| r.id == rec_id)
+        {
+            rec.values
+                .insert("media_type".into(), FieldValue::Text("book".into()));
+            if let Some(year) = item.year {
+                rec.values
+                    .insert("year".into(), FieldValue::Number(year as f64));
+            }
+            if !item.author.trim().is_empty() {
+                rec.values.insert(
+                    "director".into(),
+                    FieldValue::Text(item.author.trim().to_string()),
+                );
+            }
+            if !item.summary.trim().is_empty() {
+                rec.values
+                    .insert("genres".into(), FieldValue::Text(item.summary));
+            }
+            rec.values
+                .insert("tmdb_id".into(), FieldValue::Text(item.external_id));
+            if let Some(url) = item.cover_url {
+                rec.values.insert("poster_path".into(), FieldValue::Text(url));
+            }
+        }
+        self.active_collection.dirty = true;
+        self.save_current_collection();
+        let s = strings(self.config.language);
+        self.push_toast(
+            format!("{}: {}", s.tmdb_added_toast, item.title),
+            ToastKind::Success,
+        );
+    }
+
     pub(super) fn start_tmdb_add_media(
         &mut self,
         ctx: &eframe::egui::Context,
         item: TmdbSearchItem,
         status_opt: String,
     ) {
+        self.active_collection
+            .tmdb_ui
+            .pending_add_keys
+            .insert(item.tmdb_id.clone());
         if let Ok(Some(token)) = load_tmdb_token() {
             spawn_fetch_details(
                 ctx.clone(),

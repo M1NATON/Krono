@@ -50,10 +50,24 @@ pub struct TmdbMediaDetails {
     pub director: String,
 }
 
+#[derive(Clone, Debug, PartialEq)]
+pub struct BookSearchItem {
+    pub external_id: String,
+    pub title: String,
+    pub author: String,
+    pub year: Option<i32>,
+    pub cover_url: Option<String>,
+    pub summary: String,
+}
+
 pub enum TmdbEvent {
     SearchDone {
         query: String,
         result: Result<Vec<TmdbSearchItem>, String>,
+    },
+    BookSearchDone {
+        query: String,
+        result: Result<Vec<BookSearchItem>, String>,
     },
     DetailsDone {
         target_status: String,
@@ -180,6 +194,24 @@ pub fn spawn_fetch_recommendations(
         .spawn(move || {
             let res = fetch_recommendations_sync(&token, &seeds, &existing_ids, lang, tmdb_lang);
             let _ = tx.send(TmdbEvent::RecommendationsDone(res));
+            ctx.request_repaint();
+        });
+}
+
+pub fn spawn_search_books(
+    ctx: egui::Context,
+    tx: mpsc::Sender<TmdbEvent>,
+    query: String,
+    lang: Lang,
+) {
+    let _ = thread::Builder::new()
+        .name("krono-openlib-search".into())
+        .spawn(move || {
+            let res = search_books_sync(&query, lang);
+            let _ = tx.send(TmdbEvent::BookSearchDone {
+                query,
+                result: res,
+            });
             ctx.request_repaint();
         });
 }
@@ -556,6 +588,116 @@ fn discover_by_genres_sync(
     Ok(deduplicate_recommendations(items, existing_ids))
 }
 
+#[derive(Deserialize)]
+struct OpenLibrarySearchResp {
+    #[serde(default)]
+    docs: Vec<RawOpenLibraryDoc>,
+}
+
+#[derive(Deserialize)]
+struct RawOpenLibraryDoc {
+    #[serde(default)]
+    key: String,
+    #[serde(default)]
+    title: Option<String>,
+    #[serde(default)]
+    author_name: Vec<String>,
+    #[serde(default)]
+    first_publish_year: Option<i32>,
+    #[serde(default)]
+    cover_i: Option<i64>,
+    #[serde(default)]
+    subject: Vec<String>,
+}
+
+pub fn parse_openlibrary_json(raw: &str) -> Result<Vec<BookSearchItem>, String> {
+    let parsed: OpenLibrarySearchResp =
+        serde_json::from_str(raw).map_err(|e| format!("OpenLibrary parse error: {e}"))?;
+    let mut out = Vec::new();
+    for doc in parsed.docs {
+        let Some(title) = doc
+            .title
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+        else {
+            continue;
+        };
+        let key = doc.key.trim();
+        let external_id = if key.is_empty() {
+            format!("ol:title:{}", title.to_lowercase())
+        } else {
+            format!("ol:{key}")
+        };
+        let author = doc
+            .author_name
+            .into_iter()
+            .map(|a| a.trim().to_string())
+            .find(|a| !a.is_empty())
+            .unwrap_or_default();
+        let cover_url = doc
+            .cover_i
+            .filter(|id| *id > 0)
+            .map(|id| format!("https://covers.openlibrary.org/b/id/{id}-M.jpg"));
+        let summary = doc
+            .subject
+            .into_iter()
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .take(4)
+            .collect::<Vec<_>>()
+            .join(", ");
+        out.push(BookSearchItem {
+            external_id,
+            title,
+            author,
+            year: doc.first_publish_year.filter(|y| *y > 0),
+            cover_url,
+            summary,
+        });
+    }
+    Ok(out)
+}
+
+fn search_books_sync(query: &str, lang: Lang) -> Result<Vec<BookSearchItem>, String> {
+    let trimmed = query.trim();
+    if trimmed.is_empty() {
+        return Ok(Vec::new());
+    }
+    let agent = build_agent();
+    let url = format!(
+        "https://openlibrary.org/search.json?q={}&limit=12&fields=key,title,author_name,first_publish_year,cover_i,subject",
+        encode_query_component(trimmed)
+    );
+    let resp = agent
+        .get(&url)
+        .set("Accept", "application/json")
+        .set(
+            "User-Agent",
+            concat!("Krono/", env!("KRONO_APP_VERSION"), " (Desktop Knowledge App)"),
+        )
+        .call()
+        .map_err(|err| match err {
+            ureq::Error::Status(code, _) => {
+                if lang == Lang::Ru {
+                    format!("Ошибка OpenLibrary (HTTP {code})")
+                } else {
+                    format!("OpenLibrary error (HTTP {code})")
+                }
+            }
+            ureq::Error::Transport(t) => {
+                if lang == Lang::Ru {
+                    format!("OpenLibrary недоступен: {t}")
+                } else {
+                    format!("OpenLibrary network error: {t}")
+                }
+            }
+        })?;
+    let body = resp
+        .into_string()
+        .map_err(|e| format!("OpenLibrary read error: {e}"))?;
+    parse_openlibrary_json(&body)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -619,5 +761,37 @@ mod tests {
         let p = build_discover_path(TmdbMediaKind::Movie, &movie_ids, "ru-RU");
         assert!(p.starts_with("/discover/movie?with_genres=878,18"));
         assert!(p.contains("language=ru-RU"));
+    }
+
+    #[test]
+    fn parses_openlibrary_json_with_covers_and_fallbacks() {
+        let raw = r#"{
+            "docs": [
+                {
+                    "key": "/works/OL123W",
+                    "title": "Dune",
+                    "author_name": ["Frank Herbert"],
+                    "first_publish_year": 1965,
+                    "cover_i": 823456,
+                    "subject": ["Science fiction", "Desert"]
+                },
+                {
+                    "key": "/works/OL999W",
+                    "title": "No Cover Book"
+                }
+            ]
+        }"#;
+        let items = parse_openlibrary_json(raw).expect("valid json");
+        assert_eq!(items.len(), 2);
+        assert_eq!(items[0].external_id, "ol:/works/OL123W");
+        assert_eq!(items[0].author, "Frank Herbert");
+        assert_eq!(items[0].year, Some(1965));
+        assert_eq!(
+            items[0].cover_url.as_deref(),
+            Some("https://covers.openlibrary.org/b/id/823456-M.jpg")
+        );
+        assert_eq!(items[0].summary, "Science fiction, Desert");
+        assert_eq!(items[1].cover_url, None);
+        assert_eq!(items[1].author, "");
     }
 }

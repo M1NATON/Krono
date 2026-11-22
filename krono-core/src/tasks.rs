@@ -44,9 +44,53 @@ pub struct ParsedTask {
     pub clean_text: String,
     pub done: bool,
     pub due_date: Option<SimpleDate>,
+    pub completed_at: Option<SimpleDate>,
     pub priority: Option<TaskPriority>,
     pub recurrence: Option<TaskRecurrence>,
     pub tags: Vec<String>,
+}
+
+/// Extracts `✅ YYYY-MM-DD` / `✅YYYY-MM-DD` / `done:YYYY-MM-DD` completion markers.
+pub fn extract_completed_date(raw: &str) -> (String, Option<SimpleDate>) {
+    let tokens: Vec<&str> = raw.split_whitespace().collect();
+    let mut kept: Vec<&str> = Vec::with_capacity(tokens.len());
+    let mut found: Option<SimpleDate> = None;
+    let mut i = 0usize;
+
+    while i < tokens.len() {
+        let tok = tokens[i];
+        if tok == "✅" {
+            if let Some(next) = tokens.get(i + 1) {
+                if let Some(d) = SimpleDate::parse_iso(next) {
+                    if found.is_none() {
+                        found = Some(d);
+                    }
+                    i += 2;
+                    continue;
+                }
+            }
+        } else if let Some(rest) = tok.strip_prefix('✅') {
+            if let Some(d) = SimpleDate::parse_iso(rest) {
+                if found.is_none() {
+                    found = Some(d);
+                }
+                i += 1;
+                continue;
+            }
+        } else if tok.len() > 5 && tok.get(..5).is_some_and(|p| p.eq_ignore_ascii_case("done:")) {
+            if let Some(d) = SimpleDate::parse_iso(&tok[5..]) {
+                if found.is_none() {
+                    found = Some(d);
+                }
+                i += 1;
+                continue;
+            }
+        }
+        kept.push(tok);
+        i += 1;
+    }
+
+    (kept.join(" "), found)
 }
 
 /// Extracts all Markdown checklist tasks outside fenced code blocks.
@@ -71,7 +115,8 @@ pub fn extract_tasks(body: &str, reference_date: SimpleDate) -> Vec<ParsedTask> 
         if let Some((prefix, rest)) = match_task_line_prefix(trimmed) {
             let done = prefix.contains('x') || prefix.contains('X');
             let raw_text = rest.trim_end_matches(['\r', '\n']).trim().to_string();
-            let meta = parse_inline_task_meta(&raw_text, reference_date);
+            let (without_done_date, completed_at) = extract_completed_date(&raw_text);
+            let meta = parse_inline_task_meta(&without_done_date, reference_date);
             let due_date = meta
                 .due_date
                 .as_deref()
@@ -83,6 +128,7 @@ pub fn extract_tasks(body: &str, reference_date: SimpleDate) -> Vec<ParsedTask> 
                 clean_text: meta.clean_text,
                 done,
                 due_date,
+                completed_at: if done { completed_at } else { None },
                 priority: meta.priority,
                 recurrence: meta.recurrence,
                 tags: meta.tags,
@@ -143,7 +189,20 @@ pub fn toggle_task_in_markdown(
                     out.push_str(" [");
                     out.push(next_mark);
                     out.push_str("] ");
-                    out.push_str(rest);
+                    if was_done {
+                        let (cleaned_rest, _) = extract_completed_date(rest);
+                        out.push_str(&cleaned_rest);
+                    } else {
+                        let trimmed_rest = rest.trim_end();
+                        out.push_str(trimmed_rest);
+                        if extract_completed_date(trimmed_rest).1.is_none() {
+                            if !trimmed_rest.is_empty() {
+                                out.push(' ');
+                            }
+                            out.push_str("✅ ");
+                            out.push_str(&today.format_iso());
+                        }
+                    }
 
                     if !was_done {
                         let meta = parse_inline_task_meta(rest, today);
@@ -154,7 +213,8 @@ pub fn toggle_task_in_markdown(
                                 .and_then(SimpleDate::parse_iso)
                                 .unwrap_or(today);
                             let next_due = rec.next_date(base_date);
-                            let next_rest = replace_or_append_due_date(rest, next_due);
+                            let (rest_no_done, _) = extract_completed_date(rest);
+                            let next_rest = replace_or_append_due_date(&rest_no_done, next_due);
                             let sep = if eol.is_empty() { default_eol } else { eol };
                             out.push_str(sep);
                             out.push_str(indent);
@@ -389,12 +449,35 @@ mod tests {
         let toggled = toggle_task_in_markdown(md, 0, today).unwrap();
         assert_eq!(
             toggled,
-            "Intro\r\n  - [x] Standup @2026-11-21 @every week !med #team\r\n  - [ ] Standup @2026-11-28 @every week !med #team\r\nOutro\r\n"
+            "Intro\r\n  - [x] Standup @2026-11-21 @every week !med #team ✅ 2026-11-21\r\n  - [ ] Standup @2026-11-28 @every week !med #team\r\nOutro\r\n"
         );
 
-        // Toggle back to open does not create duplicate recurrence
+        // Toggle back to open does not create duplicate recurrence and removes completion marker
         let untoggled = toggle_task_in_markdown(&toggled, 0, today).unwrap();
-        assert!(untoggled.starts_with("Intro\r\n  - [ ] Standup @2026-11-21"));
+        assert_eq!(
+            untoggled,
+            "Intro\r\n  - [ ] Standup @2026-11-21 @every week !med #team\r\n  - [ ] Standup @2026-11-28 @every week !med #team\r\nOutro\r\n"
+        );
+    }
+
+    #[test]
+    fn toggle_task_records_and_clears_completed_at_date() {
+        let today = SimpleDate::from_ymd(2026, 11, 22).unwrap();
+        let md = "- [ ] Подготовить релиз #krono\n";
+        let done_md = toggle_task_in_markdown(md, 0, today).unwrap();
+        assert_eq!(done_md, "- [x] Подготовить релиз #krono ✅ 2026-11-22\n");
+
+        let parsed = extract_tasks(&done_md, today);
+        assert_eq!(parsed.len(), 1);
+        assert!(parsed[0].done);
+        assert_eq!(parsed[0].completed_at, Some(today));
+        assert_eq!(parsed[0].clean_text, "Подготовить релиз #krono");
+
+        let reopened_md = toggle_task_in_markdown(&done_md, 0, today).unwrap();
+        assert_eq!(reopened_md, "- [ ] Подготовить релиз #krono\n");
+        let parsed_open = extract_tasks(&reopened_md, today);
+        assert!(!parsed_open[0].done);
+        assert_eq!(parsed_open[0].completed_at, None);
     }
 
     #[test]

@@ -6,7 +6,10 @@ use crate::ui::components::{
 use crate::ui::icons::{draw_icon, Icon};
 use crate::ui::motion::{anim_bool_eased, lerp_color, with_alpha};
 use crate::ui::theme::{font_body, font_medium, font_mono, font_serif_bold, ThemePalette};
-use crate::ui::{LayoutClass, TableColumnWidths, TableSort, UiAction, ViewMode};
+use crate::ui::{
+    note_matches_tag_filters, LayoutClass, TableColumnWidths, TableSort, TagFilterMode, UiAction,
+    ViewMode,
+};
 use eframe::egui::{
     self, pos2, vec2, Align, CursorIcon, Layout, Margin, Rect, Rounding, Sense, Stroke, Ui,
 };
@@ -24,7 +27,8 @@ pub fn render_table_view(
     notes: &[NoteMeta],
     filter_query: &mut String,
     status_filter: &mut Option<NoteStatus>,
-    active_tag: Option<&str>,
+    active_tags: &[String],
+    tag_mode: TagFilterMode,
     sort_mode: &mut TableSort,
     col_widths: &mut TableColumnWidths,
 ) -> Vec<UiAction> {
@@ -78,7 +82,7 @@ pub fn render_table_view(
             notes.len(),
             filter_query,
             status_filter,
-            active_tag,
+            active_tags,
             sort_mode,
             &mut actions,
         );
@@ -90,7 +94,7 @@ pub fn render_table_view(
             layout,
             filter_query,
             status_filter,
-            active_tag,
+            active_tags,
             sort_mode,
             &mut actions,
         );
@@ -98,7 +102,14 @@ pub fn render_table_view(
 
     ui.add_space(if card_mode { 10.0 } else { 12.0 });
 
-    let filtered = filter_and_sort_notes(notes, filter_query, *status_filter, active_tag, *sort_mode);
+    let filtered = filter_and_sort_notes(
+        notes,
+        filter_query,
+        *status_filter,
+        active_tags,
+        tag_mode,
+        *sort_mode,
+    );
 
     if card_mode {
         render_mobile_cards(ui, p, lang, s, &filtered, &mut actions);
@@ -121,7 +132,8 @@ fn filter_and_sort_notes<'a>(
     notes: &'a [NoteMeta],
     filter_query: &str,
     status_filter: Option<NoteStatus>,
-    active_tag: Option<&str>,
+    active_tags: &[String],
+    tag_mode: TagFilterMode,
     sort_mode: TableSort,
 ) -> Vec<&'a NoteMeta> {
     let q_lower = filter_query.trim().to_lowercase();
@@ -133,10 +145,8 @@ fn filter_and_sort_notes<'a>(
                     return false;
                 }
             }
-            if let Some(tag) = active_tag {
-                if !n.tags.iter().any(|t| t.eq_ignore_ascii_case(tag)) {
-                    return false;
-                }
+            if !note_matches_tag_filters(&n.tags, active_tags, tag_mode) {
+                return false;
             }
             if !q_lower.is_empty() {
                 let in_title = n.title.to_lowercase().contains(&q_lower);
@@ -235,7 +245,7 @@ fn render_status_chips(
     p: &ThemePalette,
     s: &Strings,
     status_filter: &mut Option<NoteStatus>,
-    active_tag: Option<&str>,
+    active_tags: &[String],
     actions: &mut Vec<UiAction>,
 ) {
     let status_opts: &[(Option<NoteStatus>, &str)] = &[
@@ -277,10 +287,10 @@ fn render_status_chips(
         }
     }
 
-    if let Some(tag) = active_tag {
+    for tag in active_tags {
         let (resp, rm) = tag_chip(ui, p, tag, true);
         if rm || resp.clicked() {
-            actions.push(UiAction::SetTagFilter(None));
+            actions.push(UiAction::ToggleTagFilter(tag.clone()));
         }
     }
 }
@@ -344,7 +354,7 @@ fn render_mobile_toolbar(
     total_notes: usize,
     filter_query: &mut String,
     status_filter: &mut Option<NoteStatus>,
-    active_tag: Option<&str>,
+    active_tags: &[String],
     sort_mode: &mut TableSort,
     actions: &mut Vec<UiAction>,
 ) {
@@ -356,7 +366,7 @@ fn render_mobile_toolbar(
         .show(ui, |ui| {
             ui.horizontal(|ui| {
                 ui.spacing_mut().item_spacing.x = 6.0;
-                render_status_chips(ui, p, s, status_filter, active_tag, actions);
+                render_status_chips(ui, p, s, status_filter, active_tags, actions);
             });
         });
 
@@ -380,7 +390,7 @@ fn render_desktop_toolbar(
     layout: LayoutClass,
     filter_query: &mut String,
     status_filter: &mut Option<NoteStatus>,
-    active_tag: Option<&str>,
+    active_tags: &[String],
     sort_mode: &mut TableSort,
     actions: &mut Vec<UiAction>,
 ) {
@@ -392,7 +402,7 @@ fn render_desktop_toolbar(
     ui.horizontal_wrapped(|ui| {
         ui.spacing_mut().item_spacing = vec2(8.0, 6.0);
         render_search_box(ui, p, s.filter_search_hint, filter_query, search_w);
-        render_status_chips(ui, p, s, status_filter, active_tag, actions);
+        render_status_chips(ui, p, s, status_filter, active_tags, actions);
         if layout == LayoutClass::Compact {
             render_sort_pills(ui, p, s, sort_mode);
         } else {

@@ -18,6 +18,7 @@
 # Local tooling / assistant metadata
 /.tgrep/
 /graphify-out/
+/site/
 .graphifyignore
 GEMINI.md
 CLAUDE.md

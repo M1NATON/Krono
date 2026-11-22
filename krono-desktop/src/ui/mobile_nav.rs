@@ -143,7 +143,7 @@ pub fn render_mobile_bottom_bar(
                     match slot.mode {
                         ViewMode::Settings => {
                             if view_mode != ViewMode::Settings {
-                                actions.push(UiAction::OpenSettings(SettingsTab::Appearance));
+                                actions.push(UiAction::OpenSettings(SettingsTab::General));
                             }
                         }
                         ViewMode::Editor => {
@@ -183,7 +183,7 @@ pub fn render_mobile_notes_list(
     selected_path: Option<&str>,
     selected_collection_path: Option<&str>,
     selected_canvas_path: Option<&str>,
-    active_tag: Option<&str>,
+    active_tags: &[String],
     expanded_folders: &HashSet<String>,
     pages_ui: &mut PagesTreeUiState<'_>,
     cal: &mut CalendarUiState<'_>,
@@ -200,7 +200,7 @@ pub fn render_mobile_notes_list(
             .show(ui, |ui| {
                 ui.horizontal(|ui| {
                     ui.spacing_mut().item_spacing.x = 6.0;
-                    if active_tag.is_some() {
+                    if !active_tags.is_empty() {
                         let g = ui.painter().layout_no_wrap(
                             s.all_tags_clear.to_string(),
                             font_medium(11.5),
@@ -219,11 +219,11 @@ pub fn render_mobile_notes_list(
                             p.accent_text,
                         );
                         if resp.on_hover_cursor(CursorIcon::PointingHand).clicked() {
-                            actions.push(UiAction::SetTagFilter(None));
+                            actions.push(UiAction::ClearTagFilters);
                         }
                     }
                     for (tag, _) in tag_counts {
-                        let selected = active_tag.is_some_and(|at| at.eq_ignore_ascii_case(tag));
+                        let selected = active_tags.iter().any(|at| at.eq_ignore_ascii_case(tag));
                         let (resp, _) = tag_chip(ui, p, tag, false);
                         if selected {
                             ui.painter().rect_stroke(
@@ -233,11 +233,7 @@ pub fn render_mobile_notes_list(
                             );
                         }
                         if resp.clicked() {
-                            if selected {
-                                actions.push(UiAction::SetTagFilter(None));
-                            } else {
-                                actions.push(UiAction::SetTagFilter(Some(tag.clone())));
-                            }
+                            actions.push(UiAction::ToggleTagFilter(tag.clone()));
                         }
                     }
                 });
@@ -279,7 +275,7 @@ pub fn render_mobile_notes_list(
                 selected_path,
                 selected_collection_path,
                 selected_canvas_path,
-                active_tag,
+                active_tags,
                 expanded_folders,
                 &[],
                 &[],

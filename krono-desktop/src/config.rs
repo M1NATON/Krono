@@ -207,6 +207,8 @@ pub struct AppConfig {
     pub open_tab_keys: Vec<String>,
     #[serde(default)]
     pub last_active_tab_key: Option<String>,
+    #[serde(default)]
+    pub keybindings: crate::keybindings::KeybindingsConfig,
 }
 
 fn default_autolock_minutes() -> u32 {
@@ -323,6 +325,7 @@ impl Default for AppConfig {
             recent_history: Vec::new(),
             open_tab_keys: Vec::new(),
             last_active_tab_key: None,
+            keybindings: crate::keybindings::KeybindingsConfig::default(),
         }
     }
 }
@@ -551,5 +554,124 @@ mod tests {
         cfg.legacy_github_token.clear();
         assert!(!cfg.is_github_configured(false));
         assert!(cfg.is_github_configured(true));
+    }
+
+    #[test]
+    fn vault_ui_state_roundtrip_and_missing_defaults() {
+        let dir = std::env::temp_dir().join(format!("krono_ui_state_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+
+        assert_eq!(VaultUiState::load(&dir), VaultUiState::default());
+
+        let mut st = VaultUiState::default();
+        st.sidebar.active_tags = vec!["krono".into(), "работа".into()];
+        st.sidebar.tag_mode = crate::ui::TagFilterMode::All;
+        st.table.filter_query = "задача".into();
+        st.table.status_filter = Some("in_progress".into());
+        st.board_sort = crate::ui::BoardSort::TitleAsc;
+        st.collections.insert(
+            "projects/roadmap.board.json".into(),
+            CollectionFilterState {
+                active_view: Some(krono_core::collection::CollectionViewKind::Table),
+                filter_query: "релиз".into(),
+                date_filter: krono_core::collection::DateFilterPreset::Next7Days,
+                tag_filter: Some("v0.3".into()),
+                select_filter: Some(("status".into(), "doing".into())),
+                min_number_filter: Some(("score".into(), 5)),
+                genre_filter: None,
+                media_category_filter: Some("movie".into()),
+                active_saved_view_id: Some("sv-1".into()),
+                sort: Some(("title".into(), true)),
+            },
+        );
+
+        st.save(&dir).unwrap();
+        let loaded = VaultUiState::load(&dir);
+        assert_eq!(loaded, st);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct CollectionFilterState {
+    pub active_view: Option<krono_core::collection::CollectionViewKind>,
+    pub filter_query: String,
+    pub date_filter: krono_core::collection::DateFilterPreset,
+    pub tag_filter: Option<String>,
+    pub select_filter: Option<(String, String)>,
+    pub min_number_filter: Option<(String, i32)>,
+    pub genre_filter: Option<String>,
+    pub media_category_filter: Option<String>,
+    pub active_saved_view_id: Option<String>,
+    pub sort: Option<(String, bool)>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct SidebarFilterState {
+    pub pages_filter: crate::ui::PagesKindFilter,
+    pub pages_sort: crate::ui::PagesSortOrder,
+    pub tree_tab: crate::ui::SidebarTreeTab,
+    pub active_tags: Vec<String>,
+    pub tag_mode: crate::ui::TagFilterMode,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct TableFilterState {
+    pub filter_query: String,
+    pub status_filter: Option<String>,
+    pub sort: crate::ui::TableSort,
+}
+
+impl Default for TableFilterState {
+    fn default() -> Self {
+        Self {
+            filter_query: String::new(),
+            status_filter: None,
+            sort: crate::ui::TableSort::ModifiedDesc,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct VaultUiState {
+    pub collections: std::collections::BTreeMap<String, CollectionFilterState>,
+    pub sidebar: SidebarFilterState,
+    pub table: TableFilterState,
+    pub board_sort: crate::ui::BoardSort,
+}
+
+impl VaultUiState {
+    fn state_path(vault_dir: &Path) -> PathBuf {
+        vault_dir.join(".krono").join("ui_state.json")
+    }
+
+    pub fn load(vault_dir: &Path) -> Self {
+        let path = Self::state_path(vault_dir);
+        let Ok(raw) = std::fs::read_to_string(path) else {
+            return Self::default();
+        };
+        serde_json::from_str(&raw).unwrap_or_default()
+    }
+
+    pub fn save(&self, vault_dir: &Path) -> Result<(), String> {
+        let path = Self::state_path(vault_dir);
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).map_err(|e| format!("create .krono dir: {e}"))?;
+        }
+        let json = serde_json::to_string_pretty(self)
+            .map_err(|e| format!("serialize ui_state: {e}"))?;
+        let tmp = path.with_extension("json.tmp");
+        std::fs::write(&tmp, json).map_err(|e| format!("write ui_state tmp: {e}"))?;
+        if path.exists() {
+            let _ = std::fs::remove_file(&path);
+        }
+        std::fs::rename(&tmp, &path).map_err(|e| format!("rename ui_state: {e}"))?;
+        Ok(())
     }
 }

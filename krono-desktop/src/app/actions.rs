@@ -285,7 +285,7 @@ impl KronoApp {
                     self.refresh_palette_hits();
                 }
                 UiAction::OpenScratchpad => {
-                    self.open_scratchpad(ctx);
+                    self.toggle_scratchpad(ctx);
                 }
                 UiAction::OpenSettings(tab) => {
                     if self.view_mode != ViewMode::Settings {
@@ -402,7 +402,26 @@ impl KronoApp {
                         Err(e) => self.push_toast(e, ToastKind::Error),
                     }
                 }
-                UiAction::SetTagFilter(tag) => self.active_tag_filter = tag,
+                UiAction::SetTagFilter(tag) => {
+                    self.active_tag_filters = tag.into_iter().collect();
+                }
+                UiAction::ToggleTagFilter(tag) => {
+                    if let Some(pos) = self
+                        .active_tag_filters
+                        .iter()
+                        .position(|t| t.eq_ignore_ascii_case(&tag))
+                    {
+                        self.active_tag_filters.remove(pos);
+                    } else {
+                        self.active_tag_filters.push(tag);
+                    }
+                }
+                UiAction::SetTagFilterMode(mode) => {
+                    self.tag_filter_mode = mode;
+                }
+                UiAction::ClearTagFilters => {
+                    self.active_tag_filters.clear();
+                }
                 UiAction::ToggleFolder(folder) => {
                     if !self.expanded_folders.remove(&folder) {
                         self.expanded_folders.insert(folder);
@@ -458,6 +477,7 @@ impl KronoApp {
                 UiAction::OpenTmdbSearch => {
                     self.active_collection.tmdb_ui.search_open = true;
                     self.active_collection.tmdb_ui.search_error = None;
+                    self.active_collection.tmdb_ui.search_focus_requested = true;
                 }
                 UiAction::RequestTmdbRecommendations => {
                     self.start_tmdb_recommendations(ctx);
@@ -473,6 +493,12 @@ impl KronoApp {
                 }
                 UiAction::TmdbAddMedia { item, status_opt } => {
                     self.start_tmdb_add_media(ctx, item, status_opt);
+                }
+                UiAction::BookSearch(query) => {
+                    self.start_book_search(ctx, query);
+                }
+                UiAction::AddBookMedia { item, status_opt } => {
+                    self.insert_book_media_record(item, &status_opt);
                 }
                 UiAction::OpenSidebarModule(module) => {
                     self.open_sidebar_module(module);

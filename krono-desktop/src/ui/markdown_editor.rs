@@ -10,8 +10,8 @@ use crate::ui::markdown_assist::{
     AssistTrigger,
 };
 use krono_core::smart_text::{
-    classify_smart_paste, html_to_clean_markdown, smart_markdown_cleanup, CleanupLang,
-    SmartPasteOutcome,
+    classify_smart_paste, delete_word_backward, delete_word_forward, html_to_clean_markdown,
+    smart_markdown_cleanup, CleanupLang, SmartPasteOutcome,
 };
 use crate::ui::motion::{anim_bool_eased, lerp_color, with_alpha};
 use crate::ui::theme::{
@@ -67,6 +67,7 @@ pub fn render_markdown_editor(
     let popup_sel_id = editor_id.with("assist_sel");
     let dismissed_at_id = editor_id.with("assist_dismissed");
     let prev_body_id = editor_id.with("prev_body");
+    let last_sel_id = editor_id.with("last_selection");
 
     let was_popup_open = ui.data(|d| d.get_temp::<bool>(popup_open_id)).unwrap_or(false);
     let had_focus = ui.ctx().memory(|m| m.has_focus(editor_id));
@@ -83,12 +84,38 @@ pub fn render_markdown_editor(
         });
     }
 
+    let mut word_del_dir: i8 = 0; // -1 = backward (Ctrl+Backspace), +1 = forward (Ctrl+Delete)
     let mut shortcut_fmt: Option<InlineFmt> = None;
     let mut run_smart_cleanup = false;
     let mut run_clean_html_paste = false;
     if had_focus {
         ui.input_mut(|i| {
-            if i.modifiers.command && i.modifiers.shift && i.consume_key(egui::Modifiers::COMMAND | egui::Modifiers::SHIFT, egui::Key::M) {
+            let word_mod = i.modifiers.ctrl && !i.modifiers.alt && !i.modifiers.shift;
+            if word_mod && i.consume_key(egui::Modifiers::CTRL, egui::Key::Backspace) {
+                i.events.retain(|ev| {
+                    !matches!(
+                        ev,
+                        egui::Event::Key {
+                            key: egui::Key::Backspace,
+                            pressed: true,
+                            ..
+                        }
+                    )
+                });
+                word_del_dir = -1;
+            } else if word_mod && i.consume_key(egui::Modifiers::CTRL, egui::Key::Delete) {
+                i.events.retain(|ev| {
+                    !matches!(
+                        ev,
+                        egui::Event::Key {
+                            key: egui::Key::Delete,
+                            pressed: true,
+                            ..
+                        }
+                    )
+                });
+                word_del_dir = 1;
+            } else if i.modifiers.command && i.modifiers.shift && i.consume_key(egui::Modifiers::COMMAND | egui::Modifiers::SHIFT, egui::Key::M) {
                 run_smart_cleanup = true;
             } else if i.modifiers.command && i.modifiers.shift && i.key_pressed(egui::Key::V) {
                 run_clean_html_paste = true;
@@ -102,6 +129,25 @@ pub fn render_markdown_editor(
                 shortcut_fmt = Some(InlineFmt::Code);
             }
         });
+    }
+
+    if word_del_dir != 0 {
+        let (sel_a, sel_b) = raw_state_selection_range(ui, editor_id, body);
+        let next_c = if word_del_dir < 0 {
+            delete_word_backward(body, sel_a, sel_b)
+        } else {
+            delete_word_forward(body, sel_a, sel_b)
+        };
+        if let Some(nc) = next_c {
+            let mut st = egui::TextEdit::load_state(ui.ctx(), editor_id).unwrap_or_default();
+            st.cursor.set_char_range(Some(egui::text::CCursorRange::one(
+                egui::text::CCursor::new(nc),
+            )));
+            st.store(ui.ctx(), editor_id);
+            ui.data_mut(|d| d.remove::<(usize, usize)>(last_sel_id));
+            ui.memory_mut(|m| m.request_focus(editor_id));
+            changed = true;
+        }
     }
 
     let cleanup_lang = match lang {
@@ -330,6 +376,7 @@ pub fn render_markdown_editor(
         }
     }
 
+    let had_toolbar_action = pending_fmt.is_some() || run_smart_cleanup || request_extract_selection;
     if let Some(fmt) = pending_fmt {
         apply_toolbar_format(ui, editor_id, body, fmt, lang, today);
         changed = true;
@@ -367,6 +414,64 @@ pub fn render_markdown_editor(
         .margin(egui::Margin::symmetric(0.0, 4.0))
         .layouter(&mut layouter)
         .show(ui);
+
+    let is_drag_selecting = ui.ctx().is_being_dragged(editor_id);
+    let drag_just_stopped = ui.ctx().drag_stopped_id() == Some(editor_id);
+    let drag_range_id = editor_id.with("active_drag_ccursor");
+
+    if is_drag_selecting {
+        let clip = ui.clip_rect();
+        if let Some(pos) = ui.ctx().input(|i| i.pointer.latest_pos()) {
+            const EDGE: f32 = 44.0;
+            let dt = ui.ctx().input(|i| i.stable_dt).clamp(0.001, 0.05);
+            if pos.y > clip.bottom() - EDGE {
+                let factor = ((pos.y - (clip.bottom() - EDGE)) / EDGE).clamp(0.18, 3.5);
+                ui.scroll_with_delta_animation(
+                    vec2(0.0, -(factor * 580.0 * dt)),
+                    egui::style::ScrollAnimation::none(),
+                );
+                ui.ctx().request_repaint();
+            } else if pos.y < clip.top() + EDGE {
+                let factor = (((clip.top() + EDGE) - pos.y) / EDGE).clamp(0.18, 3.5);
+                ui.scroll_with_delta_animation(
+                    vec2(0.0, factor * 580.0 * dt),
+                    egui::style::ScrollAnimation::none(),
+                );
+                ui.ctx().request_repaint();
+            }
+        }
+        if let Some(cr) = output.state.cursor.char_range() {
+            if cr.primary.index != cr.secondary.index {
+                ui.data_mut(|d| {
+                    d.insert_temp(drag_range_id, (cr.secondary.index, cr.primary.index));
+                });
+            }
+        }
+    } else if drag_just_stopped {
+        let collapsed = output
+            .state
+            .cursor
+            .char_range()
+            .is_none_or(|r| r.primary.index == r.secondary.index);
+        if collapsed {
+            if let Some((sec, pri)) = ui.data(|d| d.get_temp::<(usize, usize)>(drag_range_id)) {
+                if sec != pri {
+                    output
+                        .state
+                        .cursor
+                        .set_char_range(Some(egui::text::CCursorRange::two(
+                            egui::text::CCursor::new(sec),
+                            egui::text::CCursor::new(pri),
+                        )));
+                    output.state.clone().store(ui.ctx(), editor_id);
+                }
+            }
+        }
+        ui.memory_mut(|m| m.request_focus(editor_id));
+        ui.data_mut(|d| d.remove::<(usize, usize)>(drag_range_id));
+    } else {
+        ui.data_mut(|d| d.remove::<(usize, usize)>(drag_range_id));
+    }
 
     if output.response.changed() {
         changed = true;
@@ -407,6 +512,14 @@ pub fn render_markdown_editor(
         })
         .unwrap_or((0, 0));
 
+    if output.response.has_focus() {
+        if sel_a_ctx < sel_b_ctx {
+            ui.data_mut(|d| d.insert_temp(last_sel_id, (sel_a_ctx, sel_b_ctx)));
+        } else if !ui.ctx().input(|i| i.pointer.any_down()) && !had_toolbar_action {
+            ui.data_mut(|d| d.remove::<(usize, usize)>(last_sel_id));
+        }
+    }
+
     let caret_char = output
         .state
         .cursor
@@ -417,7 +530,7 @@ pub fn render_markdown_editor(
     let mut misspelled_rects: Vec<(SpellWordSpan, Vec<Rect>)> = Vec::new();
     let editor_focused_now = output.response.has_focus() || ui.ctx().memory(|m| m.has_focus(editor_id));
 
-    if prefs.spellcheck && spellchecker.is_ready() {
+    if !is_drag_selecting && prefs.spellcheck && spellchecker.is_ready() {
         let spell_clip = ui.clip_rect().intersect(output.response.rect);
         let spell_painter = ui.painter().with_clip_rect(spell_clip);
         let wave_color = p.danger;
@@ -622,7 +735,14 @@ pub fn render_markdown_editor(
     // Quiet empty space below the last line: clicking places caret at end of note
     let (tail_rect, tail_resp) =
         ui.allocate_exact_size(vec2(ui.available_width().max(60.0), 110.0), Sense::click());
+    let tail_press_inside = ui.ctx().input(|i| {
+        i.pointer
+            .press_origin()
+            .is_some_and(|pos| tail_rect.contains(pos))
+    });
     if tail_resp.on_hover_cursor(CursorIcon::Text).clicked()
+        && tail_press_inside
+        && sel_a_ctx == sel_b_ctx
         && !ui.ctx().input(|i| i.pointer.is_decidedly_dragging())
     {
         let end_c = body.chars().count();
@@ -851,7 +971,7 @@ fn draw_wavy_underline(
     painter.add(egui::Shape::line(pts, Stroke::new(1.1_f32, color)));
 }
 
-fn current_selection_char_range(ui: &Ui, editor_id: egui::Id, body: &str) -> (usize, usize) {
+fn raw_state_selection_range(ui: &Ui, editor_id: egui::Id, body: &str) -> (usize, usize) {
     let total = body.chars().count();
     let state = egui::TextEdit::load_state(ui.ctx(), editor_id).unwrap_or_default();
     state
@@ -863,6 +983,22 @@ fn current_selection_char_range(ui: &Ui, editor_id: egui::Id, body: &str) -> (us
             if a <= b { (a, b) } else { (b, a) }
         })
         .unwrap_or((total, total))
+}
+
+fn current_selection_char_range(ui: &Ui, editor_id: egui::Id, body: &str) -> (usize, usize) {
+    let total = body.chars().count();
+    let (a, b) = raw_state_selection_range(ui, editor_id, body);
+    if a < b {
+        return (a, b);
+    }
+    if let Some((la, lb)) = ui.data(|d| d.get_temp::<(usize, usize)>(editor_id.with("last_selection"))) {
+        let la = la.min(total);
+        let lb = lb.min(total);
+        if la < lb {
+            return (la, lb);
+        }
+    }
+    (a, b)
 }
 
 fn replace_editor_selection(ui: &Ui, editor_id: egui::Id, body: &mut String, replacement: &str) {
@@ -1012,13 +1148,8 @@ fn apply_toolbar_format(
         InlineFmt::TodayDate => (date_str.as_str(), "", false),
     };
 
+    let (sel_start, sel_end) = current_selection_char_range(ui, editor_id, body);
     let mut state = egui::TextEdit::load_state(ui.ctx(), editor_id).unwrap_or_default();
-    let end_c = body.chars().count();
-    let (sel_start, sel_end) = state
-        .cursor
-        .char_range()
-        .map(|r| (r.primary.index, r.secondary.index))
-        .unwrap_or((end_c, end_c));
 
     let (new_a, new_b) = apply_wrap_or_insert(body, sel_start, sel_end, prefix, suffix, line_prefix);
     let range = egui::text::CCursorRange::two(

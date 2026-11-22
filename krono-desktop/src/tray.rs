@@ -5,6 +5,7 @@ use std::sync::mpsc;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TrayCommand {
     OpenScratchpad,
+    ToggleScratchpad,
     OpenTodayDaily,
     ShowMainWindow,
     Quit,
@@ -12,6 +13,7 @@ pub enum TrayCommand {
 
 pub struct SystemTrayHandle {
     rx: mpsc::Receiver<TrayCommand>,
+    hotkey_label: &'static str,
     #[cfg(any(target_os = "windows", target_os = "macos"))]
     _tray: Option<tray_icon::TrayIcon>,
     #[cfg(any(target_os = "windows", target_os = "macos"))]
@@ -19,6 +21,10 @@ pub struct SystemTrayHandle {
 }
 
 impl SystemTrayHandle {
+    pub fn hotkey_label(&self) -> &'static str {
+        self.hotkey_label
+    }
+
     pub fn start(ctx: egui::Context, lang: Lang) -> Self {
         #[cfg(any(target_os = "windows", target_os = "macos"))]
         {
@@ -28,7 +34,10 @@ impl SystemTrayHandle {
         {
             let _ = (ctx, lang);
             let (_tx, rx) = mpsc::channel();
-            Self { rx }
+            Self {
+                rx,
+                hotkey_label: "",
+            }
         }
     }
 
@@ -49,19 +58,45 @@ impl SystemTrayHandle {
 
         let (tx, rx) = mpsc::channel();
 
-        let (label_scratch, label_daily, label_show, label_quit) = match lang {
-            Lang::Ru => (
-                "Быстрый захват (Ctrl+Shift+Space)",
-                "Сегодняшний дневник",
-                "Открыть Krono",
-                "Выход",
-            ),
-            Lang::En => (
-                "Scratchpad (Ctrl+Shift+Space)",
-                "Today's Daily Note",
-                "Show Krono",
-                "Quit",
-            ),
+        let mut hotkey_id: Option<u32> = None;
+        let mut hotkey_label: &'static str = "";
+        let hotkey_mgr = GlobalHotKeyManager::new().ok().and_then(|mgr| {
+            let candidates = [
+                (
+                    HotKey::new(Some(Modifiers::CONTROL | Modifiers::SHIFT), Code::Space),
+                    "Ctrl+Shift+Space",
+                ),
+                (
+                    HotKey::new(Some(Modifiers::CONTROL | Modifiers::ALT), Code::Space),
+                    "Ctrl+Alt+Space",
+                ),
+                (
+                    HotKey::new(Some(Modifiers::ALT | Modifiers::SHIFT), Code::Space),
+                    "Alt+Shift+Space",
+                ),
+            ];
+            for (hk, lbl) in candidates {
+                if mgr.register(hk).is_ok() {
+                    hotkey_id = Some(hk.id());
+                    hotkey_label = lbl;
+                    return Some(mgr);
+                }
+            }
+            None
+        });
+
+        let scratch_base = match lang {
+            Lang::Ru => "Быстрый захват",
+            Lang::En => "Scratchpad",
+        };
+        let label_scratch = if hotkey_label.is_empty() {
+            scratch_base.to_string()
+        } else {
+            format!("{scratch_base} ({hotkey_label})")
+        };
+        let (label_daily, label_show, label_quit) = match lang {
+            Lang::Ru => ("Сегодняшний дневник", "Открыть Krono", "Выход"),
+            Lang::En => ("Today's Daily Note", "Show Krono", "Quit"),
         };
 
         let item_scratch = MenuItem::new(label_scratch, true, None);
@@ -88,23 +123,6 @@ impl SystemTrayHandle {
                 .with_icon(icon)
                 .build()
                 .ok()
-        });
-
-        let mut hotkey_id: Option<u32> = None;
-        let hotkey_mgr = GlobalHotKeyManager::new().ok().and_then(|mgr| {
-            let primary = HotKey::new(Some(Modifiers::CONTROL | Modifiers::SHIFT), Code::Space);
-            if mgr.register(primary).is_ok() {
-                hotkey_id = Some(primary.id());
-                Some(mgr)
-            } else {
-                let fallback = HotKey::new(Some(Modifiers::ALT), Code::KeyN);
-                if mgr.register(fallback).is_ok() {
-                    hotkey_id = Some(fallback.id());
-                    Some(mgr)
-                } else {
-                    None
-                }
-            }
         });
 
         std::thread::spawn(move || {
@@ -158,7 +176,7 @@ impl SystemTrayHandle {
                     if ev.state == HotKeyState::Pressed
                         && hotkey_id.is_some_and(|id| ev.id == id)
                     {
-                        if tx.send(TrayCommand::OpenScratchpad).is_err() {
+                        if tx.send(TrayCommand::ToggleScratchpad).is_err() {
                             return;
                         }
                         woke = true;
@@ -167,14 +185,16 @@ impl SystemTrayHandle {
 
                 if woke {
                     ctx.request_repaint();
+                    ctx.request_repaint_of(crate::ui::scratchpad::scratchpad_viewport_id());
                 }
 
-                std::thread::sleep(std::time::Duration::from_millis(60));
+                std::thread::sleep(std::time::Duration::from_millis(30));
             }
         });
 
         Self {
             rx,
+            hotkey_label,
             _tray: tray,
             _hotkey_mgr: hotkey_mgr,
         }

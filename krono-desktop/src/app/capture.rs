@@ -7,7 +7,10 @@ use crate::storage::vault::{
 };
 use crate::tray::TrayCommand;
 use crate::ui::components::ToastKind;
-use crate::ui::scratchpad::ScratchpadAction;
+use crate::ui::scratchpad::{
+    compute_scratchpad_initial_pos, scratchpad_viewport_id, ScratchpadAction,
+    SCRATCHPAD_DEFAULT_SIZE,
+};
 use crate::ui::ViewMode;
 use chrono::Local;
 use eframe::egui::{self, ViewportCommand};
@@ -36,17 +39,19 @@ impl KronoApp {
         }
     }
 
-    fn persist_scratchpad_draft(&self) {
+    pub(super) fn persist_scratchpad_draft(&mut self) {
         let path = self.scratchpad_draft_path();
         if self.scratchpad.text.trim().is_empty() {
             let _ = std::fs::remove_file(&path);
         } else {
             let _ = write_file_atomic(&path, self.scratchpad.text.as_bytes());
         }
+        self.scratchpad.draft_dirty = false;
     }
 
     fn clear_scratchpad_draft(&mut self) {
         self.scratchpad.text.clear();
+        self.scratchpad.draft_dirty = false;
         let _ = std::fs::remove_file(self.scratchpad_draft_path());
     }
 
@@ -59,9 +64,34 @@ impl KronoApp {
 
     pub(super) fn open_scratchpad(&mut self, ctx: &egui::Context) {
         self.load_scratchpad_draft_if_needed();
+        if !self.scratchpad.open {
+            self.scratchpad.initial_pos = compute_scratchpad_initial_pos(
+                ctx.input(|i| i.viewport().monitor_size),
+                SCRATCHPAD_DEFAULT_SIZE,
+            );
+        }
         self.scratchpad.open = true;
         self.scratchpad.request_focus = true;
-        self.wake_and_focus_window(ctx);
+        let vp_id = scratchpad_viewport_id();
+        ctx.send_viewport_cmd_to(vp_id, ViewportCommand::Visible(true));
+        ctx.send_viewport_cmd_to(vp_id, ViewportCommand::Focus);
+        ctx.request_repaint_of(vp_id);
+        ctx.request_repaint();
+    }
+
+    pub(super) fn close_scratchpad(&mut self, ctx: &egui::Context) {
+        self.persist_scratchpad_draft();
+        self.scratchpad.open = false;
+        self.scratchpad.request_focus = false;
+        ctx.request_repaint();
+    }
+
+    pub(super) fn toggle_scratchpad(&mut self, ctx: &egui::Context) {
+        if self.scratchpad.open {
+            self.close_scratchpad(ctx);
+        } else {
+            self.open_scratchpad(ctx);
+        }
     }
 
     pub(super) fn poll_tray_commands(&mut self, ctx: &egui::Context) {
@@ -70,6 +100,9 @@ impl KronoApp {
             match cmd {
                 TrayCommand::OpenScratchpad => {
                     self.open_scratchpad(ctx);
+                }
+                TrayCommand::ToggleScratchpad => {
+                    self.toggle_scratchpad(ctx);
                 }
                 TrayCommand::OpenTodayDaily => {
                     let today = today_local();
@@ -102,8 +135,7 @@ impl KronoApp {
         let s = strings(lang);
         match action {
             ScratchpadAction::Close => {
-                self.persist_scratchpad_draft();
-                self.scratchpad.open = false;
+                self.close_scratchpad(ctx);
             }
             ScratchpadAction::Clear => {
                 self.clear_scratchpad_draft();
@@ -119,6 +151,7 @@ impl KronoApp {
                     }
                     self.clear_scratchpad_draft();
                     self.scratchpad.open = false;
+                    ctx.request_repaint();
                     self.push_toast(s.copied_btn.to_string(), ToastKind::Success);
                 }
             }
@@ -182,6 +215,7 @@ impl KronoApp {
                         }
                         self.clear_scratchpad_draft();
                         self.scratchpad.open = false;
+                        ctx.request_repaint();
                         self.push_toast(s.scratchpad_sent_daily_toast.to_string(), ToastKind::Success);
                     }
                     Err(err) => {
@@ -217,6 +251,7 @@ impl KronoApp {
                         self.view_mode = ViewMode::Editor;
                         self.clear_scratchpad_draft();
                         self.scratchpad.open = false;
+                        ctx.request_repaint();
                         self.push_toast(s.scratchpad_saved_note_toast.to_string(), ToastKind::Success);
                     }
                     Err(err) => {

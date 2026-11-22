@@ -27,6 +27,56 @@ pub fn is_english_canvas_path(rel_path: &str) -> bool {
             || norm.starts_with("english/"))
 }
 
+pub fn find_existing_vocabulary_table(
+    collection_paths: &[String],
+    base_dir: &str,
+    study_lang: &str,
+) -> Option<String> {
+    let mut prefixes = Vec::new();
+    for raw in [base_dir, study_lang] {
+        let lower = raw.trim().replace('\\', "/").to_lowercase();
+        if !lower.is_empty() {
+            prefixes.push(format!("{lower}/"));
+        }
+        let slug = krono_core::path::slugify_title(raw);
+        if !slug.is_empty() {
+            prefixes.push(format!("{slug}/"));
+        }
+    }
+    if prefixes
+        .iter()
+        .any(|p| p == "english/" || p == "английский/" || p == "angliiskii/")
+    {
+        prefixes.push("english/".to_string());
+        prefixes.push("английский/".to_string());
+        prefixes.push("angliiskii/".to_string());
+    }
+
+    let mut fallback: Option<String> = None;
+    for raw_path in collection_paths {
+        let norm = raw_path.replace('\\', "/").to_lowercase();
+        if !norm.ends_with(".table.json") {
+            continue;
+        }
+        if !prefixes.iter().any(|pref| norm.starts_with(pref)) {
+            continue;
+        }
+        let stem = norm
+            .rsplit('/')
+            .next()
+            .unwrap_or("")
+            .strip_suffix(".table.json")
+            .unwrap_or("");
+        if stem == "vocabulary" || stem == "словарь" || stem == "slovar" {
+            return Some(raw_path.clone());
+        }
+        if fallback.is_none() {
+            fallback = Some(raw_path.clone());
+        }
+    }
+    fallback
+}
+
 impl KronoApp {
     fn english_paths(&self) -> (String, String, String, String) {
         let is_ru = self.config.language == Lang::Ru;
@@ -66,11 +116,18 @@ impl KronoApp {
         let base_prefix = format!("{base_dir}/");
 
         // 1. Ensure Vocabulary table exists in this study language folder
-        let existing_vocab = self
-            .collections
-            .iter()
-            .find(|c| c.path.starts_with(&base_prefix) && c.path.ends_with(".table.json"))
-            .map(|c| c.path.clone());
+        let mut all_col_paths: Vec<String> =
+            self.collections.iter().map(|c| c.path.clone()).collect();
+        for f in crate::storage::vault::list_collection_files(&self.config.vault_dir) {
+            if !all_col_paths.iter().any(|p| p.eq_ignore_ascii_case(&f.rel_path)) {
+                all_col_paths.push(f.rel_path);
+            }
+        }
+        let existing_vocab = find_existing_vocabulary_table(
+            &all_col_paths,
+            &base_dir,
+            self.config.effective_study_language(),
+        );
         let vocab_path = if let Some(p) = existing_vocab {
             p
         } else {
@@ -334,16 +391,81 @@ impl KronoApp {
 
     pub(crate) fn open_english_vocabulary(&mut self) {
         let (base_dir, ..) = self.english_paths();
-        let base_prefix = format!("{base_dir}/");
-        let found = self
-            .collections
-            .iter()
-            .find(|c| c.path.starts_with(&base_prefix) && c.path.ends_with(".table.json"))
-            .map(|c| c.path.clone());
+        let mut all_col_paths: Vec<String> =
+            self.collections.iter().map(|c| c.path.clone()).collect();
+        for f in crate::storage::vault::list_collection_files(&self.config.vault_dir) {
+            if !all_col_paths.iter().any(|p| p.eq_ignore_ascii_case(&f.rel_path)) {
+                all_col_paths.push(f.rel_path);
+            }
+        }
+        let found = find_existing_vocabulary_table(
+            &all_col_paths,
+            &base_dir,
+            self.config.effective_study_language(),
+        );
         if let Some(path) = found {
             self.open_collection(&path);
         } else {
             self.open_or_create_english_workspace();
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn finds_existing_vocabulary_across_ru_en_case_and_slugs() {
+        let paths = vec![
+            "projects/tasks.table.json".to_string(),
+            "Английский/Словарь.table.json".to_string(),
+        ];
+        assert_eq!(
+            find_existing_vocabulary_table(&paths, "English", "English"),
+            Some("Английский/Словарь.table.json".to_string())
+        );
+
+        let slug_paths = vec!["angliiskii/slovar.table.json".to_string()];
+        assert_eq!(
+            find_existing_vocabulary_table(&slug_paths, "Английский", "English"),
+            Some("angliiskii/slovar.table.json".to_string())
+        );
+    }
+
+    #[test]
+    fn repeated_vocabulary_initialization_is_idempotent() {
+        struct TempGuard(std::path::PathBuf);
+        impl Drop for TempGuard {
+            fn drop(&mut self) {
+                let _ = std::fs::remove_dir_all(&self.0);
+            }
+        }
+
+        let dir = std::env::temp_dir().join(format!("krono_eng_idem_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let _guard = TempGuard(dir.clone());
+
+        let empty = std::collections::HashSet::new();
+        let (rel1, ..) = create_collection_preset(
+            &dir,
+            "Английский/Словарь",
+            CollectionViewKind::Table,
+            "vocabulary",
+            true,
+            &empty,
+        )
+        .unwrap();
+
+        let disk_paths: Vec<String> = crate::storage::vault::list_collection_files(&dir)
+            .into_iter()
+            .map(|f| f.rel_path)
+            .collect();
+        assert_eq!(disk_paths.len(), 1);
+        assert_eq!(
+            find_existing_vocabulary_table(&disk_paths, "English", "English"),
+            Some(rel1)
+        );
     }
 }

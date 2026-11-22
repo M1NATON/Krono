@@ -78,6 +78,7 @@ pub struct VaultTaskRow {
     pub clean_text: String,
     pub done: bool,
     pub due_date: Option<SimpleDate>,
+    pub completed_at: Option<SimpleDate>,
     pub priority: Option<TaskPriority>,
     pub recurrence: Option<TaskRecurrence>,
     pub tags: Vec<String>,
@@ -87,6 +88,19 @@ fn local_today() -> SimpleDate {
     let now = chrono::Local::now().date_naive();
     SimpleDate::from_ymd(now.year(), now.month(), now.day())
         .unwrap_or(SimpleDate { year: 2026, month: 1, day: 1 })
+}
+
+fn date_from_unix_ts(ts: i64) -> Option<SimpleDate> {
+    if ts <= 0 {
+        return None;
+    }
+    let dt = if ts > 100_000_000_000 {
+        chrono::DateTime::from_timestamp_millis(ts)
+    } else {
+        chrono::DateTime::from_timestamp(ts, 0)
+    }?;
+    let local = dt.with_timezone(&chrono::Local).date_naive();
+    SimpleDate::from_ymd(local.year(), local.month(), local.day())
 }
 
 pub struct VaultIndex {
@@ -169,6 +183,10 @@ impl VaultIndex {
                      body,
                      tokenize='unicode61'
                  );
+                 CREATE TABLE IF NOT EXISTS fts_map (
+                     path TEXT PRIMARY KEY,
+                     fts_rowid INTEGER NOT NULL
+                 );
                  CREATE TABLE IF NOT EXISTS links (
                      source_path TEXT NOT NULL,
                      target_raw TEXT NOT NULL,
@@ -210,6 +228,7 @@ impl VaultIndex {
                      clean_text TEXT NOT NULL,
                      done INTEGER NOT NULL,
                      due_date TEXT,
+                     completed_at TEXT,
                      priority TEXT,
                      recurrence TEXT,
                      tags TEXT NOT NULL DEFAULT '',
@@ -260,6 +279,44 @@ impl VaultIndex {
                     [],
                 )
                 .map_err(|e| format!("migrate notes.encrypted: {e}"))?;
+        }
+        let task_cols: HashSet<String> = {
+            let mut stmt = self
+                .conn
+                .prepare("PRAGMA table_info(tasks)")
+                .map_err(|e| e.to_string())?;
+            let rows = stmt
+                .query_map([], |row| row.get::<_, String>(1))
+                .map_err(|e| e.to_string())?;
+            rows.flatten().collect()
+        };
+        if !task_cols.contains("completed_at") {
+            self.conn
+                .execute("ALTER TABLE tasks ADD COLUMN completed_at TEXT", [])
+                .map_err(|e| format!("migrate tasks.completed_at: {e}"))?;
+        }
+        let has_fts_rows: bool = self
+            .conn
+            .query_row("SELECT EXISTS(SELECT 1 FROM notes_fts LIMIT 1)", [], |r| {
+                r.get::<_, i64>(0)
+            })
+            .unwrap_or(0)
+            != 0;
+        let has_map_rows: bool = self
+            .conn
+            .query_row("SELECT EXISTS(SELECT 1 FROM fts_map LIMIT 1)", [], |r| {
+                r.get::<_, i64>(0)
+            })
+            .unwrap_or(0)
+            != 0;
+        if has_fts_rows && !has_map_rows {
+            self.conn
+                .execute(
+                    "INSERT OR REPLACE INTO fts_map (path, fts_rowid)
+                     SELECT path, rowid FROM notes_fts",
+                    [],
+                )
+                .map_err(|e| format!("backfill fts_map: {e}"))?;
         }
         Ok(())
     }
@@ -344,7 +401,7 @@ impl VaultIndex {
             .ok()
             .flatten()
             .as_deref()
-            != Some("2");
+            != Some("3");
 
         for f in disk_files {
             match f.kind {
@@ -509,7 +566,7 @@ impl VaultIndex {
         }
         if needs_schema_refresh {
             tx.execute(
-                "INSERT INTO meta (key, value) VALUES ('schema_rev', '2')
+                "INSERT INTO meta (key, value) VALUES ('schema_rev', '3')
                  ON CONFLICT(key) DO UPDATE SET value = excluded.value",
                 [],
             )
@@ -541,7 +598,7 @@ impl VaultIndex {
         size: u64,
         blob_sha: &str,
     ) -> Result<(), String> {
-        tx.execute(
+        tx.prepare_cached(
             "INSERT INTO notes (path, title, status, tags, excerpt, modified, size, word_count, pinned, board_order, blob_sha, encrypted)
              VALUES (?1, ?2, '', '', '', ?3, ?4, 0, 0, 0, ?5, 1)
              ON CONFLICT(path) DO UPDATE SET
@@ -554,14 +611,18 @@ impl VaultIndex {
                word_count = 0,
                blob_sha = excluded.blob_sha,
                encrypted = 1",
-            params![rel_path, title, modified, size as i64, blob_sha],
         )
+        .map_err(|e| e.to_string())?
+        .execute(params![rel_path, title, modified, size as i64, blob_sha])
         .map_err(|e| e.to_string())?;
-        tx.execute("DELETE FROM notes_fts WHERE path = ?1", params![rel_path])
+        Self::delete_fts_by_path_tx(tx, rel_path)?;
+        tx.prepare_cached("DELETE FROM links WHERE source_path = ?1")
+            .map_err(|e| e.to_string())?
+            .execute(params![rel_path])
             .map_err(|e| e.to_string())?;
-        tx.execute("DELETE FROM links WHERE source_path = ?1", params![rel_path])
-            .map_err(|e| e.to_string())?;
-        tx.execute("DELETE FROM tasks WHERE path = ?1", params![rel_path])
+        tx.prepare_cached("DELETE FROM tasks WHERE path = ?1")
+            .map_err(|e| e.to_string())?
+            .execute(params![rel_path])
             .map_err(|e| e.to_string())?;
         Ok(())
     }
@@ -661,27 +722,91 @@ impl VaultIndex {
         size: u64,
         blob_sha: &str,
     ) -> Result<(), String> {
-        tx.execute(
+        tx.prepare_cached(
             "INSERT INTO assets (path, modified, size, blob_sha)
              VALUES (?1, ?2, ?3, ?4)
              ON CONFLICT(path) DO UPDATE SET
                modified = excluded.modified,
                size = excluded.size,
                blob_sha = excluded.blob_sha",
-            params![rel_path, modified, size as i64, blob_sha],
         )
+        .map_err(|e| e.to_string())?
+        .execute(params![rel_path, modified, size as i64, blob_sha])
         .map_err(|e| e.to_string())?;
         Ok(())
     }
 
+    fn delete_fts_by_path_tx(
+        tx: &rusqlite::Transaction<'_>,
+        rel_path: &str,
+    ) -> Result<(), String> {
+        let rid: Option<i64> = tx
+            .prepare_cached("SELECT fts_rowid FROM fts_map WHERE path = ?1")
+            .map_err(|e| e.to_string())?
+            .query_row(params![rel_path], |row| row.get(0))
+            .optional()
+            .map_err(|e| e.to_string())?;
+        if let Some(rid) = rid {
+            tx.prepare_cached("DELETE FROM notes_fts WHERE rowid = ?1")
+                .map_err(|e| e.to_string())?
+                .execute(params![rid])
+                .map_err(|e| e.to_string())?;
+            tx.prepare_cached("DELETE FROM fts_map WHERE path = ?1")
+                .map_err(|e| e.to_string())?
+                .execute(params![rel_path])
+                .map_err(|e| e.to_string())?;
+        } else {
+            let map_has_rows: Option<i64> = tx
+                .prepare_cached("SELECT 1 FROM fts_map LIMIT 1")
+                .map_err(|e| e.to_string())?
+                .query_row([], |row| row.get(0))
+                .optional()
+                .map_err(|e| e.to_string())?;
+            if map_has_rows.is_none() {
+                tx.prepare_cached("DELETE FROM notes_fts WHERE path = ?1")
+                    .map_err(|e| e.to_string())?
+                    .execute(params![rel_path])
+                    .map_err(|e| e.to_string())?;
+            }
+        }
+        Ok(())
+    }
+
+    fn replace_fts_tx(
+        tx: &rusqlite::Transaction<'_>,
+        rel_path: &str,
+        title: &str,
+        tags: &str,
+        body: &str,
+    ) -> Result<(), String> {
+        Self::delete_fts_by_path_tx(tx, rel_path)?;
+        tx.prepare_cached(
+            "INSERT INTO notes_fts (path, title, tags, body) VALUES (?1, ?2, ?3, ?4)",
+        )
+        .map_err(|e| e.to_string())?
+        .execute(params![rel_path, title, tags, body])
+        .map_err(|e| e.to_string())?;
+        let rid = tx.last_insert_rowid();
+        tx.prepare_cached("INSERT OR REPLACE INTO fts_map (path, fts_rowid) VALUES (?1, ?2)")
+            .map_err(|e| e.to_string())?
+            .execute(params![rel_path, rid])
+            .map_err(|e| e.to_string())?;
+        Ok(())
+    }
+
     fn delete_rows_tx(tx: &rusqlite::Transaction<'_>, rel_path: &str) -> Result<(), String> {
-        tx.execute("DELETE FROM notes WHERE path = ?1", params![rel_path])
+        tx.prepare_cached("DELETE FROM notes WHERE path = ?1")
+            .map_err(|e| e.to_string())?
+            .execute(params![rel_path])
             .map_err(|e| e.to_string())?;
-        tx.execute("DELETE FROM notes_fts WHERE path = ?1", params![rel_path])
+        Self::delete_fts_by_path_tx(tx, rel_path)?;
+        tx.prepare_cached("DELETE FROM links WHERE source_path = ?1")
+            .map_err(|e| e.to_string())?
+            .execute(params![rel_path])
             .map_err(|e| e.to_string())?;
-        tx.execute("DELETE FROM links WHERE source_path = ?1", params![rel_path])
-            .map_err(|e| e.to_string())?;
-        tx.execute("DELETE FROM tasks WHERE path = ?1", params![rel_path])
+        tx.prepare_cached("DELETE FROM tasks WHERE path = ?1")
+            .map_err(|e| e.to_string())?
+            .execute(params![rel_path])
             .map_err(|e| e.to_string())?;
         Ok(())
     }
@@ -690,11 +815,14 @@ impl VaultIndex {
         tx: &rusqlite::Transaction<'_>,
         rel_path: &str,
     ) -> Result<(), String> {
-        tx.execute("DELETE FROM collections WHERE path = ?1", params![rel_path])
+        tx.prepare_cached("DELETE FROM collections WHERE path = ?1")
+            .map_err(|e| e.to_string())?
+            .execute(params![rel_path])
             .map_err(|e| e.to_string())?;
-        tx.execute("DELETE FROM notes_fts WHERE path = ?1", params![rel_path])
-            .map_err(|e| e.to_string())?;
-        tx.execute("DELETE FROM links WHERE source_path = ?1", params![rel_path])
+        Self::delete_fts_by_path_tx(tx, rel_path)?;
+        tx.prepare_cached("DELETE FROM links WHERE source_path = ?1")
+            .map_err(|e| e.to_string())?
+            .execute(params![rel_path])
             .map_err(|e| e.to_string())?;
         Ok(())
     }
@@ -719,7 +847,7 @@ impl VaultIndex {
             .join(", ");
         let search_body = doc.search_text();
 
-        tx.execute(
+        tx.prepare_cached(
             "INSERT INTO collections (path, kind, title, item_count, column_count, excerpt, modified, size, pinned, blob_sha)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
              ON CONFLICT(path) DO UPDATE SET
@@ -732,30 +860,27 @@ impl VaultIndex {
                size = excluded.size,
                pinned = excluded.pinned,
                blob_sha = excluded.blob_sha",
-            params![
-                rel_path,
-                kind_str,
-                doc.title,
-                doc.records.len() as i64,
-                doc.columns.len() as i64,
-                excerpt,
-                modified,
-                size as i64,
-                if doc.pinned { 1i64 } else { 0i64 },
-                blob_sha,
-            ],
         )
+        .map_err(|e| e.to_string())?
+        .execute(params![
+            rel_path,
+            kind_str,
+            doc.title,
+            doc.records.len() as i64,
+            doc.columns.len() as i64,
+            excerpt,
+            modified,
+            size as i64,
+            if doc.pinned { 1i64 } else { 0i64 },
+            blob_sha,
+        ])
         .map_err(|e| e.to_string())?;
 
-        tx.execute("DELETE FROM notes_fts WHERE path = ?1", params![rel_path])
-            .map_err(|e| e.to_string())?;
-        tx.execute(
-            "INSERT INTO notes_fts (path, title, tags, body) VALUES (?1, ?2, '', ?3)",
-            params![rel_path, doc.title, search_body],
-        )
-        .map_err(|e| e.to_string())?;
+        Self::replace_fts_tx(tx, rel_path, &doc.title, "", &search_body)?;
 
-        tx.execute("DELETE FROM links WHERE source_path = ?1", params![rel_path])
+        tx.prepare_cached("DELETE FROM links WHERE source_path = ?1")
+            .map_err(|e| e.to_string())?
+            .execute(params![rel_path])
             .map_err(|e| e.to_string())?;
         let mut insert_link = tx
             .prepare_cached(
@@ -794,7 +919,7 @@ impl VaultIndex {
             .join(", ");
         let search_body = doc.search_text();
 
-        tx.execute(
+        tx.prepare_cached(
             "INSERT INTO collections (path, kind, title, item_count, column_count, excerpt, modified, size, pinned, blob_sha)
              VALUES (?1, 'canvas', ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
              ON CONFLICT(path) DO UPDATE SET
@@ -807,29 +932,26 @@ impl VaultIndex {
                size = excluded.size,
                pinned = excluded.pinned,
                blob_sha = excluded.blob_sha",
-            params![
-                rel_path,
-                doc.title,
-                doc.nodes.len() as i64,
-                doc.edges.len() as i64,
-                excerpt,
-                modified,
-                size as i64,
-                if doc.pinned { 1i64 } else { 0i64 },
-                blob_sha,
-            ],
         )
+        .map_err(|e| e.to_string())?
+        .execute(params![
+            rel_path,
+            doc.title,
+            doc.nodes.len() as i64,
+            doc.edges.len() as i64,
+            excerpt,
+            modified,
+            size as i64,
+            if doc.pinned { 1i64 } else { 0i64 },
+            blob_sha,
+        ])
         .map_err(|e| e.to_string())?;
 
-        tx.execute("DELETE FROM notes_fts WHERE path = ?1", params![rel_path])
-            .map_err(|e| e.to_string())?;
-        tx.execute(
-            "INSERT INTO notes_fts (path, title, tags, body) VALUES (?1, ?2, '', ?3)",
-            params![rel_path, doc.title, search_body],
-        )
-        .map_err(|e| e.to_string())?;
+        Self::replace_fts_tx(tx, rel_path, &doc.title, "", &search_body)?;
 
-        tx.execute("DELETE FROM links WHERE source_path = ?1", params![rel_path])
+        tx.prepare_cached("DELETE FROM links WHERE source_path = ?1")
+            .map_err(|e| e.to_string())?
+            .execute(params![rel_path])
             .map_err(|e| e.to_string())?;
         let mut insert_link = tx
             .prepare_cached(
@@ -856,7 +978,7 @@ impl VaultIndex {
         let excerpt = card_preview_excerpt(&doc.body, 2, 72);
         let (word_count, _) = count_words(&doc.body);
 
-        tx.execute(
+        tx.prepare_cached(
             "INSERT INTO notes (path, title, status, tags, excerpt, modified, size, word_count, pinned, board_order, blob_sha)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
              ON CONFLICT(path) DO UPDATE SET
@@ -870,31 +992,28 @@ impl VaultIndex {
                pinned = excluded.pinned,
                board_order = excluded.board_order,
                blob_sha = excluded.blob_sha",
-            params![
-                rel_path,
-                doc.frontmatter.title,
-                doc.frontmatter.status.map(|s| s.as_yaml_str()).unwrap_or(""),
-                tags_joined,
-                excerpt,
-                modified,
-                size as i64,
-                word_count as i64,
-                if doc.frontmatter.pinned { 1i64 } else { 0i64 },
-                doc.frontmatter.board_order.unwrap_or(0),
-                blob_sha,
-            ],
         )
+        .map_err(|e| e.to_string())?
+        .execute(params![
+            rel_path,
+            doc.frontmatter.title,
+            doc.frontmatter.status.map(|s| s.as_yaml_str()).unwrap_or(""),
+            tags_joined,
+            excerpt,
+            modified,
+            size as i64,
+            word_count as i64,
+            if doc.frontmatter.pinned { 1i64 } else { 0i64 },
+            doc.frontmatter.board_order.unwrap_or(0),
+            blob_sha,
+        ])
         .map_err(|e| e.to_string())?;
 
-        tx.execute("DELETE FROM notes_fts WHERE path = ?1", params![rel_path])
-            .map_err(|e| e.to_string())?;
-        tx.execute(
-            "INSERT INTO notes_fts (path, title, tags, body) VALUES (?1, ?2, ?3, ?4)",
-            params![rel_path, doc.frontmatter.title, tags_joined, doc.body],
-        )
-        .map_err(|e| e.to_string())?;
+        Self::replace_fts_tx(tx, rel_path, &doc.frontmatter.title, &tags_joined, &doc.body)?;
 
-        tx.execute("DELETE FROM links WHERE source_path = ?1", params![rel_path])
+        tx.prepare_cached("DELETE FROM links WHERE source_path = ?1")
+            .map_err(|e| e.to_string())?
+            .execute(params![rel_path])
             .map_err(|e| e.to_string())?;
         let mut insert_link = tx
             .prepare_cached(
@@ -907,19 +1026,49 @@ impl VaultIndex {
                 .map_err(|e| e.to_string())?;
         }
 
-        tx.execute("DELETE FROM tasks WHERE path = ?1", params![rel_path])
+        let mut prev_completed: HashMap<String, String> = HashMap::new();
+        {
+            let mut prev_stmt = tx
+                .prepare_cached(
+                    "SELECT clean_text, completed_at FROM tasks
+                     WHERE path = ?1 AND done = 1 AND completed_at IS NOT NULL AND completed_at != ''",
+                )
+                .map_err(|e| e.to_string())?;
+            let prev_rows = prev_stmt
+                .query_map(params![rel_path], |r| {
+                    Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
+                })
+                .map_err(|e| e.to_string())?;
+            for (ct, dt) in prev_rows.flatten() {
+                prev_completed.entry(ct).or_insert(dt);
+            }
+        }
+
+        tx.prepare_cached("DELETE FROM tasks WHERE path = ?1")
+            .map_err(|e| e.to_string())?
+            .execute(params![rel_path])
             .map_err(|e| e.to_string())?;
-        let ref_date = parse_daily_note_path(rel_path).unwrap_or_else(local_today);
+        let daily_date = parse_daily_note_path(rel_path);
+        let ref_date = daily_date.unwrap_or_else(local_today);
         let parsed_tasks = extract_tasks(&doc.body, ref_date);
         if !parsed_tasks.is_empty() {
             let mut insert_task = tx
                 .prepare_cached(
-                    "INSERT INTO tasks (path, line_idx, task_idx, raw_text, clean_text, done, due_date, priority, recurrence, tags)
-                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+                    "INSERT INTO tasks (path, line_idx, task_idx, raw_text, clean_text, done, due_date, completed_at, priority, recurrence, tags)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
                 )
                 .map_err(|e| e.to_string())?;
             for t in parsed_tasks {
                 let due_str = t.due_date.map(|d| d.format_iso());
+                let completed_str = if t.done {
+                    t.completed_at
+                        .map(|d| d.format_iso())
+                        .or_else(|| daily_date.map(|d| d.format_iso()))
+                        .or_else(|| prev_completed.get(&t.clean_text).cloned())
+                        .or_else(|| date_from_unix_ts(modified).map(|d| d.format_iso()))
+                } else {
+                    None
+                };
                 let prio_str = t.priority.map(|p| match p {
                     TaskPriority::High => "high",
                     TaskPriority::Medium => "med",
@@ -936,6 +1085,7 @@ impl VaultIndex {
                         t.clean_text,
                         if t.done { 1i64 } else { 0i64 },
                         due_str,
+                        completed_str,
                         prio_str,
                         rec_str,
                         tags_str,
@@ -966,7 +1116,8 @@ impl VaultIndex {
             .conn
             .prepare(
                 "SELECT t.path, COALESCE(n.title, t.path), t.line_idx, t.task_idx,
-                        t.raw_text, t.clean_text, t.done, t.due_date, t.priority, t.recurrence, t.tags
+                        t.raw_text, t.clean_text, t.done, t.due_date, t.priority, t.recurrence, t.tags,
+                        t.completed_at
                  FROM tasks t
                  LEFT JOIN notes n ON n.path = t.path
                  ORDER BY t.done ASC,
@@ -982,7 +1133,9 @@ impl VaultIndex {
                 let prio_raw: Option<String> = row.get(8)?;
                 let rec_raw: Option<String> = row.get(9)?;
                 let tags_raw: String = row.get(10)?;
+                let completed_raw: Option<String> = row.get(11)?;
                 let due_date = due_raw.as_deref().and_then(SimpleDate::parse_iso);
+                let completed_at = completed_raw.as_deref().and_then(SimpleDate::parse_iso);
                 let priority = match prio_raw.as_deref() {
                     Some("high") => Some(TaskPriority::High),
                     Some("med") => Some(TaskPriority::Medium),
@@ -999,6 +1152,7 @@ impl VaultIndex {
                     clean_text: row.get(5)?,
                     done: row.get::<_, i64>(6)? != 0,
                     due_date,
+                    completed_at,
                     priority,
                     recurrence,
                     tags: parse_tags_value(&tags_raw),
@@ -1077,7 +1231,10 @@ impl VaultIndex {
             if !parsed.tags.is_empty() {
                 let note_tags = parse_tags_value(tags_raw);
                 for req_tag in &parsed.tags {
-                    if !note_tags.iter().any(|nt| nt.eq_ignore_ascii_case(req_tag)) {
+                    if !note_tags.iter().any(|nt| {
+                        let nt_low = nt.to_lowercase();
+                        nt_low.starts_with(req_tag.as_str()) || nt_low.contains(req_tag.as_str())
+                    }) {
                         return false;
                     }
                 }
@@ -1095,7 +1252,7 @@ impl VaultIndex {
             let mut combined: Vec<(bool, i64, SearchHit)> = Vec::new();
             let mut n_stmt = self
                 .conn
-                .prepare(
+                .prepare_cached(
                     "SELECT path, title, status, tags, excerpt, modified, pinned
                      FROM notes",
                 )
@@ -1131,10 +1288,9 @@ impl VaultIndex {
             if parsed.statuses.is_empty() {
                 let mut c_stmt = self
                     .conn
-                    .prepare(
-                        "SELECT c.path, c.title, c.kind, c.excerpt, c.modified, c.pinned, COALESCE(f.tags, '')
-                         FROM collections c
-                         LEFT JOIN notes_fts f ON f.path = c.path",
+                    .prepare_cached(
+                        "SELECT path, title, kind, excerpt, modified, pinned
+                         FROM collections",
                     )
                     .map_err(|e| e.to_string())?;
                 let c_rows = c_stmt
@@ -1146,12 +1302,11 @@ impl VaultIndex {
                             row.get::<_, String>(3)?,
                             row.get::<_, i64>(4)?,
                             row.get::<_, i64>(5).unwrap_or(0) != 0,
-                            row.get::<_, String>(6)?,
                         ))
                     })
                     .map_err(|e| e.to_string())?;
                 for r in c_rows.flatten() {
-                    if matches_filters(&r.0, "", &r.6) {
+                    if matches_filters(&r.0, "", "") {
                         combined.push((
                             r.5,
                             r.4,
@@ -1174,61 +1329,83 @@ impl VaultIndex {
             return Ok(combined.into_iter().take(50).map(|(_, _, h)| h).collect());
         };
 
+        let has_filters =
+            !parsed.paths.is_empty() || !parsed.statuses.is_empty() || !parsed.tags.is_empty();
+        let fetch_limit: i64 = if has_filters { 250 } else { 60 };
+
         let mut stmt = self
             .conn
-            .prepare(
-                "SELECT f.path,
+            .prepare_cached(
+                "SELECT f.rowid,
+                        f.path,
                         COALESCE(n.title, c.title, f.path),
                         COALESCE(c.kind, 'markdown'),
                         COALESCE(n.excerpt, c.excerpt, ''),
-                        snippet(notes_fts, 3, '', '', '…', 16),
                         COALESCE(n.status, ''),
-                        COALESCE(n.tags, f.tags, ''),
-                        bm25(notes_fts, 5.0, 2.5, 1.0) AS rank_score
+                        COALESCE(n.tags, f.tags, '')
                  FROM notes_fts f
                  LEFT JOIN notes n ON n.path = f.path
                  LEFT JOIN collections c ON c.path = f.path
                  WHERE notes_fts MATCH ?1 AND (n.path IS NOT NULL OR c.path IS NOT NULL)
-                 ORDER BY rank_score
-                 LIMIT 200",
+                 ORDER BY bm25(notes_fts, 5.0, 2.5, 1.0)
+                 LIMIT ?2",
             )
             .map_err(|e| e.to_string())?;
 
         let rows = stmt
-            .query_map(params![fts_query], |row| {
-                let path: String = row.get(0)?;
-                let title: String = row.get(1)?;
-                let kind_str: String = row.get(2)?;
-                let fallback_excerpt: String = row.get(3)?;
-                let snippet: String = row.get(4)?;
+            .query_map(params![fts_query, fetch_limit], |row| {
+                let rowid: i64 = row.get(0)?;
+                let path: String = row.get(1)?;
+                let title: String = row.get(2)?;
+                let kind_str: String = row.get(3)?;
+                let fallback_excerpt: String = row.get(4)?;
                 let status_raw: String = row.get(5)?;
                 let tags_raw: String = row.get(6)?;
-                let final_snippet = if snippet.trim().is_empty() {
-                    fallback_excerpt
-                } else {
-                    snippet.split_whitespace().collect::<Vec<_>>().join(" ")
-                };
                 Ok((
+                    rowid,
                     status_raw,
                     tags_raw,
+                    fallback_excerpt,
                     SearchHit {
                         path,
                         title,
                         kind: db_str_to_kind(&kind_str),
-                        snippet: final_snippet,
+                        snippet: String::new(),
                     },
                 ))
             })
             .map_err(|e| e.to_string())?;
 
-        let mut out = Vec::new();
-        for (status_raw, tags_raw, hit) in rows.flatten() {
+        let mut winners: Vec<(i64, String, SearchHit)> = Vec::with_capacity(50);
+        for (rowid, status_raw, tags_raw, fallback_excerpt, hit) in rows.flatten() {
             if matches_filters(&hit.path, &status_raw, &tags_raw) {
-                out.push(hit);
-                if out.len() >= 50 {
+                winners.push((rowid, fallback_excerpt, hit));
+                if winners.len() >= 50 {
                     break;
                 }
             }
+        }
+
+        let mut snip_stmt = self
+            .conn
+            .prepare_cached(
+                "SELECT snippet(notes_fts, 3, '', '', '…', 16)
+                 FROM notes_fts
+                 WHERE notes_fts MATCH ?1 AND rowid = ?2",
+            )
+            .map_err(|e| e.to_string())?;
+
+        let mut out = Vec::with_capacity(winners.len());
+        for (rowid, fallback_excerpt, mut hit) in winners {
+            let snippet_raw: String = snip_stmt
+                .query_row(params![fts_query, rowid], |row| row.get(0))
+                .unwrap_or_default();
+            hit.snippet = if snippet_raw.trim().is_empty() {
+                fallback_excerpt
+            } else {
+                snippet_raw.split_whitespace().collect::<Vec<_>>().join(" ")
+            };
+            out.push(hit);
         }
         Ok(out)
     }
@@ -1774,5 +1951,391 @@ mod tests {
 
         idx.remove_note("sprint.md").unwrap();
         assert!(idx.list_tasks().unwrap().is_empty());
+    }
+
+    #[test]
+    #[ignore]
+    fn stress_vault_benchmark() {
+        use std::time::Instant;
+
+        struct TempDirGuard(std::path::PathBuf);
+        impl Drop for TempDirGuard {
+            fn drop(&mut self) {
+                let _ = std::fs::remove_dir_all(&self.0);
+            }
+        }
+
+        #[cfg(windows)]
+        fn current_ram_mb() -> (f64, f64) {
+            #[repr(C)]
+            #[allow(non_snake_case)]
+            struct ProcessMemoryCountersEx {
+                cb: u32,
+                PageFaultCount: u32,
+                PeakWorkingSetSize: usize,
+                WorkingSetSize: usize,
+                QuotaPeakPagedPoolUsage: usize,
+                QuotaPagedPoolUsage: usize,
+                QuotaPeakNonPagedPoolUsage: usize,
+                QuotaNonPagedPoolUsage: usize,
+                PagefileUsage: usize,
+                PeakPagefileUsage: usize,
+                PrivateUsage: usize,
+            }
+            #[link(name = "kernel32")]
+            extern "system" {
+                fn GetCurrentProcess() -> isize;
+                fn K32GetProcessMemoryInfo(
+                    process: isize,
+                    ppsmem_counters: *mut ProcessMemoryCountersEx,
+                    cb: u32,
+                ) -> i32;
+            }
+            let mut pmc: ProcessMemoryCountersEx = unsafe { std::mem::zeroed() };
+            pmc.cb = std::mem::size_of::<ProcessMemoryCountersEx>() as u32;
+            let ok = unsafe { K32GetProcessMemoryInfo(GetCurrentProcess(), &mut pmc, pmc.cb) };
+            if ok != 0 {
+                let mb = 1024.0 * 1024.0;
+                (pmc.WorkingSetSize as f64 / mb, pmc.PrivateUsage as f64 / mb)
+            } else {
+                (0.0, 0.0)
+            }
+        }
+
+        #[cfg(not(windows))]
+        fn current_ram_mb() -> (f64, f64) {
+            (0.0, 0.0)
+        }
+
+        fn dir_size_bytes(dir: &Path) -> u64 {
+            let mut total = 0u64;
+            let Ok(entries) = std::fs::read_dir(dir) else {
+                return 0;
+            };
+            for e in entries.flatten() {
+                let p = e.path();
+                if p.is_dir() {
+                    total += dir_size_bytes(&p);
+                } else if let Ok(m) = e.metadata() {
+                    total += m.len();
+                }
+            }
+            total
+        }
+
+        fn run_scale(note_count: usize, board_count: usize, canvas_count: usize) {
+            let root = std::env::temp_dir().join(format!(
+                "krono_stress_{}_{}",
+                std::process::id(),
+                note_count
+            ));
+            let _ = std::fs::remove_dir_all(&root);
+            std::fs::create_dir_all(&root).unwrap();
+            let guard = TempDirGuard(root.clone());
+
+            let folders = [
+                "projects",
+                "notes",
+                "research",
+                "daily/2026/11",
+                "archive",
+            ];
+            for f in folders {
+                std::fs::create_dir_all(root.join(f)).unwrap();
+            }
+
+            let filler = "Krono stores every note as plain UTF-8 Markdown with YAML frontmatter, \
+                instant SQLite FTS5 indexing, wikilinks, and local-first privacy. \
+                Быстрый нативный редактор на Rust без Electron и облачной привязки. \n"
+                .repeat(12);
+
+            let t_gen = Instant::now();
+            for i in 0..note_count {
+                let folder = folders[i % folders.len()];
+                let rel = format!("{folder}/note_{i:04}.md");
+                let status = match i % 3 {
+                    0 => "todo",
+                    1 => "in_progress",
+                    _ => "done",
+                };
+                let link_a = (i + 1) % note_count;
+                let link_b = (i + 7) % note_count;
+                let link_c = (i + 31) % note_count;
+                let link_d = (i + 97) % note_count;
+                let content = format!(
+                    "---\ntitle: Note {i:04} Architecture\nstatus: {status}\ntags: [rust, benchmark, fts5]\npinned: {}\n---\n\n\
+                     # Note {i:04}\n\n\
+                     Connected to [[note_{link_a:04}]], [[note_{link_b:04}]], [[note_{link_c:04}]], [[note_{link_d:04}]].\n\n\
+                     - [ ] Review architecture @2026-11-25 !high\n\
+                     - [ ] Verify SQLite FTS5 query @today\n\
+                     - [x] Initial benchmark setup\n\
+                     - [ ] Check дизайн and Cyrillic search\n\
+                     - [ ] Sync with GitHub @every week\n\n\
+                     {filler}",
+                    i % 25 == 0
+                );
+                std::fs::write(root.join(&rel), content).unwrap();
+            }
+
+            for b in 0..board_count {
+                let mut doc = krono_core::collection::CollectionDoc::new_board_preset(
+                    &format!("Board {b:02}"),
+                    "kanban",
+                    false,
+                );
+                let stage_col = doc.effective_group_column_id().unwrap_or("stage").to_string();
+                let opt_ids: Vec<String> = doc
+                    .columns
+                    .iter()
+                    .find(|c| c.id == stage_col)
+                    .map(|c| c.options.iter().map(|o| o.id.clone()).collect())
+                    .unwrap_or_default();
+                if !opt_ids.is_empty() {
+                    for r in 0..10 {
+                        let opt = &opt_ids[r % opt_ids.len()];
+                        doc.add_record(&format!("Task {b}-{r}"), Some((&stage_col, opt)), (r * 10) as i64);
+                    }
+                }
+                let json = serde_json::to_string_pretty(&doc).unwrap();
+                std::fs::write(root.join(format!("projects/board_{b:02}.board.json")), json).unwrap();
+            }
+
+            for c in 0..canvas_count {
+                let mut cdoc = krono_core::canvas::CanvasDoc {
+                    title: format!("Canvas {c:02}"),
+                    pinned: false,
+                    nodes: Vec::new(),
+                    edges: Vec::new(),
+                };
+                let mut prev: Option<String> = None;
+                for n in 0..6 {
+                    let id = cdoc.add_text_node(
+                        (n * 240) as f32,
+                        ((n % 2) * 160) as f32,
+                        &format!("### Node {n}\nMarkdown card inside canvas {c}"),
+                        None,
+                    );
+                    if let Some(p) = prev {
+                        cdoc.add_edge(&p, None, &id, None, Some("link"));
+                    }
+                    prev = Some(id);
+                }
+                let json = serde_json::to_string_pretty(&cdoc).unwrap();
+                std::fs::write(root.join(format!("projects/map_{c:02}.canvas")), json).unwrap();
+            }
+            let gen_ms = t_gen.elapsed().as_secs_f64() * 1000.0;
+            let vault_mb = dir_size_bytes(&root) as f64 / (1024.0 * 1024.0);
+            let (ram_ws_before, ram_priv_before) = current_ram_mb();
+
+            let t_open = Instant::now();
+            let mut idx = VaultIndex::open_for_vault(&root).unwrap();
+            let cold = idx.sync_from_disk(&root).unwrap();
+            let cold_ms = t_open.elapsed().as_secs_f64() * 1000.0;
+            let db_mb = std::fs::metadata(root.join(".krono/index.db"))
+                .map(|m| m.len() as f64 / (1024.0 * 1024.0))
+                .unwrap_or(0.0);
+
+            let t_warm = Instant::now();
+            let _warm = idx.sync_from_disk(&root).unwrap();
+            let warm_ms = t_warm.elapsed().as_secs_f64() * 1000.0;
+
+            for i in 0..10.min(note_count) {
+                let folder = folders[i % folders.len()];
+                let p = root.join(format!("{folder}/note_{i:04}.md"));
+                let mut txt = std::fs::read_to_string(&p).unwrap();
+                txt.push_str("\nUpdated line for incremental sync benchmark.\n");
+                std::fs::write(&p, txt).unwrap();
+            }
+            let t_inc = Instant::now();
+            let inc = idx.sync_from_disk(&root).unwrap();
+            let inc_ms = t_inc.elapsed().as_secs_f64() * 1000.0;
+
+            let queries = [
+                "architecture",
+                "rust",
+                "дизайн",
+                "tag:rust",
+                "status:in_progress",
+                "path:projects",
+                "tag:rust architecture",
+                "sqlite fts5",
+                "benchmark",
+                "nonexistent_xyz",
+            ];
+            let mut search_total_ms = 0.0f64;
+            let mut search_max_ms = 0.0f64;
+            let mut total_hits = 0usize;
+            for _round in 0..5 {
+                for q in queries {
+                    let ts = Instant::now();
+                    let hits = idx.search(q).unwrap();
+                    let ms = ts.elapsed().as_secs_f64() * 1000.0;
+                    search_total_ms += ms;
+                    if ms > search_max_ms {
+                        search_max_ms = ms;
+                    }
+                    total_hits += hits.len();
+                }
+            }
+            let search_avg_ms = search_total_ms / 50.0;
+
+            let t_notes = Instant::now();
+            let notes = idx.list_notes().unwrap();
+            let notes_ms = t_notes.elapsed().as_secs_f64() * 1000.0;
+
+            let t_tasks = Instant::now();
+            let tasks = idx.list_tasks().unwrap();
+            let tasks_ms = t_tasks.elapsed().as_secs_f64() * 1000.0;
+
+            let t_cols = Instant::now();
+            let collections = idx.list_collections().unwrap();
+            let cols_ms = t_cols.elapsed().as_secs_f64() * 1000.0;
+
+            let t_links = Instant::now();
+            let links = idx.list_all_links().unwrap();
+            let links_ms = t_links.elapsed().as_secs_f64() * 1000.0;
+
+            let t_graph = Instant::now();
+            let mut graph = crate::ui::graph_view::GraphState::default();
+            graph.rebuild(&notes, &collections, &links);
+            let graph_ms = t_graph.elapsed().as_secs_f64() * 1000.0;
+
+            let (ram_ws_after, ram_priv_after) = current_ram_mb();
+
+            println!(
+                "\n=== STRESS SCALE: {note_count} notes, {board_count} boards, {canvas_count} canvases ==="
+            );
+            println!("Vault on disk:      {vault_mb:.2} MB (generated in {gen_ms:.1} ms)");
+            println!(
+                "Cold sync+open:     {cold_ms:.1} ms (added {}, index.db: {db_mb:.2} MB)",
+                cold.changed_paths.len()
+            );
+            println!("Warm sync (0 chg):  {warm_ms:.1} ms");
+            println!(
+                "Incr sync (10 chg): {inc_ms:.1} ms (updated {})",
+                inc.changed_paths.len()
+            );
+            println!(
+                "FTS5 search (50x):  avg {search_avg_ms:.2} ms | max {search_max_ms:.2} ms (total hits: {total_hits})"
+            );
+            println!(
+                "Load lists:         notes={} ({notes_ms:.2} ms), tasks={} ({tasks_ms:.2} ms), cols={} ({cols_ms:.2} ms), links={} ({links_ms:.2} ms)",
+                notes.len(),
+                tasks.len(),
+                collections.len(),
+                links.len()
+            );
+            println!("Graph rebuild:      {graph_ms:.2} ms");
+            println!(
+                "RAM WorkingSet:     {ram_ws_before:.1} -> {ram_ws_after:.1} MB (delta +{:.1} MB)",
+                (ram_ws_after - ram_ws_before).max(0.0)
+            );
+            println!(
+                "RAM PrivateBytes:   {ram_priv_before:.1} -> {ram_priv_after:.1} MB (delta +{:.1} MB)",
+                (ram_priv_after - ram_priv_before).max(0.0)
+            );
+
+            drop(graph);
+            drop(links);
+            drop(collections);
+            drop(tasks);
+            drop(notes);
+            drop(idx);
+            drop(guard);
+            assert!(
+                !root.exists(),
+                "temp stress vault must be deleted cleanly: {}",
+                root.display()
+            );
+        }
+
+        // Crypto benchmark on ~10 KB note
+        let plain_10k = "Secret benchmark payload line with Cyrillic и ASCII.\n".repeat(180);
+        let t_enc = Instant::now();
+        let cipher = krono_core::crypto::encrypt_note_str(&plain_10k, "strong-stress-pass").unwrap();
+        let enc_ms = t_enc.elapsed().as_secs_f64() * 1000.0;
+
+        let t_dec = Instant::now();
+        let decrypted = krono_core::crypto::decrypt_note_str(&cipher, "strong-stress-pass").unwrap();
+        let dec_ms = t_dec.elapsed().as_secs_f64() * 1000.0;
+        assert_eq!(&*decrypted, &plain_10k);
+        println!(
+            "\n=== CRYPTO BENCHMARK (~10 KB note, Argon2id + ChaCha20Poly1305) ===\nEncrypt: {enc_ms:.1} ms | Decrypt: {dec_ms:.1} ms"
+        );
+
+        run_scale(1_000, 20, 10);
+        run_scale(5_000, 50, 20);
+    }
+
+    #[test]
+    fn migrates_legacy_db_without_fts_map_without_duplicates() {
+        let mut idx = VaultIndex::open_in_memory();
+        let doc1 = NoteDocument::parse("---\ntitle: Legacy\n---\nOld content", "Legacy");
+        idx.upsert_note("legacy.md", &doc1, 100, 32).unwrap();
+
+        // Simulate pre-v0.3.0 DB: notes_fts has the row, fts_map does not
+        idx.conn.execute("DELETE FROM fts_map", []).unwrap();
+        idx.init_schema().unwrap();
+
+        let doc2 = NoteDocument::parse("---\ntitle: Legacy\n---\nUpdated content", "Legacy");
+        idx.upsert_note("legacy.md", &doc2, 200, 36).unwrap();
+
+        let count: i64 = idx
+            .conn
+            .query_row(
+                "SELECT COUNT(*) FROM notes_fts WHERE path = ?1",
+                params!["legacy.md"],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(count, 1);
+    }
+
+    #[test]
+    fn indexes_task_completed_at_from_marker_and_daily_path() {
+        let mut idx = VaultIndex::open_in_memory();
+        let note = NoteDocument::parse(
+            "- [x] Выполнено по маркеру ✅ 2026-11-20\n- [ ] Открытая\n",
+            "Tasks Note",
+        );
+        idx.upsert_note("tasks.md", &note, 1_763_800_000, 50).unwrap();
+
+        let daily = NoteDocument::parse("- [x] Из дневника\n", "2026-11-19");
+        idx.upsert_note("daily/2026/11/2026-11-19.md", &daily, 1_763_800_000, 30)
+            .unwrap();
+
+        let rows = idx.list_tasks().unwrap();
+        let t_marker = rows.iter().find(|r| r.path == "tasks.md" && r.done).unwrap();
+        assert_eq!(t_marker.completed_at, SimpleDate::from_ymd(2026, 11, 20));
+        let t_open = rows.iter().find(|r| r.path == "tasks.md" && !r.done).unwrap();
+        assert_eq!(t_open.completed_at, None);
+        let t_daily = rows
+            .iter()
+            .find(|r| r.path == "daily/2026/11/2026-11-19.md")
+            .unwrap();
+        assert_eq!(t_daily.completed_at, SimpleDate::from_ymd(2026, 11, 19));
+    }
+
+    #[test]
+    fn search_matches_cyrillic_tag_prefix() {
+        let mut idx = VaultIndex::open_in_memory();
+        let n1 = NoteDocument::parse(
+            "---\ntitle: Фильмы\ntags: [кинотека]\n---\nСписок фильмов",
+            "Фильмы",
+        );
+        let n2 = NoteDocument::parse(
+            "---\ntitle: Книги\ntags: [литература]\n---\nСписок книг",
+            "Книги",
+        );
+        idx.upsert_note("movies.md", &n1, 100, 40).unwrap();
+        idx.upsert_note("books.md", &n2, 101, 40).unwrap();
+
+        let hits = idx.search("tag:кин").unwrap();
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].path, "movies.md");
+
+        let hash_hits = idx.search("#ЛИТ").unwrap();
+        assert_eq!(hash_hits.len(), 1);
+        assert_eq!(hash_hits[0].path, "books.md");
     }
 }

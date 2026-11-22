@@ -1,10 +1,14 @@
 use crate::i18n::{column_type_label, strings, Lang};
 use crate::storage::cover_cache::CoverCache;
 use crate::ui::collection_board::render_custom_board;
-use crate::ui::collection_gallery::{render_custom_gallery, render_tmdb_modals, TmdbUiState};
+use crate::ui::collection_gallery::{
+    collect_normalized_genres, has_media_columns, media_creator_label,
+    pick_random_watchlist_record, record_matches_media_category, render_custom_gallery,
+    render_gallery_sort_picker, render_poster_box, render_tmdb_modals, TmdbUiState,
+};
 use crate::ui::components::{
     focus_once, hairline_h, icon_button, normalize_tag_input, primary_button, reset_focus_gate,
-    secondary_button, styled_text_input, tag_autocomplete_input, tag_chip,
+    secondary_button, segmented_control, styled_text_input, tag_autocomplete_input, tag_chip,
 };
 use crate::ui::icons::{draw_icon, paint_star, Icon};
 use crate::ui::motion::{anim_bool_eased, ease_in_out_cubic, lerp_color, with_alpha};
@@ -23,7 +27,6 @@ use krono_core::{
     daily::SimpleDate,
     note::NoteMeta,
 };
-use std::collections::BTreeSet;
 use std::hash::Hash;
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
@@ -54,6 +57,10 @@ pub struct CollectionEditorState {
     pub select_filter: Option<(String, String)>,
     pub min_number_filter: Option<(String, i32)>,
     pub genre_filter: Option<String>,
+    pub media_category_filter: Option<String>,
+    pub tag_search_query: String,
+    pub kb_selected_record_id: Option<String>,
+    pub last_random_pick_id: Option<String>,
     pub smart_filter_open: bool,
     pub active_saved_view_id: Option<String>,
     pub new_view_name: String,
@@ -70,6 +77,7 @@ pub struct CollectionEditorState {
     pub new_stage_color: ColorToken,
 
     pub editing_record_id: Option<String>,
+    pub modal_editing_cover_url: bool,
     pub modal_new_tag: String,
     pub modal_new_check_item: String,
     pub modal_note_search: String,
@@ -99,6 +107,10 @@ impl Default for CollectionEditorState {
             select_filter: None,
             min_number_filter: None,
             genre_filter: None,
+            media_category_filter: None,
+            tag_search_query: String::new(),
+            kb_selected_record_id: None,
+            last_random_pick_id: None,
             smart_filter_open: false,
             active_saved_view_id: None,
             new_view_name: String::new(),
@@ -114,6 +126,7 @@ impl Default for CollectionEditorState {
             new_stage_name: String::new(),
             new_stage_color: ColorToken::Blue,
             editing_record_id: None,
+            modal_editing_cover_url: false,
             modal_new_tag: String::new(),
             modal_new_check_item: String::new(),
             modal_note_search: String::new(),
@@ -137,6 +150,10 @@ impl CollectionEditorState {
         self.select_filter = None;
         self.min_number_filter = None;
         self.genre_filter = None;
+        self.media_category_filter = None;
+        self.tag_search_query.clear();
+        self.kb_selected_record_id = None;
+        self.last_random_pick_id = None;
         self.smart_filter_open = false;
         self.active_saved_view_id = None;
         self.new_view_name.clear();
@@ -150,6 +167,7 @@ impl CollectionEditorState {
         self.adding_board_stage = false;
         self.new_stage_name.clear();
         self.editing_record_id = None;
+        self.modal_editing_cover_url = false;
         self.modal_new_tag.clear();
         self.modal_new_check_item.clear();
         self.modal_note_search.clear();
@@ -158,6 +176,50 @@ impl CollectionEditorState {
         self.adding_field_open = false;
         self.new_field_name.clear();
         self.tmdb_ui.reset();
+    }
+
+    pub fn to_filter_state(&self) -> crate::config::CollectionFilterState {
+        crate::config::CollectionFilterState {
+            active_view: Some(self.active_view),
+            filter_query: self.filter_query.clone(),
+            date_filter: self.date_filter,
+            tag_filter: self.tag_filter.clone(),
+            select_filter: self.select_filter.clone(),
+            min_number_filter: self.min_number_filter.clone(),
+            genre_filter: self.genre_filter.clone(),
+            media_category_filter: self.media_category_filter.clone(),
+            active_saved_view_id: self.active_saved_view_id.clone(),
+            sort: self
+                .sort
+                .as_ref()
+                .map(|s| (s.column_key.clone(), s.dir == CollectionSortDir::Asc)),
+        }
+    }
+
+    pub fn apply_filter_state(&mut self, st: &crate::config::CollectionFilterState) {
+        if let Some(v) = st.active_view {
+            self.active_view = v;
+        }
+        self.filter_query = st.filter_query.clone();
+        self.date_filter = st.date_filter;
+        self.tag_filter = st.tag_filter.clone();
+        self.select_filter = st.select_filter.clone();
+        self.min_number_filter = st.min_number_filter.clone();
+        self.genre_filter = st.genre_filter.clone();
+        self.media_category_filter = st.media_category_filter.clone();
+        self.active_saved_view_id = st
+            .active_saved_view_id
+            .as_ref()
+            .filter(|id| self.doc.saved_views.iter().any(|sv| &sv.id == *id))
+            .cloned();
+        self.sort = st.sort.as_ref().map(|(col, asc)| CollectionSort {
+            column_key: col.clone(),
+            dir: if *asc {
+                CollectionSortDir::Asc
+            } else {
+                CollectionSortDir::Desc
+            },
+        });
     }
 }
 
@@ -188,7 +250,7 @@ pub fn render_collection_view(
     }
 
     // Header: Title + Pin + Item count + View Switcher + Filter + Add Field/Stage
-    render_collection_header(ui, p, lang, layout, &rel_path, state, &mut actions);
+    render_collection_header(ui, p, lang, layout, today, &rel_path, state, &mut actions);
     ui.add_space(10.0);
 
     let available_tags = collect_available_tags(&state.doc, all_notes);
@@ -216,7 +278,16 @@ pub fn render_collection_view(
     }
 
     // Modals (Card detail & Column schema)
-    render_record_detail_modal(ctx, p, lang, state, all_notes, &available_tags, &mut actions);
+    render_record_detail_modal(
+        ctx,
+        p,
+        lang,
+        state,
+        all_notes,
+        &available_tags,
+        cover_cache,
+        &mut actions,
+    );
     render_column_schema_modal(ctx, p, lang, state, &mut actions);
     render_add_field_modal(ctx, p, lang, state, &mut actions);
     render_tmdb_modals(ctx, p, lang, state, cover_cache, has_tmdb_token, &mut actions);
@@ -261,15 +332,21 @@ fn render_external_conflict_banner(
 }
 
 #[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_arguments)]
 fn render_collection_header(
     ui: &mut Ui,
     p: &ThemePalette,
     lang: Lang,
     layout: LayoutClass,
+    today: SimpleDate,
     rel_path: &str,
     state: &mut CollectionEditorState,
     actions: &mut Vec<UiAction>,
 ) {
+    if has_media_columns(&state.doc) {
+        render_media_collection_header(ui, p, lang, layout, today, rel_path, state, actions);
+        return;
+    }
     let s = strings(lang);
     let is_mobile = layout.is_mobile();
 
@@ -656,14 +733,17 @@ fn render_collection_header(
                     });
 
                     // Tags & optional non-group select column filter row
-                    let mut all_tags: BTreeSet<String> = BTreeSet::new();
+                    let mut tag_freq: std::collections::HashMap<String, usize> =
+                        std::collections::HashMap::new();
                     for rec in &state.doc.records {
                         for t in &rec.tags {
-                            if !t.trim().is_empty() {
-                                all_tags.insert(t.clone());
+                            let tr = t.trim();
+                            if !tr.is_empty() {
+                                *tag_freq.entry(tr.to_string()).or_insert(0) += 1;
                             }
                         }
                     }
+                    let all_tags_vec: Vec<(String, usize)> = tag_freq.into_iter().collect();
                     let group_cid = state
                         .doc
                         .effective_group_column_id()
@@ -680,18 +760,32 @@ fn render_collection_header(
                         })
                         .cloned();
 
-                    if !all_tags.is_empty() || extra_select.is_some() {
+                    if !all_tags_vec.is_empty() || extra_select.is_some() {
                         ui.horizontal_wrapped(|ui| {
                             ui.spacing_mut().item_spacing = vec2(5.0, 4.0);
-                            for tag in &all_tags {
-                                let is_sel = state
-                                    .tag_filter
-                                    .as_deref()
-                                    .is_some_and(|t| t.eq_ignore_ascii_case(tag));
-                                let (resp, _) = tag_chip(ui, p, tag, is_sel);
-                                if resp.clicked() {
-                                    state.tag_filter = if is_sel { None } else { Some(tag.clone()) };
-                                    state.active_saved_view_id = None;
+                            if !all_tags_vec.is_empty() {
+                                ui.add(
+                                    egui::TextEdit::singleline(&mut state.tag_search_query)
+                                        .hint_text(s.col_tags_filter_placeholder)
+                                        .font(font_body(11.5))
+                                        .desired_width(110.0),
+                                );
+                                for sug in krono_core::search::suggest_tags(
+                                    &state.tag_search_query,
+                                    &all_tags_vec,
+                                    24,
+                                ) {
+                                    let tag = &sug.tag;
+                                    let is_sel = state
+                                        .tag_filter
+                                        .as_deref()
+                                        .is_some_and(|t| t.eq_ignore_ascii_case(tag));
+                                    let (resp, _) = tag_chip(ui, p, tag, is_sel);
+                                    if resp.clicked() {
+                                        state.tag_filter =
+                                            if is_sel { None } else { Some(tag.clone()) };
+                                        state.active_saved_view_id = None;
+                                    }
                                 }
                             }
                             if let Some(ref sel_col) = extra_select {
@@ -765,6 +859,269 @@ fn render_collection_header(
                     });
                 });
             });
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn render_media_collection_header(
+    ui: &mut Ui,
+    p: &ThemePalette,
+    lang: Lang,
+    layout: LayoutClass,
+    today: SimpleDate,
+    rel_path: &str,
+    state: &mut CollectionEditorState,
+    actions: &mut Vec<UiAction>,
+) {
+    let s = strings(lang);
+    let is_ru = lang == Lang::Ru;
+    let is_mobile = layout.is_mobile();
+
+    let mut has_books = state.media_category_filter.as_deref() == Some("book");
+    let mut has_other = state.media_category_filter.as_deref() == Some("other");
+    for rec in &state.doc.records {
+        let mt = rec
+            .values
+            .get("media_type")
+            .map(FieldValue::as_text)
+            .unwrap_or_default()
+            .trim()
+            .to_lowercase();
+        if mt == "book" {
+            has_books = true;
+        } else if !mt.is_empty() && mt != "movie" && mt != "tv" {
+            has_other = true;
+        }
+    }
+
+    let mut cat_tabs: Vec<(Option<&'static str>, &'static str)> = vec![
+        (None, s.media_cat_all),
+        (Some("movie"), s.media_cat_movies),
+        (Some("tv"), s.media_cat_tv),
+    ];
+    if has_books {
+        cat_tabs.push((Some("book"), s.media_cat_books));
+    }
+    if has_other {
+        cat_tabs.push((Some("other"), s.media_cat_other));
+    }
+
+    // Row 1: Title + counter + category tabs (left) | + Add + Pick + View switcher (right)
+    ui.horizontal_wrapped(|ui| {
+        ui.spacing_mut().item_spacing = vec2(8.0, 6.0);
+
+        let mut title = state.doc.title.clone();
+        let title_font = font_semibold(if is_mobile { 17.5 } else { 20.0 });
+        let measure_txt = if title.trim().is_empty() {
+            s.untitled_hint
+        } else {
+            title.as_str()
+        };
+        let measured_w = ui
+            .painter()
+            .layout_no_wrap(measure_txt.to_string(), title_font.clone(), p.text_primary)
+            .size()
+            .x;
+        let edit_w = (measured_w + 14.0).clamp(80.0, if is_mobile { 180.0 } else { 230.0 });
+        if ui
+            .add(
+                egui::TextEdit::singleline(&mut title)
+                    .frame(false)
+                    .font(title_font)
+                    .text_color(p.text_primary)
+                    .hint_text(s.untitled_hint)
+                    .desired_width(edit_w),
+            )
+            .changed()
+        {
+            state.doc.title = title;
+            actions.push(UiAction::MarkCollectionDirty);
+        }
+
+        if icon_button(
+            ui,
+            p,
+            if state.doc.pinned { Icon::Pin } else { Icon::PinOff },
+            s.tooltip_pin,
+            state.doc.pinned,
+        )
+        .clicked()
+        {
+            actions.push(UiAction::TogglePin(rel_path.to_string()));
+        }
+
+        egui::Frame::none()
+            .fill(p.bg_elevated)
+            .stroke(Stroke::new(1.0_f32, p.border_hairline))
+            .rounding(Rounding::same(10.0))
+            .inner_margin(Margin::symmetric(7.0, 2.0))
+            .show(ui, |ui| {
+                ui.label(
+                    egui::RichText::new(state.doc.records.len().to_string())
+                        .font(font_mono(11.0))
+                        .color(p.text_secondary),
+                );
+            });
+
+        let mut cur_cat = cat_tabs
+            .iter()
+            .position(|(id, _)| *id == state.media_category_filter.as_deref())
+            .unwrap_or(0);
+        let seg_items: Vec<(usize, Option<Icon>, &str)> = cat_tabs
+            .iter()
+            .enumerate()
+            .map(|(i, (_, lbl))| (i, None, *lbl))
+            .collect();
+        if segmented_control(ui, p, "media_cat_tabs", &mut cur_cat, &seg_items) {
+            state.media_category_filter = cat_tabs[cur_cat].0.map(str::to_string);
+            state.kb_selected_record_id = None;
+        }
+
+        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+            ui.spacing_mut().item_spacing.x = 6.0;
+
+            if secondary_button(ui, p, Some(Icon::Sparkles), s.media_pick_btn).clicked() {
+                if let Some(pick_id) = pick_random_watchlist_record(state, today, is_ru) {
+                    state.last_random_pick_id = Some(pick_id.clone());
+                    state.editing_record_id = Some(pick_id);
+                    state.modal_editing_cover_url = false;
+                } else {
+                    actions.push(UiAction::RequestTmdbRecommendations);
+                }
+            }
+
+            if primary_button(ui, p, Some(Icon::Plus), s.media_add_btn, false).clicked() {
+                actions.push(UiAction::OpenTmdbSearch);
+            }
+        });
+    });
+
+    ui.add_space(8.0);
+
+    // Row 2: Quick status pills (left) | Search + Genre dropdown + Sort dropdown (right)
+    let cur_status = state
+        .select_filter
+        .as_ref()
+        .filter(|(c, _)| c == "status")
+        .map(|(_, o)| o.clone());
+    let has_active_filters = !state.filter_query.trim().is_empty()
+        || state.genre_filter.is_some()
+        || cur_status.is_some()
+        || state.media_category_filter.is_some();
+
+    let render_status_pills = |ui: &mut Ui, state: &mut CollectionEditorState| {
+        for (opt_id, lbl) in [
+            (None, s.media_status_all),
+            (Some("watchlist"), s.media_status_watchlist),
+            (Some("watching"), s.media_status_watching),
+            (Some("watched"), s.media_status_watched),
+        ] {
+            let active = cur_status.as_deref() == opt_id;
+            if smart_filter_pill(ui, p, None, lbl, active).clicked() {
+                state.select_filter = opt_id.map(|o| ("status".to_string(), o.to_string()));
+                state.kb_selected_record_id = None;
+            }
+        }
+    };
+
+    let render_right_controls = |ui: &mut Ui, state: &mut CollectionEditorState| {
+        if has_active_filters
+            && icon_button(ui, p, Icon::Close, s.col_clear_filters, false).clicked()
+        {
+            state.filter_query.clear();
+            state.genre_filter = None;
+            state.select_filter = None;
+            state.media_category_filter = None;
+            state.kb_selected_record_id = None;
+        }
+
+        render_gallery_sort_picker(ui, p, lang, state);
+
+        let all_genres = collect_normalized_genres(&state.doc, is_ru);
+        if !all_genres.is_empty() {
+            let genre_pop = ui.make_persistent_id("media_genre_dropdown");
+            let g_lbl = state
+                .genre_filter
+                .as_deref()
+                .unwrap_or(s.media_genre_all);
+            let g_btn = secondary_button(ui, p, Some(Icon::ChevronDown), g_lbl);
+            if g_btn.clicked() {
+                ui.memory_mut(|m| m.toggle_popup(genre_pop));
+            }
+            egui::popup_below_widget(
+                ui,
+                genre_pop,
+                &g_btn,
+                PopupCloseBehavior::CloseOnClickOutside,
+                |ui| {
+                    ui.set_min_width(160.0);
+                    egui::ScrollArea::vertical()
+                        .max_height(260.0)
+                        .show(ui, |ui| {
+                            if crate::ui::components::context_menu_row(
+                                ui,
+                                p,
+                                if state.genre_filter.is_none() {
+                                    Icon::Check
+                                } else {
+                                    Icon::Filter
+                                },
+                                s.media_status_all,
+                                false,
+                            )
+                            .clicked()
+                            {
+                                state.genre_filter = None;
+                                ui.memory_mut(|m| m.close_popup());
+                            }
+                            for g in all_genres {
+                                let sel = state
+                                    .genre_filter
+                                    .as_deref()
+                                    .is_some_and(|f| f.eq_ignore_ascii_case(&g));
+                                if crate::ui::components::context_menu_row(
+                                    ui,
+                                    p,
+                                    if sel { Icon::Check } else { Icon::Filter },
+                                    &g,
+                                    false,
+                                )
+                                .clicked()
+                                {
+                                    state.genre_filter = if sel { None } else { Some(g) };
+                                    ui.memory_mut(|m| m.close_popup());
+                                }
+                            }
+                        });
+                },
+            );
+        }
+
+        styled_text_input(
+            ui,
+            p,
+            &mut state.filter_query,
+            s.media_search_hint,
+            false,
+            if is_mobile { 130.0 } else { 170.0 },
+        );
+    };
+
+    if !is_mobile && ui.available_width() >= 760.0 {
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = 6.0;
+            render_status_pills(ui, state);
+            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                ui.spacing_mut().item_spacing.x = 6.0;
+                render_right_controls(ui, state);
+            });
+        });
+    } else {
+        ui.horizontal_wrapped(|ui| {
+            ui.spacing_mut().item_spacing = vec2(6.0, 6.0);
+            render_status_pills(ui, state);
+            render_right_controls(ui, state);
+        });
     }
 }
 
@@ -893,6 +1250,7 @@ fn render_custom_table(
                 sel_filter,
                 today,
             ) && record_matches_min_number(rec, min_num_filter)
+                && record_matches_media_category(rec, state.media_category_filter.as_deref())
         })
         .map(|(i, _)| i)
         .collect();
@@ -1746,6 +2104,7 @@ pub(crate) fn collect_available_tags(doc: &CollectionDoc, all_notes: &[NoteMeta]
     out
 }
 
+#[allow(clippy::too_many_arguments)]
 fn render_record_detail_modal(
     ctx: &egui::Context,
     p: &ThemePalette,
@@ -1753,16 +2112,22 @@ fn render_record_detail_modal(
     state: &mut CollectionEditorState,
     all_notes: &[NoteMeta],
     available_tags: &[String],
+    cover_cache: &mut CoverCache,
     actions: &mut Vec<UiAction>,
 ) {
     let Some(rec_id) = state.editing_record_id.clone() else {
         return;
     };
     let s = strings(lang);
+    let is_media_col = has_media_columns(&state.doc);
 
     let screen = ctx.screen_rect();
     let max_alpha = if p.is_dark { 135.0 } else { 75.0 };
     let mut close_modal = false;
+
+    if ctx.input(|i| i.key_pressed(egui::Key::Escape)) && !state.modal_editing_cover_url {
+        close_modal = true;
+    }
 
     egui::Area::new(egui::Id::new("c_rec_modal_bg"))
         .order(egui::Order::Middle)
@@ -1796,11 +2161,16 @@ fn render_record_detail_modal(
                 .shadow(p.shadow_floating)
                 .inner_margin(Margin::same(20.0))
                 .show(ui, |ui| {
-                    let modal_w = 560.0_f32.min((screen.width() - 36.0).max(260.0));
+                    let target_w: f32 = if is_media_col { 640.0 } else { 560.0 };
+                    let modal_w = target_w.min((screen.width() - 36.0).max(260.0));
                     let scroll_max_h = (screen.height() - top_y - 24.0 - 156.0).max(140.0);
                     ui.set_width(modal_w);
 
+                    let mut modal_note_search = std::mem::take(&mut state.modal_note_search);
+                    let mut editing_cover_url = state.modal_editing_cover_url;
+
                     let Some(rec) = state.doc.records.iter_mut().find(|r| r.id == rec_id) else {
+                        state.modal_note_search = modal_note_search;
                         close_modal = true;
                         return;
                     };
@@ -1812,7 +2182,7 @@ fn render_record_detail_modal(
                                 .font(font_semibold(19.0))
                                 .text_color(p.text_primary)
                                 .hint_text(s.col_card_title_hint)
-                                .desired_width((modal_w - 42.0).max(140.0)),
+                                .desired_width((modal_w - 72.0).max(140.0)),
                         );
                         if r.changed() {
                             dirty = true;
@@ -1834,93 +2204,128 @@ fn render_record_detail_modal(
                     hairline_h(ui, p);
                     ui.add_space(12.0);
 
+                    let media_type = rec
+                        .values
+                        .get("media_type")
+                        .map(FieldValue::as_text)
+                        .unwrap_or_default()
+                        .trim()
+                        .to_lowercase();
+                    let use_two_cols = is_media_col && modal_w >= 480.0;
+                    let props_w = if use_two_cols {
+                        (modal_w - 184.0).max(220.0)
+                    } else {
+                        modal_w
+                    };
+
                     egui::ScrollArea::vertical()
                         .id_salt("c_rec_modal_scroll")
                         .auto_shrink([false, true])
                         .max_height(scroll_max_h)
                         .show(ui, |ui| {
+                    let mut tech_col_indices: Vec<usize> = Vec::new();
 
-                    // Properties grid
-                    ui.label(
-                        egui::RichText::new(s.col_record_props)
-                            .font(font_medium(12.0))
-                            .color(p.text_muted),
-                    );
-                    ui.add_space(6.0);
-                    let mut tech_cols: Vec<&ColumnDef> = Vec::new();
-                    for col in &cols_snapshot {
-                        if col.id == "tmdb_id" || col.id == "poster_path" {
-                            tech_cols.push(col);
-                            continue;
-                        }
-                        ui.horizontal(|ui| {
+                    if use_two_cols {
+                        ui.horizontal_top(|ui| {
                             ui.allocate_ui_with_layout(
-                                vec2(120.0, 26.0),
-                                Layout::left_to_right(Align::Center),
+                                vec2(props_w, 10.0),
+                                Layout::top_down(Align::LEFT),
                                 |ui| {
-                                    let (ir, _) = ui.allocate_exact_size(vec2(14.0, 14.0), Sense::hover());
-                                    draw_icon(ui.painter(), ir, column_type_icon(col.col_type), p.text_muted);
-                                    ui.add_space(4.0);
-                                    ui.label(
-                                        egui::RichText::new(&col.name)
-                                            .font(font_body(12.5))
-                                            .color(p.text_secondary),
+                                    render_record_props_list(
+                                        ui,
+                                        p,
+                                        lang,
+                                        is_media_col,
+                                        &media_type,
+                                        &cols_snapshot,
+                                        rec,
+                                        &mut dirty,
+                                        all_notes,
+                                        &mut modal_note_search,
+                                        actions,
+                                        &mut tech_col_indices,
+                                        props_w,
                                     );
                                 },
                             );
-                            if col.id == "rating" && col.col_type == ColumnType::Number {
-                                if render_interactive_star_rating(ui, p, rec, &col.id) {
-                                    dirty = true;
-                                }
-                            } else if col.id == "review" && col.col_type == ColumnType::Text {
-                                let mut val = rec
-                                    .values
-                                    .get(&col.id)
-                                    .map(FieldValue::as_text)
-                                    .unwrap_or_default();
-                                egui::Frame::none()
-                                    .fill(p.bg_input)
-                                    .stroke(Stroke::new(1.0_f32, p.border_subtle))
-                                    .rounding(Rounding::same(6.0))
-                                    .inner_margin(Margin::same(8.0))
-                                    .show(ui, |ui| {
-                                        let r = ui.add(
-                                            egui::TextEdit::multiline(&mut val)
-                                                .frame(false)
-                                                .desired_rows(3)
-                                                .desired_width((modal_w - 160.0).max(120.0))
-                                                .hint_text(s.col_record_desc_hint)
-                                                .font(font_body(12.5))
-                                                .text_color(p.text_primary),
+                            ui.add_space(16.0);
+                            ui.allocate_ui_with_layout(
+                                vec2(162.0, 280.0),
+                                Layout::top_down(Align::Center),
+                                |ui| {
+                                    let poster_url = rec
+                                        .values
+                                        .get("poster_path")
+                                        .map(FieldValue::as_text)
+                                        .unwrap_or_default();
+                                    let poster_resp = render_poster_box(
+                                        ctx,
+                                        ui,
+                                        p,
+                                        cover_cache,
+                                        &poster_url,
+                                        vec2(160.0, 240.0),
+                                        10.0,
+                                    );
+                                    ui.add_space(6.0);
+                                    let btn_lbl = if poster_url.trim().is_empty() {
+                                        s.media_add_cover
+                                    } else {
+                                        s.media_change_cover
+                                    };
+                                    if poster_resp.hovered()
+                                        || poster_url.trim().is_empty()
+                                        || editing_cover_url
+                                    {
+                                        if secondary_button(ui, p, Some(Icon::Image), btn_lbl).clicked() {
+                                            editing_cover_url = !editing_cover_url;
+                                        }
+                                    }
+                                    if editing_cover_url {
+                                        ui.add_space(4.0);
+                                        let mut url_edit = poster_url;
+                                        let r = styled_text_input(
+                                            ui,
+                                            p,
+                                            &mut url_edit,
+                                            s.media_manual_cover_url,
+                                            false,
+                                            160.0,
                                         );
                                         if r.changed() {
-                                            if val.trim().is_empty() {
-                                                rec.values.remove(&col.id);
+                                            if url_edit.trim().is_empty() {
+                                                rec.values.remove("poster_path");
                                             } else {
-                                                rec.values.insert(col.id.clone(), FieldValue::Text(val));
+                                                rec.values.insert(
+                                                    "poster_path".into(),
+                                                    FieldValue::Text(url_edit.trim().to_string()),
+                                                );
                                             }
                                             dirty = true;
                                         }
-                                    });
-                            } else if render_inline_field_cell(
-                                ui,
-                                p,
-                                lang,
-                                "mdl",
-                                col,
-                                rec,
-                                (modal_w - 140.0).max(120.0),
-                                all_notes,
-                                &mut state.modal_note_search,
-                                actions,
-                            ) {
-                                dirty = true;
-                            }
+                                    }
+                                },
+                            );
                         });
-                        ui.add_space(4.0);
+                    } else {
+                        render_record_props_list(
+                            ui,
+                            p,
+                            lang,
+                            is_media_col,
+                            &media_type,
+                            &cols_snapshot,
+                            rec,
+                            &mut dirty,
+                            all_notes,
+                            &mut modal_note_search,
+                            actions,
+                            &mut tech_col_indices,
+                            props_w,
+                        );
                     }
 
-                    if !tech_cols.is_empty() {
+                    if !tech_col_indices.is_empty() {
                         ui.add_space(4.0);
                         egui::CollapsingHeader::new(
                             egui::RichText::new(s.col_tech_fields)
@@ -1929,7 +2334,8 @@ fn render_record_detail_modal(
                         )
                         .default_open(false)
                         .show(ui, |ui| {
-                            for col in tech_cols {
+                            for idx in tech_col_indices {
+                                let col = &cols_snapshot[idx];
                                 ui.horizontal(|ui| {
                                     ui.allocate_ui_with_layout(
                                         vec2(120.0, 26.0),
@@ -1960,7 +2366,7 @@ fn render_record_detail_modal(
                                         rec,
                                         (modal_w - 140.0).max(120.0),
                                         all_notes,
-                                        &mut state.modal_note_search,
+                                        &mut modal_note_search,
                                         actions,
                                     ) {
                                         dirty = true;
@@ -2110,24 +2516,129 @@ fn render_record_detail_modal(
                             }
                         });
                     });
+
+                    state.modal_note_search = modal_note_search;
+                    state.modal_editing_cover_url = editing_cover_url;
                 });
         });
-
-    if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
-        close_modal = true;
-    }
 
     if delete_me {
         state.doc.remove_record(&rec_id);
         state.editing_record_id = None;
+        state.modal_editing_cover_url = false;
         state.modal_new_tag.clear();
         dirty = true;
     } else if close_modal {
         state.editing_record_id = None;
+        state.modal_editing_cover_url = false;
         state.modal_new_tag.clear();
     }
     if dirty {
         actions.push(UiAction::MarkCollectionDirty);
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn render_record_props_list(
+    ui: &mut Ui,
+    p: &ThemePalette,
+    lang: Lang,
+    is_media_col: bool,
+    media_type: &str,
+    cols_snapshot: &[ColumnDef],
+    rec: &mut RecordItem,
+    dirty: &mut bool,
+    all_notes: &[NoteMeta],
+    modal_note_search: &mut String,
+    actions: &mut Vec<UiAction>,
+    tech_col_indices: &mut Vec<usize>,
+    col_w: f32,
+) {
+    let s = strings(lang);
+    ui.label(
+        egui::RichText::new(s.col_record_props)
+            .font(font_medium(12.0))
+            .color(p.text_muted),
+    );
+    ui.add_space(6.0);
+    for (idx, col) in cols_snapshot.iter().enumerate() {
+        if col.id == "tmdb_id" || col.id == "poster_path" {
+            tech_col_indices.push(idx);
+            continue;
+        }
+        if is_media_col && col.id == "progress" && media_type == "movie" {
+            continue;
+        }
+        let label_text = if is_media_col && col.id == "director" {
+            media_creator_label(media_type, s)
+        } else {
+            col.name.as_str()
+        };
+        ui.horizontal(|ui| {
+            ui.allocate_ui_with_layout(
+                vec2(118.0, 26.0),
+                Layout::left_to_right(Align::Center),
+                |ui| {
+                    let (ir, _) = ui.allocate_exact_size(vec2(14.0, 14.0), Sense::hover());
+                    draw_icon(ui.painter(), ir, column_type_icon(col.col_type), p.text_muted);
+                    ui.add_space(4.0);
+                    ui.label(
+                        egui::RichText::new(label_text)
+                            .font(font_body(12.5))
+                            .color(p.text_secondary),
+                    );
+                },
+            );
+            if col.id == "rating" && col.col_type == ColumnType::Number {
+                if render_interactive_star_rating(ui, p, rec, &col.id) {
+                    *dirty = true;
+                }
+            } else if col.id == "review" && col.col_type == ColumnType::Text {
+                let mut val = rec
+                    .values
+                    .get(&col.id)
+                    .map(FieldValue::as_text)
+                    .unwrap_or_default();
+                egui::Frame::none()
+                    .fill(p.bg_input)
+                    .stroke(Stroke::new(1.0_f32, p.border_subtle))
+                    .rounding(Rounding::same(6.0))
+                    .inner_margin(Margin::same(8.0))
+                    .show(ui, |ui| {
+                        let r = ui.add(
+                            egui::TextEdit::multiline(&mut val)
+                                .frame(false)
+                                .desired_rows(3)
+                                .desired_width((col_w - 146.0).max(110.0))
+                                .hint_text(s.col_record_desc_hint)
+                                .font(font_body(12.5))
+                                .text_color(p.text_primary),
+                        );
+                        if r.changed() {
+                            if val.trim().is_empty() {
+                                rec.values.remove(&col.id);
+                            } else {
+                                rec.values.insert(col.id.clone(), FieldValue::Text(val));
+                            }
+                            *dirty = true;
+                        }
+                    });
+            } else if render_inline_field_cell(
+                ui,
+                p,
+                lang,
+                "mdl",
+                col,
+                rec,
+                (col_w - 132.0).max(110.0),
+                all_notes,
+                modal_note_search,
+                actions,
+            ) {
+                *dirty = true;
+            }
+        });
+        ui.add_space(4.0);
     }
 }
 

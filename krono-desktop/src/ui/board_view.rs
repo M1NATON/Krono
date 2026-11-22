@@ -9,7 +9,9 @@ use crate::ui::theme::{
     font_body, font_medium, font_mono, font_semibold, font_serif_bold, ThemePalette,
 };
 use crate::ui::board_dnd::{BoardDndState, ColumnGeometry};
-use crate::ui::{BoardSort, LayoutClass, UiAction, ViewMode};
+use crate::ui::{
+    note_matches_tag_filters, BoardSort, LayoutClass, TagFilterMode, UiAction, ViewMode,
+};
 use eframe::egui::{
     self, pos2, vec2, Align, Color32, CursorIcon, Layout, Margin, Order, Rect, Rounding, Sense,
     Stroke, Ui,
@@ -28,7 +30,8 @@ pub fn render_board_view(
     layout: LayoutClass,
     mobile_tab: &mut NoteStatus,
     notes: &[NoteMeta],
-    active_tag: Option<&str>,
+    active_tags: &[String],
+    tag_mode: TagFilterMode,
     quick_add_status: &mut Option<NoteStatus>,
     quick_add_title: &mut String,
     quick_add_tags: &mut Vec<String>,
@@ -47,11 +50,11 @@ pub fn render_board_view(
                     .font(font_serif_bold(24.0))
                     .color(p.text_primary),
             );
-            if let Some(tag) = active_tag {
-                ui.add_space(10.0);
+            for tag in active_tags {
+                ui.add_space(6.0);
                 let (resp, rm) = tag_chip(ui, p, tag, true);
                 if rm || resp.clicked() {
-                    actions.push(UiAction::SetTagFilter(None));
+                    actions.push(UiAction::ToggleTagFilter(tag.clone()));
                 }
             }
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
@@ -86,11 +89,13 @@ pub fn render_board_view(
             });
         });
         ui.add_space(14.0);
-    } else if let Some(tag) = active_tag {
-        ui.horizontal(|ui| {
-            let (resp, rm) = tag_chip(ui, p, tag, true);
-            if rm || resp.clicked() {
-                actions.push(UiAction::SetTagFilter(None));
+    } else if !active_tags.is_empty() {
+        ui.horizontal_wrapped(|ui| {
+            for tag in active_tags {
+                let (resp, rm) = tag_chip(ui, p, tag, true);
+                if rm || resp.clicked() {
+                    actions.push(UiAction::ToggleTagFilter(tag.clone()));
+                }
             }
         });
         ui.add_space(8.0);
@@ -101,10 +106,8 @@ pub fn render_board_view(
         grouped.insert(st, Vec::new());
     }
     for n in notes {
-        if let Some(tag) = active_tag {
-            if !n.tags.iter().any(|t| t.eq_ignore_ascii_case(tag)) {
-                continue;
-            }
+        if !note_matches_tag_filters(&n.tags, active_tags, tag_mode) {
+            continue;
         }
         if let Some(st) = n.status {
             grouped.entry(st).or_default().push(n);

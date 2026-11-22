@@ -31,6 +31,7 @@ pub fn render_command_palette(
     query: &mut String,
     selected_idx: &mut usize,
     hits: &[SearchHit],
+    all_tags: &[(String, usize)],
 ) -> (bool /* query_changed */, Vec<UiAction>) {
     let anim_t = anim_bool_eased(ctx, egui::Id::new("palette_open_anim"), *open, 0.14);
     if !*open && anim_t < 0.01 {
@@ -172,7 +173,7 @@ pub fn render_command_palette(
         PaletteCommand {
             icon: Icon::Settings,
             label: s.action_open_settings,
-            action: UiAction::OpenSettings(SettingsTab::Appearance),
+            action: UiAction::OpenSettings(SettingsTab::General),
         },
         PaletteCommand {
             icon: Icon::Search,
@@ -221,6 +222,55 @@ pub fn render_command_palette(
         },
     ];
 
+    let palette_input_id = egui::Id::new("palette_search_input");
+    let cursor_char_idx = egui::TextEdit::load_state(ctx, palette_input_id)
+        .and_then(|st| st.cursor.char_range())
+        .map(|r| r.primary.index)
+        .unwrap_or_else(|| query.chars().count());
+    let active_tag_tok = krono_core::search::find_active_tag_token(query, cursor_char_idx);
+    let tag_suggestions = active_tag_tok
+        .as_ref()
+        .map(|tok| krono_core::search::suggest_tags(&tok.query, all_tags, 8))
+        .unwrap_or_default();
+
+    let mut tag_sel_idx = 0usize;
+    let mut chosen_tag_to_apply: Option<String> = None;
+    let tag_popup_active = !tag_suggestions.is_empty();
+    if tag_popup_active {
+        let cur_q = active_tag_tok
+            .as_ref()
+            .map(|t| t.query.clone())
+            .unwrap_or_default();
+        let q_mem_id = egui::Id::new("palette_tag_last_q");
+        let idx_mem_id = egui::Id::new("palette_tag_sel_idx");
+        let prev_q = ctx.data(|d| d.get_temp::<String>(q_mem_id));
+        tag_sel_idx = if prev_q.as_deref() == Some(cur_q.as_str()) {
+            ctx.data(|d| d.get_temp::<usize>(idx_mem_id)).unwrap_or(0)
+        } else {
+            0
+        };
+        if tag_sel_idx >= tag_suggestions.len() {
+            tag_sel_idx = 0;
+        }
+        if ctx.input(|i| i.key_pressed(egui::Key::ArrowDown)) {
+            tag_sel_idx = (tag_sel_idx + 1) % tag_suggestions.len();
+        }
+        if ctx.input(|i| i.key_pressed(egui::Key::ArrowUp)) {
+            tag_sel_idx = (tag_sel_idx + tag_suggestions.len() - 1) % tag_suggestions.len();
+        }
+        let tab_or_enter = ctx.input_mut(|i| {
+            i.consume_key(egui::Modifiers::NONE, egui::Key::Tab)
+                || i.consume_key(egui::Modifiers::NONE, egui::Key::Enter)
+        });
+        if tab_or_enter {
+            chosen_tag_to_apply = Some(tag_suggestions[tag_sel_idx].tag.clone());
+        }
+        ctx.data_mut(|d| {
+            d.insert_temp(q_mem_id, cur_q);
+            d.insert_temp(idx_mem_id, tag_sel_idx);
+        });
+    }
+
     let parsed_query = krono_core::search::parse_search_query(query);
 
     let q_lower = query.trim().to_lowercase();
@@ -244,13 +294,15 @@ pub fn render_command_palette(
     }
 
     let mut nav_moved = false;
-    if ctx.input(|i| i.key_pressed(egui::Key::ArrowDown)) && !entries.is_empty() {
-        *selected_idx = (*selected_idx + 1) % entries.len();
-        nav_moved = true;
-    }
-    if ctx.input(|i| i.key_pressed(egui::Key::ArrowUp)) && !entries.is_empty() {
-        *selected_idx = (*selected_idx + entries.len() - 1) % entries.len();
-        nav_moved = true;
+    if !tag_popup_active {
+        if ctx.input(|i| i.key_pressed(egui::Key::ArrowDown)) && !entries.is_empty() {
+            *selected_idx = (*selected_idx + 1) % entries.len();
+            nav_moved = true;
+        }
+        if ctx.input(|i| i.key_pressed(egui::Key::ArrowUp)) && !entries.is_empty() {
+            *selected_idx = (*selected_idx + entries.len() - 1) % entries.len();
+            nav_moved = true;
+        }
     }
     let sel_mem_id = egui::Id::new("palette_prev_selected_idx");
     let prev_sel = ctx.data(|d| d.get_temp::<usize>(sel_mem_id));
@@ -258,7 +310,7 @@ pub fn render_command_palette(
         ctx.data_mut(|d| d.insert_temp(sel_mem_id, *selected_idx));
         nav_moved = true;
     }
-    let enter_trigger = ctx.input(|i| i.key_pressed(egui::Key::Enter));
+    let enter_trigger = !tag_popup_active && ctx.input(|i| i.key_pressed(egui::Key::Enter));
 
     let glide_y = (if screen.width() < 600.0 { 44.0 } else { 86.0 }) - (1.0 - anim_t) * 12.0;
 
@@ -278,7 +330,6 @@ pub fn render_command_palette(
                     egui::Frame::none()
                         .inner_margin(Margin::symmetric(14.0, 12.0))
                         .show(ui, |ui| {
-                            let mut palette_input_id: Option<egui::Id> = None;
                             ui.horizontal(|ui| {
                                 let (ir, _) =
                                     ui.allocate_exact_size(vec2(16.0, 18.0), Sense::hover());
@@ -290,12 +341,12 @@ pub fn render_command_palette(
                                 );
                                 let input_resp = ui.add(
                                     egui::TextEdit::singleline(query)
+                                        .id(palette_input_id)
                                         .hint_text(s.palette_placeholder)
                                         .frame(false)
                                         .font(font_body(15.0))
                                         .desired_width(ui.available_width() - 44.0),
                                 );
-                                palette_input_id = Some(input_resp.id);
                                 focus_once(
                                     ui.ctx(),
                                     egui::Id::new("palette_foc_gate"),
@@ -340,12 +391,70 @@ pub fn render_command_palette(
                                         query.push_str(op);
                                         query_changed = true;
                                         *selected_idx = 0;
-                                        if let Some(id) = palette_input_id {
-                                            ctx.memory_mut(|m| m.request_focus(id));
-                                        }
+                                        ctx.memory_mut(|m| m.request_focus(palette_input_id));
                                     }
                                 }
                             });
+
+                            if tag_popup_active {
+                                ui.add_space(6.0);
+                                ui.horizontal_wrapped(|ui| {
+                                    ui.spacing_mut().item_spacing = vec2(5.0, 4.0);
+                                    for (idx, sug) in tag_suggestions.iter().enumerate() {
+                                        let is_sel = idx == tag_sel_idx;
+                                        let label = format!("#{} · {}", sug.tag, sug.count);
+                                        let fill = if is_sel {
+                                            p.accent_soft
+                                        } else {
+                                            p.bg_sidebar
+                                        };
+                                        let stroke = if is_sel {
+                                            Stroke::new(1.0_f32, p.accent)
+                                        } else {
+                                            Stroke::new(1.0_f32, p.border_hairline)
+                                        };
+                                        let col = if is_sel {
+                                            p.accent_text
+                                        } else {
+                                            p.text_secondary
+                                        };
+                                        let btn = ui.add(
+                                            egui::Button::new(
+                                                egui::RichText::new(label)
+                                                    .font(font_mono(11.5))
+                                                    .color(col),
+                                            )
+                                            .fill(fill)
+                                            .stroke(stroke)
+                                            .rounding(Rounding::same(5.0))
+                                            .min_size(vec2(0.0, 22.0)),
+                                        );
+                                        if btn.on_hover_cursor(CursorIcon::PointingHand).clicked() {
+                                            chosen_tag_to_apply = Some(sug.tag.clone());
+                                        }
+                                    }
+                                });
+                            }
+
+                            if let (Some(chosen), Some(ref tok)) =
+                                (chosen_tag_to_apply.as_deref(), active_tag_tok.as_ref())
+                            {
+                                let (new_q, new_cur) =
+                                    krono_core::search::replace_active_tag_token(query, tok, chosen);
+                                *query = new_q;
+                                query_changed = true;
+                                *selected_idx = 0;
+                                if let Some(mut st) = egui::TextEdit::load_state(ctx, palette_input_id)
+                                {
+                                    st.cursor.set_char_range(Some(
+                                        egui::text::CCursorRange::one(egui::text::CCursor::new(
+                                            new_cur,
+                                        )),
+                                    ));
+                                    st.store(ctx, palette_input_id);
+                                }
+                                ctx.memory_mut(|m| m.request_focus(palette_input_id));
+                            }
                         });
 
                     hairline_h(ui, p);

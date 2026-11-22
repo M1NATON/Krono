@@ -13,7 +13,7 @@ use std::{
 };
 
 pub const DEFAULT_UPDATE_REPO: &str = "M1NATON/Krono";
-pub const CURRENT_APP_VERSION: &str = env!("CARGO_PKG_VERSION");
+pub const CURRENT_APP_VERSION: &str = env!("KRONO_APP_VERSION");
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SemVer {
@@ -620,5 +620,10 @@ mod tests {
             pick_platform_asset(&assets, "macos", "x86_64").unwrap().name,
             "krono-v0.2.0-beta.1-macos-x86_64.dmg"
         );
+    }
+
+    #[test]
+    fn current_app_version_is_valid_semver() {
+        assert!(SemVer::parse(CURRENT_APP_VERSION).is_some());
     }
 }

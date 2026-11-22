@@ -9,8 +9,9 @@ use crate::ui::icons::{draw_icon, draw_sync_icon, Icon};
 use crate::ui::motion::{anim_bool_eased, lerp_color, with_alpha};
 use crate::ui::theme::{font_body, font_medium, font_mono, font_semibold, ThemePalette};
 use crate::ui::{
-    CalendarUiState, CreateItemKind, PagesKindFilter, PagesSortOrder, PagesTreeUiState,
-    SettingsTab, SidebarModule, SidebarModulesState, SyncUiState, UiAction, ViewMode,
+    note_matches_tag_filters, CalendarUiState, CreateItemKind, FocusZone, PagesKindFilter,
+    PagesSortOrder, PagesTreeUiState, SettingsTab, SidebarModule, SidebarModulesState,
+    SyncUiState, TagFilterMode, UiAction, ViewMode,
 };
 use eframe::egui::{
     self, pos2, vec2, Color32, CursorIcon, Margin, Rect, Rounding, Sense, Stroke, Ui,
@@ -143,7 +144,7 @@ pub fn render_sidebar(
     selected_path: Option<&str>,
     selected_collection_path: Option<&str>,
     selected_canvas_path: Option<&str>,
-    active_tag: Option<&str>,
+    active_tags: &[String],
     expanded_folders: &HashSet<String>,
     pinned_folders: &[String],
     folder_order: &[String],
@@ -190,7 +191,7 @@ pub fn render_sidebar(
             selected_path,
             selected_collection_path,
             selected_canvas_path,
-            active_tag,
+            active_tags,
             expanded_folders,
             pinned_folders,
             folder_order,
@@ -224,7 +225,7 @@ pub fn render_sidebar_drawer(
     selected_path: Option<&str>,
     selected_collection_path: Option<&str>,
     selected_canvas_path: Option<&str>,
-    active_tag: Option<&str>,
+    active_tags: &[String],
     expanded_folders: &HashSet<String>,
     _pinned_folders: &[String],
     _folder_order: &[String],
@@ -286,7 +287,7 @@ pub fn render_sidebar_drawer(
                             selected_path,
                             selected_collection_path,
                             selected_canvas_path,
-                            active_tag,
+                            active_tags,
                             expanded_folders,
                             &[],
                             &[],
@@ -350,7 +351,7 @@ fn render_sidebar_contents(
     selected_path: Option<&str>,
     selected_collection_path: Option<&str>,
     selected_canvas_path: Option<&str>,
-    active_tag: Option<&str>,
+    active_tags: &[String],
     expanded_folders: &HashSet<String>,
     pinned_folders: &[String],
     folder_order: &[String],
@@ -709,7 +710,7 @@ fn render_sidebar_contents(
         .max_height(scroll_h)
         .show(ui, |ui| {
             if *pages_ui.tree_tab == crate::ui::SidebarTreeTab::Tags {
-                render_tags_tab_list(ui, p, lang, tag_counts, active_tag, actions);
+                render_tags_tab_list(ui, p, lang, tag_counts, pages_ui, actions);
             } else {
                 render_pages_and_tags_tree_inner(
                     ui,
@@ -722,7 +723,7 @@ fn render_sidebar_contents(
                     selected_path,
                     selected_collection_path,
                     selected_canvas_path,
-                    active_tag,
+                    active_tags,
                     expanded_folders,
                     pinned_folders,
                     folder_order,
@@ -830,7 +831,7 @@ fn render_sidebar_contents(
                         if view_mode == ViewMode::Settings {
                             actions.push(UiAction::CloseSettings);
                         } else {
-                            actions.push(UiAction::OpenSettings(SettingsTab::Appearance));
+                            actions.push(UiAction::OpenSettings(SettingsTab::General));
                         }
                     }
                     let theme_icon = if p.is_dark { Icon::Sun } else { Icon::Moon };
@@ -971,7 +972,7 @@ fn render_tags_tab_list(
     p: &ThemePalette,
     lang: Lang,
     tag_counts: &[(String, usize)],
-    active_tag: Option<&str>,
+    pages_ui: &mut PagesTreeUiState<'_>,
     actions: &mut Vec<UiAction>,
 ) {
     let s = strings(lang);
@@ -983,27 +984,65 @@ fn render_tags_tab_list(
         );
         return;
     }
-    if active_tag.is_some() {
+    ui.add(
+        egui::TextEdit::singleline(pages_ui.tag_query)
+            .hint_text(s.tags_search_placeholder)
+            .font(font_body(12.0))
+            .desired_width(ui.available_width()),
+    );
+    ui.add_space(6.0);
+
+    if !pages_ui.active_tags.is_empty() {
         ui.horizontal(|ui| {
-            let resp = ui.add(
-                egui::Label::new(
-                    egui::RichText::new(s.all_tags_clear)
-                        .font(font_medium(11.5))
+            let mode_lbl = match *pages_ui.tag_mode {
+                TagFilterMode::Any => s.tags_mode_or,
+                TagFilterMode::All => s.tags_mode_and,
+            };
+            let mode_btn = ui.add(
+                egui::Button::new(
+                    egui::RichText::new(mode_lbl)
+                        .font(font_mono(10.5))
                         .color(p.accent_text),
                 )
-                .sense(Sense::click()),
+                .fill(p.accent_soft)
+                .rounding(Rounding::same(5.0))
+                .min_size(vec2(0.0, 20.0)),
             );
-            if resp.on_hover_cursor(CursorIcon::PointingHand).clicked() {
-                actions.push(UiAction::SetTagFilter(None));
+            if mode_btn.on_hover_cursor(CursorIcon::PointingHand).clicked() {
+                let next = match *pages_ui.tag_mode {
+                    TagFilterMode::Any => TagFilterMode::All,
+                    TagFilterMode::All => TagFilterMode::Any,
+                };
+                actions.push(UiAction::SetTagFilterMode(next));
             }
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                let resp = ui.add(
+                    egui::Label::new(
+                        egui::RichText::new(s.all_tags_clear)
+                            .font(font_medium(11.5))
+                            .color(p.accent_text),
+                    )
+                    .sense(Sense::click()),
+                );
+                if resp.on_hover_cursor(CursorIcon::PointingHand).clicked() {
+                    actions.push(UiAction::ClearTagFilters);
+                }
+            });
         });
         ui.add_space(6.0);
     }
+
+    let suggested = krono_core::search::suggest_tags(pages_ui.tag_query, tag_counts, 80);
     ui.horizontal_wrapped(|ui| {
         ui.spacing_mut().item_spacing = vec2(5.0, 5.0);
-        for (tag, _count) in tag_counts {
-            let selected = active_tag.is_some_and(|at| at.eq_ignore_ascii_case(tag));
-            let (resp, _) = tag_chip(ui, p, tag, false);
+        for sug in suggested {
+            let tag = &sug.tag;
+            let selected = pages_ui
+                .active_tags
+                .iter()
+                .any(|at| at.eq_ignore_ascii_case(tag));
+            let label = format!("{tag} · {}", sug.count);
+            let (resp, _) = tag_chip(ui, p, &label, false);
             if selected {
                 ui.painter().rect_stroke(
                     resp.rect,
@@ -1012,11 +1051,7 @@ fn render_tags_tab_list(
                 );
             }
             if resp.clicked() {
-                if selected {
-                    actions.push(UiAction::SetTagFilter(None));
-                } else {
-                    actions.push(UiAction::SetTagFilter(Some(tag.clone())));
-                }
+                actions.push(UiAction::ToggleTagFilter(tag.clone()));
             }
             let tag_ctx = tag.clone();
             resp.context_menu(|ui| {
@@ -1041,7 +1076,7 @@ pub(crate) fn render_pages_and_tags_tree(
     selected_path: Option<&str>,
     selected_collection_path: Option<&str>,
     selected_canvas_path: Option<&str>,
-    active_tag: Option<&str>,
+    active_tags: &[String],
     expanded_folders: &HashSet<String>,
     pinned_folders: &[String],
     folder_order: &[String],
@@ -1062,7 +1097,7 @@ pub(crate) fn render_pages_and_tags_tree(
         selected_path,
         selected_collection_path,
         selected_canvas_path,
-        active_tag,
+        active_tags,
         expanded_folders,
         pinned_folders,
         folder_order,
@@ -1088,7 +1123,7 @@ fn render_pages_and_tags_tree_inner(
     selected_path: Option<&str>,
     selected_collection_path: Option<&str>,
     selected_canvas_path: Option<&str>,
-    active_tag: Option<&str>,
+    active_tags: &[String],
     expanded_folders: &HashSet<String>,
     pinned_folders: &[String],
     folder_order: &[String],
@@ -1104,13 +1139,11 @@ fn render_pages_and_tags_tree_inner(
 
     let mut pinned_entries: Vec<TreeEntry<'_>> = Vec::new();
     for n in notes {
-        if n.pinned
-            && active_tag.is_none_or(|tf| n.tags.iter().any(|t| t.eq_ignore_ascii_case(tf)))
-        {
+        if n.pinned && note_matches_tag_filters(&n.tags, active_tags, *pages_ui.tag_mode) {
             pinned_entries.push(TreeEntry::Note(n));
         }
     }
-    if active_tag.is_none() {
+    if active_tags.is_empty() {
         for c in collections {
             if c.pinned {
                 pinned_entries.push(TreeEntry::Collection(c));
@@ -1160,12 +1193,10 @@ fn render_pages_and_tags_tree_inner(
     let mut tables_n = 0usize;
     let mut canvases_n = 0usize;
     let mut filtered_count = 0usize;
-    let hide_system = !*pages_ui.show_system_folders && active_tag.is_none();
+    let hide_system = !*pages_ui.show_system_folders && active_tags.is_empty();
     for note in notes {
-        if let Some(tag_filter) = active_tag {
-            if !note.tags.iter().any(|t| t.eq_ignore_ascii_case(tag_filter)) {
-                continue;
-            }
+        if !note_matches_tag_filters(&note.tags, active_tags, *pages_ui.tag_mode) {
+            continue;
         }
         if hide_system {
             if let (Some(m), Some((top, _))) = (modules, note.path.split_once('/')) {
@@ -1183,7 +1214,7 @@ fn render_pages_and_tags_tree_inner(
         insert_into_tree(&mut root, &parts, entry);
         filtered_count += 1;
     }
-    if active_tag.is_none() {
+    if active_tags.is_empty() {
         for col in collections {
             if hide_system {
                 if let (Some(m), Some((top, _))) = (modules, col.path.split_once('/')) {
@@ -1437,6 +1468,86 @@ fn render_pages_and_tags_tree_inner(
     let active_item_drag = item_drag.as_ref().filter(|st| st.active).cloned();
     let mut drop_target: Option<String> = None;
 
+    let mut kb_moved = false;
+    let kb_active =
+        !compact_touch && pages_ui.kb_nav.focus_zone == FocusZone::Sidebar && !ui.ctx().wants_keyboard_input();
+    let kb_rows_id = egui::Id::new("krono_sidebar_kb_rows");
+    if kb_active {
+        let prev_rows: Vec<SidebarKbRow> =
+            ui.ctx().data(|d| d.get_temp(kb_rows_id)).unwrap_or_default();
+        if !prev_rows.is_empty() {
+            let mut cur_idx = pages_ui
+                .kb_nav
+                .sidebar_selected_key
+                .as_deref()
+                .and_then(|k| prev_rows.iter().position(|r| r.key() == k))
+                .or_else(|| {
+                    let active_file = match view_mode {
+                        ViewMode::Collection => selected_collection_path,
+                        ViewMode::Canvas => selected_canvas_path,
+                        _ => selected_path,
+                    };
+                    active_file.and_then(|af| prev_rows.iter().position(|r| r.key() == af))
+                })
+                .unwrap_or(0);
+
+            if ui.input(|i| i.key_pressed(egui::Key::ArrowDown)) {
+                cur_idx = (cur_idx + 1).min(prev_rows.len() - 1);
+                kb_moved = true;
+            } else if ui.input(|i| i.key_pressed(egui::Key::ArrowUp)) {
+                cur_idx = cur_idx.saturating_sub(1);
+                kb_moved = true;
+            }
+            pages_ui.kb_nav.sidebar_selected_key = Some(prev_rows[cur_idx].key().to_string());
+
+            let cur_row = &prev_rows[cur_idx];
+            if ui.input(|i| i.key_pressed(egui::Key::ArrowRight)) {
+                if let SidebarKbRow::Folder { path, is_open } = cur_row {
+                    if !*is_open {
+                        actions.push(UiAction::ToggleFolder(path.clone()));
+                    }
+                }
+            } else if ui.input(|i| i.key_pressed(egui::Key::ArrowLeft)) {
+                match cur_row {
+                    SidebarKbRow::Folder { path, is_open } if *is_open => {
+                        actions.push(UiAction::ToggleFolder(path.clone()));
+                    }
+                    _ => {
+                        if let Some((parent, _)) = cur_row.key().rsplit_once('/') {
+                            pages_ui.kb_nav.sidebar_selected_key = Some(parent.to_string());
+                            kb_moved = true;
+                        }
+                    }
+                }
+            } else if ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+                match cur_row {
+                    SidebarKbRow::Folder { path, .. } => {
+                        actions.push(UiAction::ToggleFolder(path.clone()));
+                    }
+                    SidebarKbRow::Note(p) => {
+                        actions.push(UiAction::OpenNote(p.clone()));
+                        pages_ui.kb_nav.focus_zone = FocusZone::Editor;
+                    }
+                    SidebarKbRow::Collection(p) => {
+                        actions.push(UiAction::OpenCollection(p.clone()));
+                        pages_ui.kb_nav.focus_zone = FocusZone::Editor;
+                    }
+                    SidebarKbRow::Canvas(p) => {
+                        actions.push(UiAction::OpenCanvas(p.clone()));
+                        pages_ui.kb_nav.focus_zone = FocusZone::Editor;
+                    }
+                }
+            }
+        }
+    }
+
+    let kb_sel_key = if kb_active {
+        pages_ui.kb_nav.sidebar_selected_key.as_deref()
+    } else {
+        None
+    };
+    let mut visible_kb_rows: Vec<SidebarKbRow> = Vec::new();
+
     render_folder_node(
         ui,
         p,
@@ -1455,8 +1566,13 @@ fn render_pages_and_tags_tree_inner(
         compact_touch,
         active_item_drag.as_ref(),
         &mut drop_target,
+        kb_sel_key.map(|k| (k, kb_moved)),
+        &mut visible_kb_rows,
         actions,
     );
+    if !compact_touch {
+        ui.ctx().data_mut(|d| d.insert_temp(kb_rows_id, visible_kb_rows));
+    }
 
     if let Some(st) = item_drag {
         if st.active && st.path.contains('/') {
@@ -1578,7 +1694,7 @@ fn render_pages_and_tags_tree_inner(
         ui.add_space(16.0);
         ui.horizontal(|ui| {
             section_heading(ui, p, s.tags_section);
-            if active_tag.is_some() {
+            if !active_tags.is_empty() {
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     ui.add_space(6.0);
                     let resp = ui.add(
@@ -1590,7 +1706,7 @@ fn render_pages_and_tags_tree_inner(
                         .sense(Sense::click()),
                     );
                     if resp.on_hover_cursor(CursorIcon::PointingHand).clicked() {
-                        actions.push(UiAction::SetTagFilter(None));
+                        actions.push(UiAction::ClearTagFilters);
                     }
                 });
             }
@@ -1599,7 +1715,7 @@ fn render_pages_and_tags_tree_inner(
         ui.horizontal_wrapped(|ui| {
             ui.spacing_mut().item_spacing = vec2(5.0, 5.0);
             for (tag, _count) in tag_counts {
-                let selected = active_tag.is_some_and(|at| at.eq_ignore_ascii_case(tag));
+                let selected = active_tags.iter().any(|at| at.eq_ignore_ascii_case(tag));
                 let (resp, _) = tag_chip(ui, p, tag, false);
                 if selected {
                     ui.painter().rect_stroke(
@@ -1609,11 +1725,7 @@ fn render_pages_and_tags_tree_inner(
                     );
                 }
                 if resp.clicked() {
-                    if selected {
-                        actions.push(UiAction::SetTagFilter(None));
-                    } else {
-                        actions.push(UiAction::SetTagFilter(Some(tag.clone())));
-                    }
+                    actions.push(UiAction::ToggleTagFilter(tag.clone()));
                 }
                 let tag_ctx = tag.clone();
                 resp.context_menu(|ui| {
@@ -1650,6 +1762,22 @@ struct FolderDragState {
     active: bool,
 }
 
+#[derive(Clone, Debug)]
+enum SidebarKbRow {
+    Folder { path: String, is_open: bool },
+    Note(String),
+    Collection(String),
+    Canvas(String),
+}
+
+impl SidebarKbRow {
+    fn key(&self) -> &str {
+        match self {
+            Self::Folder { path, .. } | Self::Note(path) | Self::Collection(path) | Self::Canvas(path) => path,
+        }
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 fn render_folder_node(
     ui: &mut Ui,
@@ -1669,6 +1797,8 @@ fn render_folder_node(
     compact_touch: bool,
     active_item_drag: Option<&ItemDragState>,
     drop_target: &mut Option<String>,
+    kb_sel: Option<(&str, bool)>,
+    kb_rows: &mut Vec<SidebarKbRow>,
     actions: &mut Vec<UiAction>,
 ) {
     let s = strings(lang);
@@ -1932,6 +2062,22 @@ fn render_folder_node(
                 }
             }
         }
+        kb_rows.push(SidebarKbRow::Folder {
+            path: folder_path.clone(),
+            is_open,
+        });
+        if let Some((sel_k, moved)) = kb_sel {
+            if sel_k == folder_path {
+                ui.painter().rect_stroke(
+                    rect,
+                    Rounding::same(6.0),
+                    Stroke::new(1.5_f32, p.accent),
+                );
+                if moved {
+                    resp.scroll_to_me(Some(egui::Align::Center));
+                }
+            }
+        }
         let resp = resp.on_hover_cursor(if is_dragging_this {
             CursorIcon::Grabbing
         } else {
@@ -2030,6 +2176,8 @@ fn render_folder_node(
                         compact_touch,
                         active_item_drag,
                         drop_target,
+                        kb_sel,
+                        kb_rows,
                         actions,
                     );
                 });
@@ -2085,6 +2233,8 @@ fn render_folder_node(
                         compact_touch,
                         active_item_drag,
                         drop_target,
+                        None,
+                        &mut Vec::new(),
                         actions,
                     );
                     let measured_h = child_ui.min_rect().height();
@@ -2261,13 +2411,28 @@ fn render_folder_node(
     }
 
     for entry in sorted_entries {
+        let kb_row = match entry {
+            TreeEntry::Note(n) => SidebarKbRow::Note(n.path.clone()),
+            TreeEntry::Collection(c) if c.kind == VaultFileKind::Canvas => {
+                SidebarKbRow::Canvas(c.path.clone())
+            }
+            TreeEntry::Collection(c) => SidebarKbRow::Collection(c.path.clone()),
+        };
+        kb_rows.push(kb_row);
         let is_selected = entry.is_selected(
             view_mode,
             selected_path,
             selected_collection_path,
             selected_canvas_path,
         );
-        render_entry_row_with_menu(
+        let entry_kb_sel = kb_sel.and_then(|(k, moved)| {
+            if k == entry.path() {
+                Some(moved)
+            } else {
+                None
+            }
+        });
+        render_entry_row_with_menu_kb(
             ui,
             p,
             lang,
@@ -2275,6 +2440,7 @@ fn render_folder_node(
             ("tree_row", entry.path()),
             false,
             is_selected,
+            entry_kb_sel,
             indent,
             compact_touch,
             actions,
@@ -2291,6 +2457,35 @@ fn render_entry_row_with_menu(
     id_salt: (&str, &str),
     in_pinned: bool,
     is_selected: bool,
+    indent: f32,
+    compact_touch: bool,
+    actions: &mut Vec<UiAction>,
+) {
+    render_entry_row_with_menu_kb(
+        ui,
+        p,
+        lang,
+        entry,
+        id_salt,
+        in_pinned,
+        is_selected,
+        None,
+        indent,
+        compact_touch,
+        actions,
+    );
+}
+
+#[allow(clippy::too_many_arguments)]
+fn render_entry_row_with_menu_kb(
+    ui: &mut Ui,
+    p: &ThemePalette,
+    lang: Lang,
+    entry: TreeEntry<'_>,
+    id_salt: (&str, &str),
+    in_pinned: bool,
+    is_selected: bool,
+    kb_moved: Option<bool>,
     indent: f32,
     compact_touch: bool,
     actions: &mut Vec<UiAction>,
@@ -2334,6 +2529,16 @@ fn render_entry_row_with_menu(
                     );
                 });
             }
+        }
+    }
+    if let Some(moved) = kb_moved {
+        ui.painter().rect_stroke(
+            resp.rect,
+            Rounding::same(6.0),
+            Stroke::new(1.5_f32, p.accent),
+        );
+        if moved {
+            resp.scroll_to_me(Some(egui::Align::Center));
         }
     }
     if resp.clicked() {

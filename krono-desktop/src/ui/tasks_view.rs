@@ -12,12 +12,22 @@ use krono_core::{
     tasks::TaskRecurrence,
 };
 
+use std::collections::BTreeMap;
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum TasksTab {
+    #[default]
+    Active,
+    Archive,
+}
+
 #[derive(Default)]
 pub struct TasksViewState {
     pub query: String,
     pub show_no_date: bool,
-    pub show_completed: bool,
     pub quick_add_draft: String,
+    pub tab: TasksTab,
+    pub completed_today_collapsed: bool,
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -86,8 +96,16 @@ pub fn render_tasks_view(
         let search_w = if is_mobile { ui.available_width() } else { 240.0 };
         styled_text_input(ui, p, &mut state.query, s.search_placeholder, false, search_w);
 
-        filter_toggle_pill(ui, p, s.tasks_show_no_date, &mut state.show_no_date);
-        filter_toggle_pill(ui, p, s.tasks_show_done, &mut state.show_completed);
+        tab_pill(ui, p, s.tasks_tab_active, state.tab == TasksTab::Active, || {
+            state.tab = TasksTab::Active;
+        });
+        tab_pill(ui, p, s.tasks_tab_archive, state.tab == TasksTab::Archive, || {
+            state.tab = TasksTab::Archive;
+        });
+
+        if state.tab == TasksTab::Active {
+            filter_toggle_pill(ui, p, s.tasks_show_no_date, &mut state.show_no_date);
+        }
 
         if is_mobile {
             if secondary_button(ui, p, Some(Icon::CalendarDays), s.tasks_carry_over_btn).clicked() {
@@ -98,25 +116,75 @@ pub fn render_tasks_view(
     ui.add_space(12.0);
 
     let q_lower = state.query.trim().to_lowercase();
+    let matches_query = |t: &VaultTaskRow| -> bool {
+        if q_lower.is_empty() {
+            return true;
+        }
+        t.clean_text.to_lowercase().contains(&q_lower)
+            || t.note_title.to_lowercase().contains(&q_lower)
+            || t.path.to_lowercase().contains(&q_lower)
+            || t.tags.iter().any(|tg| tg.to_lowercase().contains(&q_lower))
+    };
+
+    if state.tab == TasksTab::Archive {
+        let mut by_date: BTreeMap<Option<SimpleDate>, Vec<&VaultTaskRow>> = BTreeMap::new();
+        for t in tasks {
+            if t.done && matches_query(t) {
+                by_date.entry(t.completed_at).or_default().push(t);
+            }
+        }
+        egui::ScrollArea::vertical()
+            .id_salt("tasks_archive_scroll")
+            .auto_shrink([false, false])
+            .show(ui, |ui| {
+                let max_w = ui.available_width().min(860.0);
+                ui.set_max_width(max_w);
+                if by_date.is_empty() {
+                    ui.add_space(48.0);
+                    ui.vertical_centered(|ui| {
+                        ui.label(
+                            egui::RichText::new(s.tasks_archive_empty)
+                                .font(font_body(14.0))
+                                .color(p.text_muted),
+                        );
+                    });
+                    return;
+                }
+                let mut groups: Vec<(Option<SimpleDate>, Vec<&VaultTaskRow>)> =
+                    by_date.into_iter().collect();
+                groups.sort_by(|a, b| match (a.0, b.0) {
+                    (Some(da), Some(db)) => db.cmp(&da),
+                    (Some(_), None) => std::cmp::Ordering::Less,
+                    (None, Some(_)) => std::cmp::Ordering::Greater,
+                    (None, None) => std::cmp::Ordering::Equal,
+                });
+                for (date_opt, mut list) in groups {
+                    list.sort_by(|a, b| a.path.cmp(&b.path).then_with(|| a.task_idx.cmp(&b.task_idx)));
+                    let heading = match date_opt {
+                        Some(d) if d == today => format!("{} · {}", s.tasks_today, d.format_iso()),
+                        Some(d) => d.format_iso(),
+                        None => s.tasks_completed_no_date.to_string(),
+                    };
+                    render_task_section(ui, p, lang, s, &heading, p.success, &list, today, &mut actions);
+                    ui.add_space(14.0);
+                }
+            });
+        return actions;
+    }
+
     let mut overdue: Vec<&VaultTaskRow> = Vec::new();
     let mut due_today: Vec<&VaultTaskRow> = Vec::new();
     let mut upcoming: Vec<&VaultTaskRow> = Vec::new();
     let mut no_date: Vec<&VaultTaskRow> = Vec::new();
-    let mut completed: Vec<&VaultTaskRow> = Vec::new();
+    let mut completed_today: Vec<&VaultTaskRow> = Vec::new();
 
     for t in tasks {
-        if !q_lower.is_empty() {
-            let in_text = t.clean_text.to_lowercase().contains(&q_lower);
-            let in_note = t.note_title.to_lowercase().contains(&q_lower)
-                || t.path.to_lowercase().contains(&q_lower);
-            let in_tags = t.tags.iter().any(|tg| tg.to_lowercase().contains(&q_lower));
-            if !in_text && !in_note && !in_tags {
-                continue;
-            }
+        if !matches_query(t) {
+            continue;
         }
         if t.done {
-            if state.show_completed {
-                completed.push(t);
+            if t.completed_at == Some(today) {
+                completed_today.push(t);
             }
             continue;
         }
@@ -145,6 +213,7 @@ pub fn render_tasks_view(
     sort_group(&mut due_today);
     sort_group(&mut upcoming);
     sort_group(&mut no_date);
+    sort_group(&mut completed_today);
 
     egui::ScrollArea::vertical()
         .id_salt("tasks_view_scroll")
@@ -157,7 +226,7 @@ pub fn render_tasks_view(
                 || !due_today.is_empty()
                 || !upcoming.is_empty()
                 || !no_date.is_empty()
-                || !completed.is_empty();
+                || !completed_today.is_empty();
 
             if !any_visible {
                 ui.add_space(48.0);
@@ -187,12 +256,67 @@ pub fn render_tasks_view(
                 render_task_section(ui, p, lang, s, s.tasks_no_date, p.text_muted, &no_date, today, &mut actions);
                 ui.add_space(16.0);
             }
-            if !completed.is_empty() {
-                render_task_section(ui, p, lang, s, s.tasks_completed, p.success, &completed, today, &mut actions);
+            if !completed_today.is_empty() {
+                let hdr_resp = ui.horizontal(|ui| {
+                    let chev = if state.completed_today_collapsed { "▸" } else { "▾" };
+                    let lbl = format!("{chev} {}", s.tasks_completed_today);
+                    let r = ui.add(
+                        egui::Label::new(
+                            egui::RichText::new(lbl)
+                                .font(font_semibold(14.5))
+                                .color(p.success),
+                        )
+                        .sense(Sense::click()),
+                    );
+                    ui.add_space(6.0);
+                    ui.label(
+                        egui::RichText::new(format!("{}", completed_today.len()))
+                            .font(font_mono(12.0))
+                            .color(p.text_muted),
+                    );
+                    r
+                });
+                if hdr_resp.inner.on_hover_cursor(CursorIcon::PointingHand).clicked() {
+                    state.completed_today_collapsed = !state.completed_today_collapsed;
+                }
+                if !state.completed_today_collapsed {
+                    ui.add_space(8.0);
+                    egui::Frame::none()
+                        .fill(p.bg_elevated)
+                        .stroke(Stroke::new(1.0_f32, p.border_hairline))
+                        .rounding(Rounding::same(10.0))
+                        .inner_margin(Margin::symmetric(12.0, 6.0))
+                        .show(ui, |ui| {
+                            for (idx, task) in completed_today.iter().enumerate() {
+                                if idx > 0 {
+                                    hairline_h(ui, p);
+                                }
+                                render_task_row(ui, p, lang, s, task, today, &mut actions);
+                            }
+                        });
+                }
             }
         });
 
     actions
+}
+
+fn tab_pill(ui: &mut Ui, p: &ThemePalette, label: &str, active: bool, on_click: impl FnOnce()) {
+    let fill = if active { p.accent_soft } else { p.bg_elevated };
+    let border = if active { p.accent } else { p.border_hairline };
+    let text_col = if active { p.accent_text } else { p.text_secondary };
+    let g = ui.painter().layout_no_wrap(label.to_string(), font_medium(12.0), text_col);
+    let (rect, resp) = ui.allocate_exact_size(vec2(g.size().x + 20.0, 28.0), Sense::click());
+    ui.painter().rect_filled(rect, Rounding::same(7.0), fill);
+    ui.painter().rect_stroke(rect, Rounding::same(7.0), Stroke::new(1.0_f32, border));
+    ui.painter().galley(
+        pos2(rect.left() + 10.0, rect.center().y - g.size().y * 0.5),
+        g,
+        text_col,
+    );
+    if resp.on_hover_cursor(CursorIcon::PointingHand).clicked() {
+        on_click();
+    }
 }
 
 fn prio_rank(p: Option<TaskPriority>) -> u8 {
@@ -299,7 +423,13 @@ fn render_task_row(
                 Color32::WHITE,
             );
         }
-        if cb_resp.on_hover_cursor(CursorIcon::PointingHand).clicked() {
+        let cb_resp = cb_resp.on_hover_cursor(CursorIcon::PointingHand);
+        let cb_resp = if task.done {
+            cb_resp.on_hover_text(s.tasks_restore_hint)
+        } else {
+            cb_resp
+        };
+        if cb_resp.clicked() {
             actions.push(UiAction::ToggleVaultTask {
                 path: task.path.clone(),
                 task_idx: task.task_idx,

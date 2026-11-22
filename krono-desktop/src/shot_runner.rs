@@ -31,6 +31,7 @@ pub(crate) enum ShotMode {
     Polish,
     Features,
     Mega,
+    SiteEn,
 }
 
 pub(crate) struct ShotRunner {
@@ -53,6 +54,7 @@ impl ShotRunner {
             Some("polish") => ShotMode::Polish,
             Some("features") => ShotMode::Features,
             Some("mega") => ShotMode::Mega,
+            Some("site_en") => ShotMode::SiteEn,
             _ => ShotMode::Stage5,
         };
         Some(Self {
@@ -791,6 +793,319 @@ impl KronoApp {
         ];
     }
 
+    fn seed_site_en_demo(&mut self, ctx: &egui::Context) {
+        self.config.language = Lang::En;
+        self.config.sidebar_open = true;
+        self.config.sidebar_show_system_folders = true;
+        self.config.github_repo = "krono-notes/demo-vault".into();
+        self.has_saved_github_token = true;
+
+        self.notes = vec![
+            NoteMeta {
+                path: "architecture.md".into(),
+                title: "Krono Core Architecture".into(),
+                status: Some(NoteStatus::InProgress),
+                tags: vec!["rust".into(), "local-first".into(), "fts5".into()],
+                excerpt: "Pure Rust domain core, OpenGL UI, and SQLite FTS5 local index.".into(),
+                modified: 220,
+                word_count: 210,
+                pinned: true,
+                board_order: 0,
+            },
+            NoteMeta {
+                path: "release-checklist.md".into(),
+                title: "Release v0.3 Checklist".into(),
+                status: Some(NoteStatus::InProgress),
+                tags: vec!["release".into(), "ci".into()],
+                excerpt: "Cross-platform builds for Windows, macOS, and Linux.".into(),
+                modified: 215,
+                word_count: 130,
+                pinned: true,
+                board_order: 1,
+            },
+            NoteMeta {
+                path: "projects/mcp-server.md".into(),
+                title: "Local AI MCP Server".into(),
+                status: Some(NoteStatus::Done),
+                tags: vec!["mcp".into(), "security".into()],
+                excerpt: "Stdio JSON-RPC 2.0 server with strict --allow-dir allowlist.".into(),
+                modified: 205,
+                word_count: 145,
+                pinned: false,
+                board_order: 0,
+            },
+            NoteMeta {
+                path: "projects/encryption.md".into(),
+                title: "Encrypted Vault Notes".into(),
+                status: Some(NoteStatus::Done),
+                tags: vec!["security".into(), "crypto".into()],
+                excerpt: "Argon2id + ChaCha20Poly1305 encryption for .md.enc files.".into(),
+                modified: 195,
+                word_count: 118,
+                pinned: false,
+                board_order: 0,
+            },
+            NoteMeta {
+                path: "projects/sync-protocol.md".into(),
+                title: "GitHub 3-Way Merge".into(),
+                status: Some(NoteStatus::Done),
+                tags: vec!["git".into(), "sync".into()],
+                excerpt: "Direct Git Data API sync with LF normalization and OS keyring.".into(),
+                modified: 185,
+                word_count: 112,
+                pinned: false,
+                board_order: 0,
+            },
+            NoteMeta {
+                path: "daily/2026/2026.md".into(),
+                title: "2026 Overview".into(),
+                status: Some(NoteStatus::Todo),
+                tags: vec!["daily".into()],
+                excerpt: "Yearly hub linking [[November 2026]].".into(),
+                modified: 160,
+                word_count: 45,
+                pinned: false,
+                board_order: 0,
+            },
+            NoteMeta {
+                path: "daily/2026/11/2026-11.md".into(),
+                title: "November 2026".into(),
+                status: Some(NoteStatus::InProgress),
+                tags: vec!["daily".into()],
+                excerpt: "Monthly goals inside [[2026 Overview]].".into(),
+                modified: 175,
+                word_count: 72,
+                pinned: false,
+                board_order: 0,
+            },
+            NoteMeta {
+                path: "daily/2026/11/2026-11-22.md".into(),
+                title: "2026-11-22".into(),
+                status: Some(NoteStatus::Todo),
+                tags: vec!["daily".into()],
+                excerpt: "Shipped Linux dbus fix and verified all 158 workspace tests.".into(),
+                modified: 225,
+                word_count: 64,
+                pinned: false,
+                board_order: 0,
+            },
+        ];
+
+        self.collections = vec![
+            CollectionMeta {
+                path: "projects/system.canvas".into(),
+                kind: VaultFileKind::Canvas,
+                title: "System Architecture".into(),
+                item_count: 5,
+                column_count: 3,
+                excerpt: "Core workspace, FTS5 index, and local MCP boundary".into(),
+                modified: 218,
+                pinned: true,
+            },
+            CollectionMeta {
+                path: "projects/sprint.board.json".into(),
+                kind: VaultFileKind::Board,
+                title: "Release v0.3 Sprint".into(),
+                item_count: 6,
+                column_count: 3,
+                excerpt: "Kanban tasks with due dates and saved views".into(),
+                modified: 214,
+                pinned: false,
+            },
+            CollectionMeta {
+                path: "projects/benchmarks.table.json".into(),
+                kind: VaultFileKind::Table,
+                title: "Performance Benchmarks".into(),
+                item_count: 4,
+                column_count: 4,
+                excerpt: "Startup latency, FTS5 query time, binary size".into(),
+                modified: 190,
+                pinned: false,
+            },
+        ];
+
+        self.all_links = vec![
+            RawLinkEdge { source_path: "architecture.md".into(), target_raw: "Local AI MCP Server".into() },
+            RawLinkEdge { source_path: "architecture.md".into(), target_raw: "Encrypted Vault Notes".into() },
+            RawLinkEdge { source_path: "architecture.md".into(), target_raw: "GitHub 3-Way Merge".into() },
+            RawLinkEdge { source_path: "release-checklist.md".into(), target_raw: "Krono Core Architecture".into() },
+            RawLinkEdge { source_path: "release-checklist.md".into(), target_raw: "Release v0.3 Sprint".into() },
+            RawLinkEdge { source_path: "projects/mcp-server.md".into(), target_raw: "Encrypted Vault Notes".into() },
+            RawLinkEdge { source_path: "projects/system.canvas".into(), target_raw: "Krono Core Architecture".into() },
+            RawLinkEdge { source_path: "projects/system.canvas".into(), target_raw: "Local AI MCP Server".into() },
+            RawLinkEdge { source_path: "daily/2026/11/2026-11-22.md".into(), target_raw: "November 2026".into() },
+            RawLinkEdge { source_path: "daily/2026/11/2026-11-22.md".into(), target_raw: "Release v0.3 Checklist".into() },
+            RawLinkEdge { source_path: "daily/2026/11/2026-11.md".into(), target_raw: "2026 Overview".into() },
+        ];
+
+        self.vault_folders = vec!["projects".into(), "daily".into()];
+        self.expanded_folders.clear();
+        self.expanded_folders.insert("projects".into());
+        self.expanded_folders.insert("daily".into());
+
+        self.recent_tabs = vec![
+            NavTarget::Note("architecture.md".into()),
+            NavTarget::Collection("projects/system.canvas".into()),
+            NavTarget::Collection("projects/sprint.board.json".into()),
+            NavTarget::Note("projects/mcp-server.md".into()),
+        ];
+        self.nav_history = vec![
+            NavTarget::Note("release-checklist.md".into()),
+            NavTarget::Note("architecture.md".into()),
+        ];
+        self.nav_cursor = 1;
+
+        self.image_cache
+            .insert_demo_texture(ctx, "assets/demo.png", demo_preview_color_image());
+
+        self.selected_path = Some("architecture.md".into());
+        self.current_doc = NoteDocument {
+            frontmatter: Frontmatter {
+                title: "Krono Core Architecture".into(),
+                status: Some(NoteStatus::InProgress),
+                tags: vec!["rust".into(), "local-first".into(), "fts5".into()],
+                pinned: true,
+                board_order: None,
+                extra_lines: Vec::new(),
+            },
+            body: concat!(
+                "# Local-First Workspace\n\n",
+                "Everything in Krono stays a plain file on disk. Search runs via **SQLite FTS5**, ",
+                "encryption uses [[Encrypted Vault Notes]], and AI tools connect through [[Local AI MCP Server]].\n\n",
+                "## Active Tasks\n\n",
+                "- [x] 3-way merge via [[GitHub 3-Way Merge]] #sync\n",
+                "- [ ] Publish v0.3.0 desktop installers @today !high\n",
+                "- [ ] Audit unused assets in `assets/` @tomorrow\n\n",
+                "| Crate | Responsibility | Tests |\n",
+                "| --- | --- | --- |\n",
+                "| `krono-core` | Markdown, Canvas, Crypto, MCP policy | 92 |\n",
+                "| `krono-desktop` | eframe OpenGL UI, FTS5, GitHub sync | 62 |\n",
+                "| `krono-mcp` | Stdio JSON-RPC 2.0 server | 4 |\n\n",
+                "```secret\n",
+                "GITHUB_PAT_DEMO=ghp_krono_masked_9f3c7a12e8\n",
+                "```\n"
+            ).into(),
+        };
+        self.dirty = false;
+        self.refresh_document_derivations();
+
+        // English Canvas 2.0
+        let mut cdoc = CanvasDoc {
+            title: "System Architecture".into(),
+            pinned: true,
+            nodes: Vec::new(),
+            edges: Vec::new(),
+        };
+        cdoc.add_group_node(-520.0, -185.0, 690.0, 355.0, "Core Workspace", Some("6"));
+        let n1 = cdoc.add_text_node(
+            -490.0,
+            -120.0,
+            "### krono-core\nPure domain model:\n- Markdown + YAML\n- 3-way merge plan\n- Argon2id crypto",
+            Some("5"),
+        );
+        let n2 = cdoc.add_text_node(
+            -120.0,
+            -115.0,
+            "### krono-desktop\nNative OpenGL UI:\n\n| Feature | Status |\n| --- | --- |\n| FTS5 Search | Ready |\n| Canvas 2.0 | Ready |",
+            Some("2"),
+        );
+        let n3 = cdoc.add_text_node(
+            -305.0,
+            95.0,
+            "### krono-mcp (stdio)\nZero open ports · `--allow-dir` · `.md.enc` hidden",
+            Some("4"),
+        );
+        let n4 = cdoc.add_file_node(230.0, -110.0, "assets/demo.png", Some("1"));
+        if let Some(n) = cdoc.nodes.iter_mut().find(|n| n.id == n4) {
+            n.width = 260.0;
+            n.height = 180.0;
+        }
+        cdoc.add_edge(&n1, Some(CanvasSide::Right), &n2, Some(CanvasSide::Left), Some("domain API"));
+        cdoc.add_edge(&n1, Some(CanvasSide::Bottom), &n3, Some(CanvasSide::Left), Some("McpPolicy"));
+        cdoc.add_edge(&n2, Some(CanvasSide::Right), &n4, Some(CanvasSide::Left), Some("render"));
+
+        let mut canvas_st = CanvasEditorState::default();
+        canvas_st.path = Some("projects/system.canvas".into());
+        canvas_st.doc = cdoc;
+        canvas_st.show_minimap = true;
+        canvas_st.needs_fit = true;
+        self.active_canvas = canvas_st;
+
+        // English Kanban Board
+        let today = today_local();
+        let mut col_doc = CollectionDoc::new_board_preset("Release v0.3 Sprint", "kanban", false);
+        let stage_col = col_doc.effective_group_column_id().unwrap_or("stage").to_string();
+        let opt_ids: Vec<String> = col_doc
+            .columns
+            .iter()
+            .find(|c| c.id == stage_col)
+            .map(|c| c.options.iter().map(|o| o.id.clone()).collect())
+            .unwrap_or_default();
+        let date_col = col_doc
+            .columns
+            .iter()
+            .find(|c| c.col_type == ColumnType::Date)
+            .map(|c| c.id.clone());
+        if opt_ids.len() >= 3 {
+            let r1 = col_doc.add_record("Polish krono.bond landing", Some((&stage_col, &opt_ids[0])), 100);
+            let r2 = col_doc.add_record("Canvas 2.0 Markdown cards", Some((&stage_col, &opt_ids[1])), 110);
+            let r3 = col_doc.add_record("Encrypted .md.enc notes", Some((&stage_col, &opt_ids[2])), 120);
+            let r4 = col_doc.add_record("krono-mcp stdio server", Some((&stage_col, &opt_ids[2])), 130);
+            if let Some(rec) = col_doc.records.iter_mut().find(|r| r.id == r1) {
+                rec.tags = vec!["web".into()];
+                if let Some(ref dc) = date_col {
+                    rec.values.insert(dc.clone(), FieldValue::Text(today.next_day().format_iso()));
+                }
+            }
+            if let Some(rec) = col_doc.records.iter_mut().find(|r| r.id == r2) {
+                rec.tags = vec!["canvas".into(), "ui".into()];
+                if let Some(ref dc) = date_col {
+                    rec.values.insert(dc.clone(), FieldValue::Text(today.format_iso()));
+                }
+            }
+            if let Some(rec) = col_doc.records.iter_mut().find(|r| r.id == r3) {
+                rec.tags = vec!["security".into()];
+            }
+            if let Some(rec) = col_doc.records.iter_mut().find(|r| r.id == r4) {
+                rec.tags = vec!["mcp".into(), "rust".into()];
+            }
+        }
+        col_doc.saved_views = vec![
+            SavedCollectionView {
+                id: "sv_today".into(),
+                name: "Due Today".into(),
+                view_kind: CollectionViewKind::Board,
+                date_preset: DateFilterPreset::Today,
+                ..Default::default()
+            },
+            SavedCollectionView {
+                id: "sv_sec".into(),
+                name: "#security".into(),
+                view_kind: CollectionViewKind::Board,
+                date_preset: DateFilterPreset::All,
+                tag: Some("security".into()),
+                ..Default::default()
+            },
+        ];
+
+        let mut col_st = CollectionEditorState::default();
+        col_st.path = Some("projects/sprint.board.json".into());
+        col_st.active_view = CollectionViewKind::Board;
+        col_st.doc = col_doc;
+        col_st.smart_filter_open = true;
+        self.active_collection = col_st;
+
+        self.graph_state = GraphState::default();
+        self.graph_state.rebuild(&self.notes, &self.collections, &self.all_links);
+        self.graph_state.selected_path = Some("architecture.md".into());
+        self.graph_state.filters_open = Some(false);
+        self.graph_state.needs_fit = true;
+
+        self.vault_map = VaultMapState::default();
+        self.vault_map.selected_path = Some("architecture.md".into());
+        self.vault_map.needs_fit = true;
+    }
+
     pub(crate) fn drive_screenshots(&mut self, ctx: &egui::Context) {
         const STAGE5_SHOTS: [&str; 6] = [
             "01_s5_desktop_graph_dark",
@@ -823,6 +1138,14 @@ impl KronoApp {
             "05_mega_vault_overview",
             "06_mega_settings_attachments",
         ];
+        const SITE_EN_SHOTS: [&str; 6] = [
+            "01_editor_split",
+            "02_canvas",
+            "03_kanban",
+            "04_graph",
+            "05_overview",
+            "06_editor_paper",
+        ];
 
         let Some(runner) = self.shot_runner.as_ref() else {
             return;
@@ -837,6 +1160,7 @@ impl KronoApp {
             ShotMode::Polish => &POLISH_SHOTS,
             ShotMode::Features => &FEATURES_SHOTS,
             ShotMode::Mega => &MEGA_SHOTS,
+            ShotMode::SiteEn => &SITE_EN_SHOTS,
         };
 
         if step >= shots.len() {
@@ -880,6 +1204,50 @@ impl KronoApp {
             self.config.inspector_open = false;
 
             match mode {
+                ShotMode::SiteEn => {
+                    self.seed_site_en_demo(ctx);
+                    ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(egui::vec2(
+                        1280.0, 800.0,
+                    )));
+                    self.config.accent = AccentPreset::SteelBlue;
+                    match step {
+                        0 => {
+                            self.config.select_theme(ThemePreset::Graphite);
+                            self.set_target_palette(ctx, true);
+                            self.config.inspector_open = true;
+                            self.view_mode = ViewMode::Editor;
+                            self.editor_mode = EditorMode::Split;
+                        }
+                        1 => {
+                            self.config.select_theme(ThemePreset::Graphite);
+                            self.set_target_palette(ctx, true);
+                            self.view_mode = ViewMode::Canvas;
+                        }
+                        2 => {
+                            self.config.select_theme(ThemePreset::Graphite);
+                            self.set_target_palette(ctx, true);
+                            self.view_mode = ViewMode::Collection;
+                        }
+                        3 => {
+                            self.config.select_theme(ThemePreset::Graphite);
+                            self.set_target_palette(ctx, true);
+                            self.view_mode = ViewMode::Graph;
+                        }
+                        4 => {
+                            self.config.select_theme(ThemePreset::Graphite);
+                            self.set_target_palette(ctx, true);
+                            self.view_mode = ViewMode::Overview;
+                        }
+                        5 => {
+                            self.config.select_theme(ThemePreset::Paper);
+                            self.set_target_palette(ctx, true);
+                            self.config.inspector_open = false;
+                            self.view_mode = ViewMode::Editor;
+                            self.editor_mode = EditorMode::Split;
+                        }
+                        _ => {}
+                    }
+                }
                 ShotMode::Mega => {
                     self.seed_mega_demo(ctx);
                     ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(egui::vec2(

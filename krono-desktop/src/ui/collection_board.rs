@@ -113,6 +113,9 @@ pub fn render_custom_board(
             state.tag_filter.as_deref(),
             sel_filter,
             today,
+        ) || !crate::ui::collection_gallery::record_matches_media_category(
+            rec,
+            state.media_category_filter.as_deref(),
         ) {
             continue;
         }
@@ -163,6 +166,79 @@ pub fn render_custom_board(
     }
 
     let mut dnd = dnd.unwrap_or_default();
+    let mut kb_moved = false;
+    if state.editing_record_id.is_none()
+        && !state.adding_board_stage
+        && state.quick_add_col_opt.is_none()
+        && !ui.ctx().wants_keyboard_input()
+    {
+        let col_ids: Vec<Vec<String>> = group_col
+            .options
+            .iter()
+            .map(|opt| {
+                grouped
+                    .get(&opt.id)
+                    .map(|list| list.iter().map(|r| r.id.clone()).collect())
+                    .unwrap_or_default()
+            })
+            .collect();
+        let non_empty_cols: Vec<usize> = col_ids
+            .iter()
+            .enumerate()
+            .filter(|(_, c)| !c.is_empty())
+            .map(|(i, _)| i)
+            .collect();
+        if !non_empty_cols.is_empty() {
+            let find_pos = |id: &str| -> Option<(usize, usize)> {
+                for (ci, col) in col_ids.iter().enumerate() {
+                    if let Some(ri) = col.iter().position(|x| x == id) {
+                        return Some((ci, ri));
+                    }
+                }
+                None
+            };
+            let cur_pos = state
+                .kb_selected_record_id
+                .as_deref()
+                .and_then(find_pos);
+            let down = ui.input(|i| i.key_pressed(egui::Key::ArrowDown));
+            let up = ui.input(|i| i.key_pressed(egui::Key::ArrowUp));
+            let right = ui.input(|i| i.key_pressed(egui::Key::ArrowRight));
+            let left = ui.input(|i| i.key_pressed(egui::Key::ArrowLeft));
+            let enter = ui.input(|i| i.key_pressed(egui::Key::Enter));
+            if down || up || right || left {
+                let (mut ci, mut ri) = cur_pos.unwrap_or((non_empty_cols[0], 0));
+                if down {
+                    if cur_pos.is_some() && ri + 1 < col_ids[ci].len() {
+                        ri += 1;
+                    }
+                } else if up {
+                    if cur_pos.is_some() {
+                        ri = ri.saturating_sub(1);
+                    }
+                } else if right {
+                    if let Some(pos) = non_empty_cols.iter().position(|&c| c > ci) {
+                        ci = non_empty_cols[pos];
+                        ri = ri.min(col_ids[ci].len() - 1);
+                    }
+                } else if left {
+                    if let Some(pos) = non_empty_cols.iter().rposition(|&c| c < ci) {
+                        ci = non_empty_cols[pos];
+                        ri = ri.min(col_ids[ci].len() - 1);
+                    }
+                }
+                state.kb_selected_record_id = Some(col_ids[ci][ri].clone());
+                kb_moved = true;
+            } else if enter {
+                if let Some(ref id) = state.kb_selected_record_id {
+                    if find_pos(id).is_some() {
+                        state.modal_new_tag.clear();
+                        state.editing_record_id = Some(id.clone());
+                    }
+                }
+            }
+        }
+    }
     let board_bottom = ui.max_rect().bottom();
     let mut pending_reorder: Option<(String, isize)> = None;
     let mut rename_opt: Option<(String, String)> = None;
@@ -570,6 +646,19 @@ pub fn render_custom_board(
                                             );
                                             dnd.card_heights
                                                 .insert(rec.id.clone(), inner_resp.rect.height());
+                                            if state.kb_selected_record_id.as_deref()
+                                                == Some(rec.id.as_str())
+                                                && state.editing_record_id.is_none()
+                                            {
+                                                ui.painter().rect_stroke(
+                                                    inner_resp.rect,
+                                                    Rounding::same(8.0),
+                                                    Stroke::new(1.5_f32, p.accent),
+                                                );
+                                                if kb_moved {
+                                                    inner_resp.scroll_to_me(Some(egui::Align::Center));
+                                                }
+                                            }
 
                                             if convert_hit {
                                                 convert_record_id = Some(rec.id.clone());

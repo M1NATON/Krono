@@ -17,7 +17,7 @@ use crate::ui::{
     inspector::{render_inspector, render_inspector_drawer},
     mobile_nav::{render_mobile_bottom_bar, render_mobile_notes_list},
     motion::{anim_bool_eased, anim_since},
-    scratchpad::render_scratchpad_modal,
+    scratchpad::render_scratchpad_viewport,
     settings_view::{render_settings_view, UpdateUiState},
     sidebar::{render_sidebar, render_sidebar_drawer},
     table_view::render_table_view,
@@ -149,6 +149,10 @@ impl KronoApp {
                 filter_open: &mut self.pages_filter_open,
                 tree_tab: &mut self.sidebar_tree_tab,
                 show_system_folders: &mut self.config.sidebar_show_system_folders,
+                tag_query: &mut self.sidebar_tag_query,
+                tag_mode: &mut self.tag_filter_mode,
+                active_tags: &self.active_tag_filters,
+                kb_nav: &mut self.kb_nav,
             };
             let mut cal_ui = CalendarUiState {
                 open: self.config.calendar_open,
@@ -170,7 +174,7 @@ impl KronoApp {
                 self.selected_path.as_deref(),
                 self.active_collection.path.as_deref(),
                 self.active_canvas.path.as_deref(),
-                self.active_tag_filter.as_deref(),
+                &self.active_tag_filters,
                 &self.expanded_folders,
                 &self.config.pinned_folders,
                 &self.config.folder_order,
@@ -541,6 +545,10 @@ impl KronoApp {
                             filter_open: &mut self.pages_filter_open,
                             tree_tab: &mut self.sidebar_tree_tab,
                             show_system_folders: &mut self.config.sidebar_show_system_folders,
+                            tag_query: &mut self.sidebar_tag_query,
+                            tag_mode: &mut self.tag_filter_mode,
+                            active_tags: &self.active_tag_filters,
+                            kb_nav: &mut self.kb_nav,
                         };
                         let mut cal_ui = CalendarUiState {
                             open: self.config.calendar_open,
@@ -561,7 +569,7 @@ impl KronoApp {
                             self.selected_path.as_deref(),
                             self.active_collection.path.as_deref(),
                             self.active_canvas.path.as_deref(),
-                            self.active_tag_filter.as_deref(),
+                            &self.active_tag_filters,
                             &self.expanded_folders,
                             &mut pages_ui,
                             &mut cal_ui,
@@ -646,7 +654,8 @@ impl KronoApp {
                         &self.notes,
                         &mut self.table_filter_query,
                         &mut self.table_status_filter,
-                        self.active_tag_filter.as_deref(),
+                        &self.active_tag_filters,
+                        self.tag_filter_mode,
                         &mut self.table_sort,
                         &mut self.table_col_widths,
                     ));
@@ -665,7 +674,8 @@ impl KronoApp {
                         layout,
                         &mut self.mobile_board_tab,
                         &self.notes,
-                        self.active_tag_filter.as_deref(),
+                        &self.active_tag_filters,
+                        self.tag_filter_mode,
                         &mut self.quick_add_board_status,
                         &mut self.quick_add_board_title,
                         &mut self.quick_add_board_tags,
@@ -782,6 +792,7 @@ impl KronoApp {
                         &mut self.asset_audit_only_unused,
                         &vault_dir_snap,
                         &mut self.image_cache,
+                        &mut self.recording_shortcut,
                         UpdateUiState {
                             checking: self.update_worker.is_checking(),
                             installing: self.update_worker.is_installing(),
@@ -1033,6 +1044,10 @@ impl KronoApp {
                 filter_open: &mut self.pages_filter_open,
                 tree_tab: &mut self.sidebar_tree_tab,
                 show_system_folders: &mut self.config.sidebar_show_system_folders,
+                tag_query: &mut self.sidebar_tag_query,
+                tag_mode: &mut self.tag_filter_mode,
+                active_tags: &self.active_tag_filters,
+                kb_nav: &mut self.kb_nav,
             };
             let mut cal_ui = CalendarUiState {
                 open: self.config.calendar_open,
@@ -1053,7 +1068,7 @@ impl KronoApp {
                 self.selected_path.as_deref(),
                 self.active_collection.path.as_deref(),
                 self.active_canvas.path.as_deref(),
-                self.active_tag_filter.as_deref(),
+                &self.active_tag_filters,
                 &self.expanded_folders,
                 &self.config.pinned_folders,
                 &self.config.folder_order,
@@ -1118,6 +1133,7 @@ impl KronoApp {
             &mut self.palette_query,
             &mut self.palette_selected,
             &self.palette_hits,
+            &self.tag_counts,
         );
         if q_changed {
             self.refresh_palette_hits();
@@ -1189,11 +1205,15 @@ impl KronoApp {
             &mut self.lightbox_image,
         );
 
-        // 6c. Quick Capture Scratchpad
+        // 6c. Quick Capture Scratchpad (standalone always-on-top viewport)
+        let sp_hotkey = self.tray.hotkey_label();
         if let Some(sp_action) =
-            render_scratchpad_modal(ctx, &palette, lang, &mut self.scratchpad)
+            render_scratchpad_viewport(ctx, &palette, lang, &mut self.scratchpad, sp_hotkey)
         {
             self.handle_scratchpad_action(ctx, sp_action);
+        }
+        if self.scratchpad.draft_dirty && !self.scratchpad.open {
+            self.persist_scratchpad_draft();
         }
 
         // 6d. Stage 5.1 Bulk Modals (Global Replace & Tag Rename)
@@ -1274,8 +1294,12 @@ impl KronoApp {
         // 7. Animated Toasts
         render_toasts(ctx, &palette, &mut self.toasts);
 
+        if self.view_mode != ViewMode::Settings {
+            self.recording_shortcut = None;
+        }
         if !actions.is_empty() {
             self.handle_actions(ctx, actions);
         }
+        self.sync_and_save_vault_ui_state();
     }
 }

@@ -37,6 +37,7 @@ pub mod viewport_2d;
 
 use crate::config::SlashTrigger;
 use krono_core::{collection::CollectionViewKind, daily::SimpleDate, note::NoteStatus};
+use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -106,7 +107,7 @@ pub enum CreateItemKind {
     Canvas,
 }
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub enum PagesKindFilter {
     #[default]
     All,
@@ -116,7 +117,7 @@ pub enum PagesKindFilter {
     Canvases,
 }
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub enum PagesSortOrder {
     #[default]
     NameAsc,
@@ -124,11 +125,50 @@ pub enum PagesSortOrder {
     NameDesc,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub enum SidebarTreeTab {
     #[default]
     Files,
     Tags,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum TagFilterMode {
+    #[default]
+    Any,
+    All,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum FocusZone {
+    #[default]
+    Editor,
+    Sidebar,
+    Inspector,
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct KeyboardNavState {
+    pub focus_zone: FocusZone,
+    pub sidebar_selected_key: Option<String>,
+}
+
+pub fn note_matches_tag_filters(
+    note_tags: &[String],
+    active_tags: &[String],
+    mode: TagFilterMode,
+) -> bool {
+    if active_tags.is_empty() {
+        return true;
+    }
+    let has_tag = |target: &str| {
+        let t_low = target.to_lowercase();
+        note_tags.iter().any(|nt| nt.to_lowercase() == t_low)
+    };
+    match mode {
+        TagFilterMode::Any => active_tags.iter().any(|t| has_tag(t)),
+        TagFilterMode::All => active_tags.iter().all(|t| has_tag(t)),
+    }
 }
 
 pub struct PagesTreeUiState<'a> {
@@ -137,6 +177,10 @@ pub struct PagesTreeUiState<'a> {
     pub filter_open: &'a mut bool,
     pub tree_tab: &'a mut SidebarTreeTab,
     pub show_system_folders: &'a mut bool,
+    pub tag_query: &'a mut String,
+    pub tag_mode: &'a mut TagFilterMode,
+    pub active_tags: &'a [String],
+    pub kb_nav: &'a mut KeyboardNavState,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -146,7 +190,7 @@ pub enum EditorMode {
     Read,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum TableSort {
     ModifiedDesc,
     ModifiedAsc,
@@ -158,7 +202,7 @@ pub enum TableSort {
     TagsDesc,
 }
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub enum BoardSort {
     #[default]
     Manual,
@@ -209,12 +253,14 @@ pub struct SidebarModulesState {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SettingsTab {
+    General,
     Appearance,
     Editor,
-    MarkdownHelp,
+    Shortcuts,
     Storage,
     GitHub,
-    Shortcuts,
+    About,
+    MarkdownHelp,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -370,6 +416,9 @@ pub enum UiAction {
     SaveTmdbToken,
     DeleteTmdbToken,
     SetTagFilter(Option<String>),
+    ToggleTagFilter(String),
+    SetTagFilterMode(TagFilterMode),
+    ClearTagFilters,
     ToggleFolder(String),
     MarkDirty,
     ToggleTask(usize),
@@ -400,6 +449,11 @@ pub enum UiAction {
     TmdbSearch(String),
     TmdbAddMedia {
         item: crate::sync::tmdb::TmdbSearchItem,
+        status_opt: String,
+    },
+    BookSearch(String),
+    AddBookMedia {
+        item: crate::sync::tmdb::BookSearchItem,
         status_opt: String,
     },
     OpenSidebarModule(SidebarModule),

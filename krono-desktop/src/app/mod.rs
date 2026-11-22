@@ -139,7 +139,11 @@ pub struct KronoApp {
     note_anim_at: Option<Instant>,
     settings_tab_anim_at: Option<Instant>,
     pub(crate) editor_mode: EditorMode,
-    active_tag_filter: Option<String>,
+    active_tag_filters: Vec<String>,
+    tag_filter_mode: crate::ui::TagFilterMode,
+    sidebar_tag_query: String,
+    pub(crate) vault_ui_state: crate::config::VaultUiState,
+    pub(crate) kb_nav: crate::ui::KeyboardNavState,
     pub(crate) expanded_folders: HashSet<String>,
 
     // Sidebar / Editor / Table / Board transient UI states
@@ -169,6 +173,7 @@ pub struct KronoApp {
 
     // Settings & Dialogs & Toasts
     pub(crate) settings_tab: SettingsTab,
+    pub(crate) recording_shortcut: Option<crate::keybindings::ShortcutAction>,
     vault_draft: String,
     pub(crate) has_saved_github_token: bool,
     pub(crate) has_saved_tmdb_token: bool,
@@ -181,7 +186,7 @@ pub struct KronoApp {
     rename_draft: String,
     pub(crate) delete_target: Option<String>,
     first_run_open: bool,
-    vault_folders: Vec<String>,
+    pub(crate) vault_folders: Vec<String>,
     create_subfolder_parent: Option<String>,
     create_subfolder_draft: String,
     toasts: Vec<Toast>,
@@ -359,6 +364,13 @@ impl KronoApp {
         let spellchecker = crate::spellcheck::SpellChecker::new(&config.vault_dir);
         let (tmdb_tx, tmdb_rx) = mpsc::channel::<TmdbEvent>();
         let applied_custom_titlebar = config.custom_titlebar;
+        let vault_ui_state = crate::config::VaultUiState::load(&config.vault_dir);
+        let restored_table_status = vault_ui_state
+            .table
+            .status_filter
+            .as_deref()
+            .and_then(|raw| NoteStatus::ALL.iter().copied().find(|st| st.as_yaml_str() == raw));
+
         let mut app = Self {
             config,
             palette_from: palette,
@@ -408,19 +420,23 @@ impl KronoApp {
             note_anim_at: None,
             settings_tab_anim_at: None,
             editor_mode: EditorMode::Edit,
-            active_tag_filter: None,
+            active_tag_filters: vault_ui_state.sidebar.active_tags.clone(),
+            tag_filter_mode: vault_ui_state.sidebar.tag_mode,
+            sidebar_tag_query: String::new(),
             expanded_folders: HashSet::new(),
-            pages_filter: PagesKindFilter::All,
-            pages_sort: PagesSortOrder::NameAsc,
+            pages_filter: vault_ui_state.sidebar.pages_filter,
+            pages_sort: vault_ui_state.sidebar.pages_sort,
             pages_filter_open: false,
-            sidebar_tree_tab: crate::ui::SidebarTreeTab::Files,
+            sidebar_tree_tab: vault_ui_state.sidebar.tree_tab,
             new_tag_input: String::new(),
             adding_tag: false,
-            table_filter_query: String::new(),
-            table_status_filter: None,
-            table_sort: TableSort::ModifiedDesc,
+            table_filter_query: vault_ui_state.table.filter_query.clone(),
+            table_status_filter: restored_table_status,
+            table_sort: vault_ui_state.table.sort,
             table_col_widths: TableColumnWidths::default(),
-            board_sort: BoardSort::Manual,
+            board_sort: vault_ui_state.board_sort,
+            vault_ui_state,
+            kb_nav: crate::ui::KeyboardNavState::default(),
             tasks_view_state: TasksViewState::default(),
             task_notifier: TaskNotificationTracker::default(),
             quick_add_board_status: None,
@@ -431,7 +447,8 @@ impl KronoApp {
             palette_query: String::new(),
             palette_selected: 0,
             palette_hits: Vec::new(),
-            settings_tab: SettingsTab::Appearance,
+            settings_tab: SettingsTab::General,
+            recording_shortcut: None,
             vault_draft,
             has_saved_github_token,
             has_saved_tmdb_token: has_tmdb_token(),
@@ -660,15 +677,6 @@ impl eframe::App for KronoApp {
         self.process_dropped_files(ctx);
         self.handle_shortcuts(ctx);
 
-        if ctx.input(|i| {
-            ((i.modifiers.ctrl || i.modifiers.command)
-                && i.modifiers.shift
-                && i.key_pressed(egui::Key::Space))
-                || (i.modifiers.alt && !i.modifiers.ctrl && !i.modifiers.shift && i.key_pressed(egui::Key::N))
-        }) {
-            self.open_scratchpad(ctx);
-        }
-
         #[cfg(debug_assertions)]
         self.drive_screenshots(ctx);
 
@@ -829,6 +837,7 @@ impl eframe::App for KronoApp {
 
     fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
         self.flush_unsaved_documents();
+        self.persist_scratchpad_draft();
         #[cfg(debug_assertions)]
         if self.shot_runner.is_some() {
             return;
